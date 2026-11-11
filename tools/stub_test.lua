@@ -488,6 +488,10 @@ function TouchMenu:new(args)
     MENU_SHOWN = o
     return o
 end
+-- 与真实实现一致：TouchMenu:closeMenu() 就是 self.close_callback()
+function TouchMenu:closeMenu()
+    self.close_callback()
+end
 
 -- InputDialog 桩：只保存构造参数，测试不弹键盘
 local InputDialog = Widget:extend{}
@@ -768,8 +772,10 @@ end
 EVENTS[#EVENTS + 1] = "== 菜单打开期间重建已挂起，关闭后自动补做 =="
 
 -- 菜单里改方向：必须「选完就自动关菜单 + 立刻按新方向重排」。
--- TouchMenu 对带 checked_func 的勾选项默认只 updateItems、不关菜单，
--- 以前选了方向菜单一直开着，版式要等手动关菜单才变。
+-- 真凶是 TouchMenu:onMenuSelect 的分支：
+--   if item.checked or item.checked_func then self:updateItems()   -- 只刷新，不关菜单
+--   elseif not item.keep_menu_open then self:closeMenu() end        -- 普通项才自动关
+-- 所以版式子项必须是**普通叶子项**，带勾选就永远不会自动关菜单。
 local function reopen_menu()
     for _, z in ipairs(instance.root._zones or {}) do
         if z.id == "dashboard_swipe_down" then down_zone = z end
@@ -781,7 +787,7 @@ local menu3 = reopen_menu()
 local orient_item
 for _, it in ipairs(menu3.tab or {}) do
     if it.sub_item_table and it.sub_item_table[1]
-        and it.sub_item_table[1].text == "竖屏" then
+        and it.sub_item_table[1].text:find("竖屏", 1, true) then
         orient_item = it
     end
 end
@@ -789,11 +795,32 @@ if not orient_item then
     print("[FAIL] 菜单里找不到「版式」子菜单")
     os.exit(1)
 end
+for i, sub in ipairs(orient_item.sub_item_table) do
+    if sub.checked or sub.checked_func then
+        print(string.format("[FAIL] 版式第 %d 项带了 checked_func：TouchMenu 对勾选项"
+            .. "只 updateItems、不关菜单，真机上会点了没反应", i))
+        os.exit(1)
+    end
+end
+-- 当前方向要用文字标出来，否则用户看不出现在是哪个
+local marked = 0
+for _, sub in ipairs(orient_item.sub_item_table) do
+    if sub.text:find("当前", 1, true) then marked = marked + 1 end
+end
+if marked ~= 1 then
+    print("[FAIL] 版式菜单没有（或重复）标出「当前」方向")
+    os.exit(1)
+end
 local layout_before_menu = instance.layout_landscape
 -- 子项顺序：竖屏 / 横屏（向右 90°）/ 横屏（向左 90°）。
 -- 选「与当前相反」的那一项，否则从横屏起步的组合里选了横屏，版式本来就不该变。
 local pick = layout_before_menu and 1 or 2
-orient_item.sub_item_table[pick].callback()
+local picked = orient_item.sub_item_table[pick]
+-- 按 TouchMenu:onMenuSelect 的真实顺序模拟：先 callback，再按分支自动关闭
+picked.callback(MENU_SHOWN)
+if not (picked.checked or picked.checked_func) and not picked.keep_menu_open then
+    MENU_SHOWN:closeMenu()
+end
 if instance.menu_open then
     print("[FAIL] 菜单里选完方向后菜单没有自动关闭")
     os.exit(1)

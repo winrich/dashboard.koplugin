@@ -408,28 +408,30 @@ function Dashboard:genMenuItemTable()
     end
     items[#items + 1] = { text = _("选择时区"), sub_item_table = tz_items }
 
+    -- 版式三项**刻意不用 checked_func**。TouchMenu:onMenuSelect 里是这么分支的
+    -- （v2025/v2026 一致）：
+    --   callback(self)
+    --   if item.checked or item.checked_func then   -- 勾选项
+    --       self:updateItems()                       -- 只刷新，**不关菜单**
+    --   elseif not item.keep_menu_open then
+    --       self:closeMenu()                         -- 普通项，回调后自动关
+    -- 也就是说「带勾选」和「点完自动关菜单」在 TouchMenu 里是互斥的，之前用
+    -- checked_func 就必然点完菜单还杵着。现在改成普通叶子项：点击 → callback 记下
+    -- 方向 → TouchMenu 自己 closeMenu() → close_callback → 立刻转屏重排。
+    -- 当前方向改用文字标注（不能依赖屏幕旋转结果：转不了屏的机型会退化成纯版式切换）。
+    local cur_mode = self:currentOrientationMode()
+    local function orientEntry(text, mode)
+        return {
+            text = (cur_mode == mode) and (text .. _("（当前）")) or text,
+            callback = function() self:setOrientationFromMenu(mode) end,
+        }
+    end
     items[#items + 1] = {
         text = _("版式（竖屏 / 横屏）"),
         sub_item_table = {
-            -- 这三项带 checked_func，属于「勾选项」；TouchMenu 对勾选项的默认行为
-            -- 是只 updateItems、不关菜单，所以选中后菜单会一直杵在屏幕上，
-            -- 版式要等手动关菜单才变。这里改走 setOrientationFromMenu：
-            -- 记下选择 → 主动关菜单 → 菜单的 close_callback 里立刻转屏重排。
-            {
-                text = _("竖屏"),
-                checked_func = function() return self:getOrientation() == "portrait" end,
-                callback = function() self:setOrientationFromMenu("portrait") end,
-            },
-            {
-                text = _("横屏（向右转 90°）"),
-                checked_func = function() return self:getOrientation() == "landscape" end,
-                callback = function() self:setOrientationFromMenu("landscape") end,
-            },
-            {
-                text = _("横屏（向左转 90°）"),
-                checked_func = function() return self:getOrientation() == "landscape_ccw" end,
-                callback = function() self:setOrientationFromMenu("landscape_ccw") end,
-            },
+            orientEntry(_("竖屏"), "portrait"),
+            orientEntry(_("横屏（向右转 90°）"), "landscape"),
+            orientEntry(_("横屏（向左转 90°）"), "landscape_ccw"),
         },
     }
 
@@ -654,7 +656,12 @@ function Dashboard:open()
     -- 沿用上次选定的方向：选了横屏，重启 KOReader 打开看板时仍然是横屏；
     -- 选的是竖屏而设备当前是横的（上次没还原干净），这里也一并转回去
     local mode = G_reader_settings:readSetting("dashboard_orientation")
-    if mode == "portrait" or mode == "landscape" or mode == "landscape_ccw" then
+    if mode ~= "portrait" and mode ~= "landscape" and mode ~= "landscape_ccw" then
+        mode = nil
+    end
+    -- 菜单里的「（当前）」标记要用它；没有存过配置就按屏幕实际方向
+    self.orientation_mode = mode or self:getOrientation()
+    if mode then
         if self:rotateScreen(mode) then
             -- 转成了：版式由屏幕尺寸自然判定，清掉上一轮留下的强制标记
             self.force_landscape = nil
@@ -1115,12 +1122,22 @@ function Dashboard:getOrientation()
     return "portrait"
 end
 
+--- 当前生效的方向（给菜单打「（当前）」标记用）。
+--- 不能直接用 getOrientation()：那是按屏幕真实旋转反推的，转不了屏的机型
+--- 会退化成「只换版式」，此时屏幕永远是竖的，标记就会一直指在「竖屏」上。
+function Dashboard:currentOrientationMode()
+    if self.orientation_mode then return self.orientation_mode end
+    return self:getOrientation()
+end
+
 --- 切换方向（portrait / landscape / landscape_ccw）并重建版面。
 --- 优先真旋转屏幕——只有这样才能让「设备横过来」时画面是正的；万一这台设备
 --- 转不了（Screen 没有 setRotationMode，或调了不生效），退化成「只换版式」：
 --- 画面方向不变，仅换成另一套排版，至少内容不再是当前那一套。
 function Dashboard:setOrientation(mode)
     if mode ~= "landscape" and mode ~= "landscape_ccw" then mode = "portrait" end
+    -- 记下「用户想要的」方向，菜单里打标记用它（见 currentOrientationMode）
+    self.orientation_mode = mode
     -- 看板没打开时不要动屏幕：那会把整个 KOReader 界面转过去，而看板没开就没有
     -- close 来还原，用户会卡在横屏的阅读界面里回不来。此时只记住选择，打开时再生效。
     if not self.shown then
@@ -1234,13 +1251,19 @@ end
 --- 菜单真正关掉之后要做的事：撤控件 + 执行菜单里挂起的动作。
 --- 由 TouchMenu 的 close_callback 调用（点外面、按返回、我们自己关，三条路都到这里）。
 function Dashboard:onMenuClosed(menu)
-    if menu and self.menu == menu then
-        self.menu = nil
+    if menu then
+        if self.menu == menu then self.menu = nil end
+        -- 这里**不做 self.menu == menu 的判断**：菜单窗口可能因为别的路径已经从
+        -- self.menu 上摘掉了，但人还留在窗口栈里。判断失败就跳过 close，结果就是
+        -- 「菜单关不掉、版式不生效」。UIManager:close 对不在栈里的控件是空操作，
+        -- 重复调用无害，所以直接关。
         pcall(function() UIManager:close(menu) end)
     end
     self.menu_open = false
     local mode = self.pending_orientation
     self.pending_orientation = nil
+    logger.dbg("dashboard: 菜单已关闭，待执行方向 =", tostring(mode),
+        "待重排 =", tostring(self.relayout_pending))
     if mode then
         -- 菜单里选的方向等到这时才真正执行：菜单控件是按旧尺寸排的，边转边排版会错位
         self.relayout_pending = false
@@ -1274,9 +1297,11 @@ function Dashboard:closeMenu()
 end
 
 --- 菜单里选了屏幕方向。
---- TouchMenu 对「带 checked_func 的勾选项」默认只 updateItems、不关菜单，
---- 所以以前选了方向之后菜单一直开着，版式要等用户手动关菜单才变。
---- 这里记下选择后主动关菜单，关闭的那一刻 close_callback 立刻按新方向转屏重排。
+--- 版式三项是**普通叶子项**（没有 checked_func），所以 TouchMenu:onMenuSelect 在
+--- 回调返回后会自己调 closeMenu() → close_callback → onMenuClosed()，菜单自动关闭，
+--- 关闭那一刻立刻按新方向转屏重排。
+--- 以前用 checked_func 走的是另一条分支（只 updateItems、不关菜单），加上再靠
+--- nextTick 主动关，多一层异步就多一层不出错的可能，真机上就表现为「点了没反应」。
 function Dashboard:setOrientationFromMenu(mode)
     -- 从 KOReader 主菜单里进来时没有 self.menu，走普通路径（含「看板没打开」的处理）
     if not self.menu_open then
@@ -1286,9 +1311,12 @@ function Dashboard:setOrientationFromMenu(mode)
     self.relayout_pending = true
     G_reader_settings:saveSetting("dashboard_orientation", mode)
     if G_reader_settings.flush then G_reader_settings:flush() end
-    -- 不能在菜单自己的点击回调里直接销毁菜单：onMenuSelect 返回后还要 updateItems，
-    -- 那时控件已经没了会报错。推迟一拍——本帧先把勾选状态刷出来，下一拍再关。
-    UIManager:nextTick(function() self:closeMenu() end)
+    -- 正常情况下到这里就结束了：TouchMenu 会自己关菜单。这里只留一条兜底，
+    -- 万一某个版本没自动关（或 callback 里设了 keep_menu_open），下一拍补一刀，
+    -- 别让菜单一直挡着看板。nextTick 万一没跑到也不影响主路径。
+    UIManager:nextTick(function()
+        if self.menu_open then self:closeMenu() end
+    end)
     return false
 end
 
