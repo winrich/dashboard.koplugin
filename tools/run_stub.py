@@ -31,10 +31,15 @@ SYNTAX_FILES = [
 
 
 DIRECTIONS = [
-    ("竖屏 PW3", 1072, 1448),
-    ("横屏 PW3", 1448, 1072),
-    ("竖屏 老机型", 600, 800),
-    ("横屏 老机型", 800, 600),
+    # (标签, 原生宽, 原生高, 强制版式 None/landscape/portrait, 禁用转屏, 启动旋转值)
+    ("竖屏 PW3", 1072, 1448, None, False, 0),
+    ("横屏 PW3（KOReader 已转 90°）", 1072, 1448, None, False, 1),
+    # 设备不支持转屏时的兜底：左右滑动只能换版式（竖屏屏幕跑横屏版式，最挤的一种）
+    ("竖屏 PW3 + 不支持转屏", 1072, 1448, None, True, 0),
+    ("竖屏 PW3 + 强制横屏版式", 1072, 1448, "landscape", False, 0),
+    ("横屏 PW3 + 强制竖屏版式", 1072, 1448, "portrait", False, 1),
+    ("竖屏 老机型", 600, 800, None, False, 0),
+    ("横屏 老机型（已转 90°）", 600, 800, None, False, 1),
 ]
 
 
@@ -108,11 +113,15 @@ def check_syntax():
     return ok_all
 
 
-def run_direction(label, w, h):
+def run_direction(label, w, h, force=None, no_rotation=False, start_rotation=0):
     print(f"\n{'=' * 62}\n== {label} {w}x{h}\n{'=' * 62}")
     lua = LuaRuntime(unpack_returned_tuples=True)
-    lua.execute(f"STUB_W = {w}; STUB_H = {h}")
+    lua.execute(f"STUB_W = {w}; STUB_H = {h}; STUB_START_ROTATION = {start_rotation}")
     lua.execute(f"STUB_VERBOSE = {str(os.environ.get('STUB_VERBOSE') == '1').lower()}")
+    if force:
+        lua.execute(f'STUB_FORCE_LAYOUT = "{force}"')
+    if no_rotation:
+        lua.execute("STUB_NO_ROTATION = true")
     install_bridges(lua)
     lua.execute(f'arg = {{ [1] = [[{PLUGIN_DIR}]] }}')
     with open(os.path.join(HERE, "stub_test.lua"), encoding="utf-8") as fh:
@@ -130,8 +139,8 @@ def main():
     if not check_syntax():
         return 1
     ok = True
-    for label, w, h in DIRECTIONS:
-        ok = run_direction(label, w, h) and ok
+    for label, w, h, force, no_rotation, start_rotation in DIRECTIONS:
+        ok = run_direction(label, w, h, force, no_rotation, start_rotation) and ok
     print()
     print("[PASS] 全部尺寸通过" if ok else "[FAIL] 存在失败项")
     return 0 if ok else 1

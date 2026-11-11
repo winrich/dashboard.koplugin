@@ -54,6 +54,14 @@ local OpenMeteo = require("dashboard_openmeteo")
 
 local Screen = Device.screen
 
+--- 当前屏幕旋转值；这个版本没有 device/screen.lua，Screen 就是 framebuffer，
+--- 个别平台可能没有 getRotationMode，读不到一律返回 nil
+local function screen_rotation()
+    if not (Screen and Screen.getRotationMode) then return nil end
+    local ok, now = pcall(function() return Screen:getRotationMode() end)
+    return ok and now or nil
+end
+
 local COLOR_BLACK = Blitbuffer.COLOR_BLACK
 local COLOR_WHITE = Blitbuffer.COLOR_WHITE
 -- COLOR_DARK_GRAY 在个别老版本上可能不存在，退化成黑色而不是崩掉
@@ -78,6 +86,36 @@ local BASE_SHORT = 600
 -- 否则循环走完仍放不下、画面被裁切到屏幕边缘。0.96^20 ≈ 0.44，足够收敛。
 local FIT_MAX_STEPS = 20
 local FIT_STEP = 0.96
+
+-- 纵向拉伸：竖屏在 PW3 上内容只占版心高度的 87%，余量被居中分到上下，画面看着
+-- 浮在中间。这里只放大「分块之间」的竖向间距（左右留白和字号一概不动），
+-- 取仍然装得下的最大一档，把余量均匀吸进各处空白。
+-- 只拉伸间距不放大字号，是因为字号一放大文字就变宽，左右只剩 52px 余量会立刻撑破。
+local VK_STEP = 0.05
+local VK_MAX = 1.75
+
+-- 屏幕旋转：KOReader 用 LinuxFB 常量（0=正立、1=顺时针 90°、2=倒置、3=逆时针 90°）。
+-- Kindle 没有重力感应，设备横过来时屏幕像素方向不会变，只有旋转 framebuffer
+-- （阅读界面「旋转 90°/270°」用的就是这套）才能让横屏画面是正的。
+-- Kindle 上没有硬件强制旋转，setRotationMode 会退化成软件旋转 blitbuffer，
+-- 旋转后 Screen:getWidth()/getHeight() 互换（已读 ffi/framebuffer.lua 确认）。
+local ROT_PORTRAIT = 0
+local ROT_LANDSCAPE_CW = 1
+local ROT_LANDSCAPE_CCW = 3
+
+--- 目标旋转值：以「打开看板时的方向」base 为基准推算。
+--- 屏幕是竖是横只由旋转值的**奇偶**决定（奇数 = 宽高互换），所以「竖屏」取偶数档、
+--- 「横屏」取奇数档，不能写死 0/1/3——万一 KOReader 本来就是横着启动的，
+--- 写死 0 得到的还是同一个方向，转了等于没转（桩件里就踩到了这个）。
+local function target_rotation(base, mode)
+    base = base or 0
+    if mode == "landscape" then
+        return (base % 2 == 1) and base or (base + 1) % 4
+    elseif mode == "landscape_ccw" then
+        return (base % 2 == 1) and (base + 2) % 4 or (base + 3) % 4
+    end
+    return (base % 2 == 0) and base or (base + 3) % 4
+end
 
 -- 四边留白：15 个设计单位（600px 短边机型上正好 15px，PW3 上约 27px）。
 -- 分隔线以前是通屏宽、内容又是居中放置，视觉上就贴着屏幕边缘；现在整块版心
@@ -227,6 +265,8 @@ function Dashboard:init()
     if type(air) == "table" then
         self.air = air
     end
+    -- 版式方向不在这里处理：打开看板时（open）才按设置旋转屏幕，
+    -- 关闭时还原，避免插件加载就把整个 KOReader 转了向
     -- 凭据每次启动重新读取，改完配置重启 KOReader 即生效
     self.config = QWeather.loadConfig(self.path or PLUGIN_DIR, G_reader_settings)
     if self.ui and self.ui.menu then
@@ -315,6 +355,27 @@ function Dashboard:genMenuItemTable()
     end
     items[#items + 1] = { text = _("选择时区"), sub_item_table = tz_items }
 
+    items[#items + 1] = {
+        text = _("版式（竖屏 / 横屏）"),
+        sub_item_table = {
+            {
+                text = _("竖屏"),
+                checked_func = function() return self:getOrientation() == "portrait" end,
+                callback = function() self:setOrientation("portrait") end,
+            },
+            {
+                text = _("横屏（向右转 90°）"),
+                checked_func = function() return self:getOrientation() == "landscape" end,
+                callback = function() self:setOrientation("landscape") end,
+            },
+            {
+                text = _("横屏（向左转 90°）"),
+                checked_func = function() return self:getOrientation() == "landscape_ccw" end,
+                callback = function() self:setOrientation("landscape_ccw") end,
+            },
+        },
+    }
+
     items[#items + 1] = { text = _("天气服务"), sub_item_table = self:genWeatherMenu() }
 
     items[#items + 1] = {
@@ -322,10 +383,11 @@ function Dashboard:genMenuItemTable()
         callback = function()
             UIManager:show(InfoMessage:new{
                 text = _("手势：点按刷新天气 · 上划退出看板\n"
-                    .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 天气服务）\n"
-                    .. "左右滑动 → 重新布局\n\n"
-                    .. "看板按屏幕方向自动切换版式：竖屏为仪表盘，横屏带整月日历。\n"
-                    .. "设备转过向之后若版式没跟着变，左右滑动一次即可重排。\n\n"
+                    .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 版式 / 天气服务）\n"
+                    .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
+                    .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
+                    .. "所以横屏要靠左右滑动（或菜单「版式」）手动切，切完请把设备横着拿。\n"
+                    .. "若横屏后文字是倒的，到菜单「版式」里换「向左转 90°」那一项。\n\n"
                     .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
                     .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
                     .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。"),
@@ -514,8 +576,21 @@ end
 function Dashboard:open()
     if self.shown then return end
     self.shown = true
+    -- 记下打开前的屏幕方向，关闭时原样恢复，别把整个 KOReader 留在横屏
+    self.base_rotation = screen_rotation()
     self:setKindleScreenSaver(true)
     UIManager:preventStandby()
+    -- 沿用上次选定的方向：选了横屏，重启 KOReader 打开看板时仍然是横屏；
+    -- 选的是竖屏而设备当前是横的（上次没还原干净），这里也一并转回去
+    local mode = G_reader_settings:readSetting("dashboard_orientation")
+    if mode == "portrait" or mode == "landscape" or mode == "landscape_ccw" then
+        if self:rotateScreen(mode) then
+            self.rotation_changed = (screen_rotation() ~= self.base_rotation)
+        elseif mode ~= "portrait" then
+            -- 转不了就按横屏版式排（画面方向不变，至少排版是另一套）
+            self.force_landscape = true
+        end
+    end
     self:refreshLayout()
     self:fetchWeather()
     self:scheduleTick()
@@ -527,6 +602,7 @@ function Dashboard:close()
     -- 万一是菜单开着的时候被关掉，别让标记卡住导致以后再也不重排
     self.menu_open = false
     self.relayout_pending = false
+    self.pending_orientation = nil
     if self._tick_fn then
         UIManager:unschedule(self._tick_fn)
     end
@@ -537,6 +613,12 @@ function Dashboard:close()
     end
     UIManager:allowStandby()
     self:setKindleScreenSaver(false)
+    -- 把屏幕转回打开看板前的方向，否则退出看板后整个 KOReader 都是横的
+    if self.rotation_changed and self.base_rotation ~= nil and Screen.setRotationMode then
+        pcall(function() Screen:setRotationMode(self.base_rotation) end)
+        self.rotation_changed = false
+        UIManager:setDirty(nil, "full")
+    end
 end
 
 -- Kindle 上抑制系统屏保（KOReader 自身只负责不主动待机，屏保由 powerd 管）
@@ -735,15 +817,104 @@ function Dashboard:refreshLayout()
     UIManager:setDirty(self.root, "full")
 end
 
---- 左右滑动触发：重建版面并给一句反馈，否则画面没变化会以为手势没生效
+--- 屏幕当前是否呈横向（像素宽 >= 高）
+function Dashboard:screenIsLandscape()
+    return Screen:getWidth() >= Screen:getHeight()
+end
+
+--- 旋转屏幕到指定方向，返回 true 表示旋转真的生效。
+--- 转完 Screen:getWidth()/getHeight() 会互换，版式随尺寸自动切换，不用另加强制标志。
+function Dashboard:rotateScreen(mode)
+    if mode ~= "portrait" and mode ~= "landscape" and mode ~= "landscape_ccw" then
+        return false
+    end
+    if not (Screen.setRotationMode and Screen.getRotationMode) then return false end
+    local target = target_rotation(self.base_rotation or 0, mode)
+    local ok, err = pcall(function() Screen:setRotationMode(target) end)
+    if not ok then
+        logger.warn("dashboard: 屏幕旋转失败", tostring(err))
+        return false
+    end
+    return screen_rotation() == target
+end
+
+--- 当前方向，供菜单打勾（以屏幕实际旋转值为准）
+function Dashboard:getOrientation()
+    local now = screen_rotation()
+    if now == nil then return "portrait" end
+    local base = self.base_rotation or 0
+    if now == target_rotation(base, "landscape") then return "landscape" end
+    if now == target_rotation(base, "landscape_ccw") then return "landscape_ccw" end
+    return "portrait"
+end
+
+--- 切换方向（portrait / landscape / landscape_ccw）并重建版面。
+--- 优先真旋转屏幕——只有这样才能让「设备横过来」时画面是正的；万一这台设备
+--- 转不了（Screen 没有 setRotationMode，或调了不生效），退化成「只换版式」：
+--- 画面方向不变，仅换成另一套排版，至少内容不再是当前那一套。
+function Dashboard:setOrientation(mode)
+    if mode ~= "landscape" and mode ~= "landscape_ccw" then mode = "portrait" end
+    -- 看板没打开时不要动屏幕：那会把整个 KOReader 界面转过去，而看板没开就没有
+    -- close 来还原，用户会卡在横屏的阅读界面里回不来。此时只记住选择，打开时再生效。
+    if not self.shown then
+        G_reader_settings:saveSetting("dashboard_orientation", mode)
+        if G_reader_settings.flush then G_reader_settings:flush() end
+        UIManager:show(InfoMessage:new{
+            text = _("已记住，下次打开看板时按这个方向显示"),
+            timeout = 2,
+        })
+        return false
+    end
+    -- 菜单开着的时候别转屏幕：菜单控件是按旧尺寸排的，一转就错位。
+    -- 挂起，等菜单关掉（close_callback）再执行。
+    if self.menu_open then
+        self.pending_orientation = mode
+        self.relayout_pending = true
+        G_reader_settings:saveSetting("dashboard_orientation", mode)
+        if G_reader_settings.flush then G_reader_settings:flush() end
+        return false
+    end
+    local rotated = self:rotateScreen(mode)
+    if rotated then
+        -- 旋转后版式由屏幕尺寸自然判定，不需要再强制
+        self.force_landscape = nil
+        -- 与打开时的方向不一样才算「改过」，close 时才需要还原
+        self.rotation_changed = (screen_rotation() ~= self.base_rotation)
+    else
+        self.force_landscape = (mode ~= "portrait")
+        logger.warn("dashboard: 屏幕旋转不可用，退化为仅切换版式")
+    end
+    G_reader_settings:saveSetting("dashboard_orientation", mode)
+    if G_reader_settings.flush then G_reader_settings:flush() end
+    self:refreshLayout()
+    -- 旋转改的是整块画面的方向，必须整屏重画，否则会留下上一方向的残影
+    UIManager:setDirty(nil, "full")
+    return rotated
+end
+
+--- 左右滑动：在「竖屏 ↔ 横屏」之间来回切。
+--- 以前这里只是把版面重建一次，而 Kindle 没有重力感应、Screen 尺寸永远不变，
+--- 所以不管机器怎么摆、滑多少次，出来都是竖屏那一套（提示也恒为「竖屏」）。
+--- 现在改成真的转屏幕：转完尺寸互换，横屏版式才有 1448x1072 的可用空间。
 function Dashboard:relayoutFromGesture()
     if not self.shown then return end
-    self:refreshLayout()
-    local landscape = Screen:getWidth() >= Screen:getHeight()
-    UIManager:show(InfoMessage:new{
-        text = string.format(_("已重新布局（%s）"), landscape and _("横屏") or _("竖屏")),
-        timeout = 2,
-    })
+    -- 以「当前实际排版」为准取反，不能看屏幕尺寸：转屏失败退化成纯版式切换时，
+    -- 屏幕尺寸不会变，按尺寸判断会一直往同一个方向切。
+    local to_landscape
+    if self.layout_landscape ~= nil then
+        to_landscape = not self.layout_landscape
+    else
+        to_landscape = not self:screenIsLandscape()
+    end
+    local rotated = self:setOrientation(to_landscape and "landscape" or "portrait")
+    local text
+    if to_landscape then
+        text = rotated and _("已转为横屏，请把设备横着拿（再左右滑一下可转回竖屏）")
+            or _("已切换为横屏版式（本机不支持转屏）")
+    else
+        text = _("已转回竖屏")
+    end
+    UIManager:show(InfoMessage:new{ text = text, timeout = 2 })
 end
 
 --- 屏幕上缘下滑：打开看板自己的菜单。看板是全屏控件，KOReader 主菜单只在
@@ -780,7 +951,13 @@ function Dashboard:openMenu()
             close_callback = function()
                 if menu then UIManager:close(menu) end
                 self.menu_open = false
-                if self.relayout_pending then
+                if self.pending_orientation then
+                    -- 菜单里选的方向等到这时才真正执行（转屏会让菜单控件错位）
+                    local mode = self.pending_orientation
+                    self.pending_orientation = nil
+                    self.relayout_pending = false
+                    self:setOrientation(mode)
+                elseif self.relayout_pending then
                     self.relayout_pending = false
                     self:refreshLayout()
                 end
@@ -888,9 +1065,35 @@ function Dashboard:makeText(ctx, str, px, opts)
     }
 end
 
+--- 把纵向余量吸进「分块之间的空白」。
+--- 只放大顶层纯留白行（mkPad 造出来的那种：有 dimen、没子控件、没文字、没颜色/比例）
+--- 的行高，所以既不会改变任何文字的字号，也不会改变横向宽度——左右只剩 52px 余量，
+--- 任何放大字号的改法都会立刻横向撑破版心。
+--- 顶层纯留白行就等于「块与块之间的间距」，块内部的 mkPad 在子控件里，不受影响。
+local function stretchGaps(body, vk)
+    if not vk or vk == 1 then return end
+    for i = 1, #body do
+        local row = body[i]
+        local h = type(row.dimen) == "table" and row.dimen.h or nil
+        if h and h > 1 and row[1] == nil and row.text == nil
+            and row.color == nil and row.ratio == nil and row.file == nil then
+            row.dimen.h = math.max(1, math.floor(h * vk))
+        end
+    end
+end
+
 function Dashboard:createRoot()
     local W, H = Screen:getWidth(), Screen:getHeight()
-    local landscape = W >= H
+    -- 版式方向：默认按屏幕像素尺寸判断；左右滑动切换过之后由 force_landscape 指定。
+    -- Kindle 没有重力感应，设备横过来时屏幕像素方向也不变（仍是 1072x1448），
+    -- 只按 W >= H 判断的话，横过来永远还是竖屏那套版式。
+    local landscape
+    if self.force_landscape ~= nil then
+        landscape = self.force_landscape
+    else
+        landscape = W >= H
+    end
+    self.layout_landscape = landscape
     local now = self:localNow()
     local tz = self:getTz()
 
@@ -915,14 +1118,20 @@ function Dashboard:createRoot()
     ctx.edge = edge
     ctx.body_w = avail_w
 
-    local body
+    -- vk 是「分块之间空白」的纵向放大系数：只动上下空白，不动文字也不动宽度
+    local function build(vk)
+        ctx.S = S
+        local b = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
+        stretchGaps(b, vk)
+        return b, b:getSize()
+    end
+
+    local body, bs
     local steps_used = 0
     for step = 1, FIT_MAX_STEPS do
-        ctx.S = S
-        body = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
-        local bs = body:getSize()
+        steps_used = step
+        body, bs = build(1)
         if bs.h <= avail_h and bs.w <= avail_w then
-            steps_used = step
             break
         end
         -- 只在第一次超限时打完整诊断，避免日志被刷屏
@@ -934,9 +1143,29 @@ function Dashboard:createRoot()
             "dashboard: 内容 %dx%d 超出可用区 %dx%d（四边留白 %d），缩放至 %.3f 重排",
             bs.w, bs.h, avail_w, avail_h, edge, S * FIT_STEP))
         S = S * FIT_STEP
-        steps_used = step
+    end
+
+    -- 装得下就再往上撑：逐档放大分块间距，取仍然装得下的最大一档。
+    -- 竖屏 PW3 上余量有 180px 左右，撑到 1.4~1.6 倍才吃满，上下不再空出两条大带。
+    local vk = 1
+    if bs.h <= avail_h and bs.w <= avail_w then
+        local max_i = math.floor((VK_MAX - 1) / VK_STEP + 0.5)
+        for i = 1, max_i do
+            local k = 1 + VK_STEP * i
+            local _, bs2 = build(k)
+            if bs2.h <= avail_h and bs2.w <= avail_w then
+                vk = k
+            else
+                break
+            end
+        end
+        -- 必须按最终档位真正建一次：buildPortrait 会顺手把 self.clock_widget 指向
+        -- 当次建的控件，而试探过程中被否决的那一版控件不会进控件树。
+        -- 不重建的话时钟控件会指向一棵没显示的树，往后 tick 就再也刷不动时钟了。
+        body, bs = build(vk)
     end
     self.scale = S
+    self.vk = vk
     -- 只有真的缩过才写日志，正常情况下不刷屏
     if steps_used > 1 then
         local bs = body:getSize()
@@ -1493,10 +1722,12 @@ end
 function Dashboard:buildHintRow(ctx, max_w, pad_lr, base_px)
     local text = self:hintLine()
     local px, natural = base_px, 0
-    for _ = 1, 8 do
+    -- 每次降 1 个单位（原先是 0.92 的乘法，17 -> 15 会直接跳过 16，
+    -- 一个字的差别就让字号掉两级）
+    for _ = 1, 14 do
         natural = self:makeText(ctx, text, px):getSize().w
-        if natural <= max_w then break end
-        px = math.max(11, math.floor(px * 0.92))
+        if natural <= max_w or px <= 11 then break end
+        px = math.max(11, px - 1)
     end
     local widget = self:makeText(ctx, text, px, { gray = true, max_width = max_w })
     self.hint_used = { px = px, w = natural, max_w = max_w }
@@ -1520,7 +1751,7 @@ end
 
 --- 单行操作提示文案（竖屏横屏共用，只有一个版本）
 function Dashboard:hintLine()
-    local line = _("点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动重排")
+    local line = _("点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
     if self:getConfig().show_attribution then
         local src = self:sourceShort()
         if src then line = line .. " · " .. src end

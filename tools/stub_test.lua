@@ -377,14 +377,24 @@ function LuaSettings:has(k) return self.data[k] ~= nil end
 local DataStorage = {}
 function DataStorage:getSettingsDir() return "/tmp/settings" end
 
--- 屏幕尺寸由外部注入，用于分别验证竖屏与横屏版式
+-- 屏幕尺寸由外部注入。STUB_W/STUB_H 始终是**原生竖屏**尺寸（真机 1072x1448），
+-- STUB_START_ROTATION 表示 KOReader 启动时已经转到的方向（0=正立，奇数=宽高互换）。
 local SW = tonumber(_G.STUB_W) or 600
 local SH = tonumber(_G.STUB_H) or 800
 
+-- 旋转支持：真机上 Screen:setRotationMode 会旋转 blitbuffer，旋转后 getWidth/getHeight
+-- 互换（ffi/framebuffer.lua:454 -> bb:rotateAbsolute）。桩件照此实现，才能验证
+-- 「左右滑动 -> 转屏 -> 版式跟着换」这条真实路径。
+-- STUB_NO_ROTATION=1 时去掉这两个接口，用来验证「转不了就只换版式」的兜底分支。
+local rotation = tonumber(_G.STUB_START_ROTATION) or 0
 local screen = {
-    getWidth = function() return SW end,
-    getHeight = function() return SH end,
+    getWidth = function() return (rotation % 2 == 1) and SH or SW end,
+    getHeight = function() return (rotation % 2 == 1) and SW or SH end,
 }
+if not _G.STUB_NO_ROTATION then
+    screen.getRotationMode = function() return rotation end
+    screen.setRotationMode = function(_, mode) rotation = tonumber(mode) or 0 end
+end
 local Device = {}
 Device.screen = screen
 function Device:isKindle() return true end
@@ -527,6 +537,12 @@ EVENTS[#EVENTS + 1] = "== gzip 解压链路已接管（非 gzip 直通分支已�
 instance = plugin:new{}
 instance.path = plugin_dir
 instance.ui = { menu = { registerToMainMenu = function() end } }
+-- 版式方向可以由外部强制（验证「竖屏屏幕跑横屏版式」这类不匹配组合）
+if _G.STUB_FORCE_LAYOUT == "landscape" then
+    instance.force_landscape = true
+elseif _G.STUB_FORCE_LAYOUT == "portrait" then
+    instance.force_landscape = false
+end
 
 local ok, err = pcall(function() instance:init() end)
 if not ok then
@@ -580,6 +596,25 @@ if not ok then
 end
 EVENTS[#EVENTS + 1] = "== open() 通过 =="
 EVENTS[#EVENTS + 1] = string.format("== 待机抑制计数 = %d，激活的定时器 = %d ==", standby, #timers)
+
+-- 时钟控件必须真的挂在控件树里。纵向拉伸会反复试算版式，而 buildPortrait 每次
+-- 都会把 self.clock_widget 指向当次建的控件——一旦留着被否决那一版，
+-- tick 就在刷新一棵没显示的树，钟会彻底停住（画面看不出来，日志也没错）。
+local function in_tree(node, target, depth)
+    if node == target then return true end
+    if type(node) ~= "table" or depth > 6 then return false end
+    for i = 1, #node do
+        if node[i] == target then return true end
+        if in_tree(node[i], target, depth + 1) then return true end
+    end
+    return false
+end
+if not instance.clock_widget or not in_tree(instance.root, instance.clock_widget, 0) then
+    print("[FAIL] 时钟控件不在控件树里（重排时选错了那一版，时钟将不再刷新）")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 时钟控件在树内，纵向拉伸档位 vk=%.2f ==",
+    instance.vk or 1)
 
 -- 手势：框架不认 onTap/onHold，只有注册成触摸区才会派发事件
 local zone_list = instance.root._zones or {}
@@ -675,12 +710,53 @@ if side_zone.handler({ direction = "north" }) ~= false then
     print("[FAIL] 左右滑动区不该拦截上划")
     os.exit(1)
 end
-if side_zone.handler({ direction = "east" }) ~= true
-    or side_zone.handler({ direction = "west" }) ~= true then
-    print("[FAIL] 左右滑动没有触发重新布局")
+-- 左右滑动必须真的换到「另一种」版式：以前只是把版面重建一次，
+-- Kindle 没有重力感应、Screen 尺寸不变，所以滑完还是原来那套（提示恒为「竖屏」）
+local layout_before = instance.layout_landscape
+if side_zone.handler({ direction = "east" }) ~= true then
+    print("[FAIL] 左右滑动没有响应")
     os.exit(1)
 end
-EVENTS[#EVENTS + 1] = "== 左右滑动重新布局成功 =="
+if instance.layout_landscape == layout_before then
+    print(string.format("[FAIL] 左右滑动后版式没变（仍是 %s）", tostring(layout_before)))
+    os.exit(1)
+end
+-- 支持转屏时必须真的把屏幕转了（尺寸互换），而不是只换排版
+if not _G.STUB_NO_ROTATION then
+    local w_now, h_now = screen.getWidth(), screen.getHeight()
+    local now_landscape = w_now >= h_now
+    if now_landscape == layout_before then
+        print("[FAIL] 支持转屏时，滑动应当真的把屏幕旋转 90°")
+        os.exit(1)
+    end
+    if now_landscape ~= instance.layout_landscape then
+        print("[FAIL] 转屏后屏幕方向与版式不一致")
+        os.exit(1)
+    end
+end
+-- 切换之后立刻校验：新版的画面必须仍然装得进当前屏幕
+local w_after, h_after = screen.getWidth(), screen.getHeight()
+local g_after = instance.root[1][1]:getSize()
+if g_after.h > h_after + 1 or g_after.w > w_after + 1 then
+    print(string.format("[FAIL] 切换版式后内容 %dx%d 溢出屏幕 %dx%d",
+        math.floor(g_after.w), math.floor(g_after.h), w_after, h_after))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 切换后内容 %dx%d（屏幕 %dx%d，缩放 %.3f）==",
+    math.floor(g_after.w), math.floor(g_after.h), w_after, h_after, instance.scale or -1)
+
+if side_zone.handler({ direction = "west" }) ~= true then
+    print("[FAIL] 再次左右滑动没有响应")
+    os.exit(1)
+end
+if instance.layout_landscape ~= layout_before then
+    print("[FAIL] 再滑一次没有回到原来的版式")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 左右滑动切换版式成功（%s -> %s -> %s，转屏=%s）==",
+    tostring(layout_before), tostring(not layout_before), tostring(layout_before),
+    _G.STUB_NO_ROTATION and "不支持" or "已旋转 90°")
 
 -- 渲染结果（文本层）
 print("---------- 渲染出的文本行 ----------")
@@ -722,19 +798,20 @@ end
 EVENTS[#EVENTS + 1] = string.format("== 电量显示：%s / 提示：%s ==",
     tostring(pct_text), tostring(hint_text))
 
--- 检查总高度是否溢出屏幕
+-- 检查总高度是否溢出屏幕（用当前实际屏幕尺寸：转屏后宽高会互换）
+local VW, VH = screen.getWidth(), screen.getHeight()
 local group = instance.root[1][1]
 local gs = group:getSize()
-local overflow = (gs.h > SH + 1) or (gs.w > SW + 1)
+local overflow = (gs.h > VH + 1) or (gs.w > VW + 1)
 if overflow then
-    print(string.format("[FAIL] 内容 %dx%d 超出屏幕 %dx%d", math.floor(gs.w), math.floor(gs.h), SW, SH))
+    print(string.format("[FAIL] 内容 %dx%d 超出屏幕 %dx%d", math.floor(gs.w), math.floor(gs.h), VW, VH))
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = string.format(
     "== 内容总尺寸 %dx%d（屏幕 %dx%d），水平余量 %d px，垂直余量 %d px，"
     .. "缩放 %.3f，设计单位约占短边 %.1f%% ==",
-    math.floor(gs.w), math.floor(gs.h), SW, SH,
-    SW - math.floor(gs.w), SH - math.floor(gs.h),
+    math.floor(gs.w), math.floor(gs.h), VW, VH,
+    VW - math.floor(gs.w), VH - math.floor(gs.h),
     instance.scale or -1, (gs.h / (instance.scale or 1)) / math.min(SW, SH) * 100)
 
 -- 四边留白：直接查最终帧里每个可见元素的像素位置，白底铺满那一块要排除
@@ -747,11 +824,11 @@ local edge_expect = math.max(EDGE_MIN, math.floor(15 * scale_now))
 local tight = {}
 for _, r in ipairs(RECORD) do
     local w, h = r.w or 0, r.h or 0
-    local is_bg = (r.kind == "rect" and r.color ~= 255 and w >= SW and h >= SH)
+    local is_bg = (r.kind == "rect" and r.color ~= 255 and w >= VW and h >= VH)
     if not is_bg and r.kind ~= "exec" then
         local x, y = r.x or 0, r.y or 0
         if x < edge_expect - 1 or y < edge_expect - 1
-            or x + w > SW - edge_expect + 1 or y + h > SH - edge_expect + 1 then
+            or x + w > VW - edge_expect + 1 or y + h > VH - edge_expect + 1 then
             tight[#tight + 1] = string.format("%s@(%d,%d) %dx%d", r.kind, math.floor(x), math.floor(y),
                 math.floor(w), math.floor(h))
         end

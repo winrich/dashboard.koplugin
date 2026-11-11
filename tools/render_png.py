@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OUT_DIR = os.path.join(ROOT, "preview")
 
-DEFAULT_SIZES = [("portrait", 1072, 1448), ("landscape", 1448, 1072)]
+DEFAULT_SIZES = [("portrait", 1072, 1448, 0), ("landscape", 1072, 1448, 1)]
 
 FONT_CANDIDATES = [
     r"C:\Windows\Fonts\msyh.ttc",
@@ -47,9 +47,11 @@ def safe_edge(w):
     return max(15, int(15 * short / 600))
 
 
-def render(name, w, h):
-    items = grab(w, h)
-    img = Image.new("L", (w, h), 255)
+def render(name, w, h, rot=0):
+    # 原生尺寸固定是竖屏；rot 为奇数时 framebuffer 转 90°，画布宽高互换
+    dw, dh = (h, w) if rot % 2 else (w, h)
+    items = grab(w, h, rot)
+    img = Image.new("L", (dw, dh), 255)
     draw = ImageDraw.Draw(img)
 
     for tag, x, y, iw, ih, color, text in items:
@@ -64,8 +66,8 @@ def render(name, w, h):
             font = load_font(size)
             draw.text((x, y + (ih - size) * 0.45), text, font=font, fill=0)
 
-    edge = safe_edge(w)
-    draw.rectangle([edge, edge, w - edge, h - edge], outline=170)
+    edge = safe_edge(dw)
+    draw.rectangle([edge, edge, dw - edge, dh - edge], outline=170)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     out = os.path.join(OUT_DIR, name + ".png")
@@ -76,10 +78,10 @@ def render(name, w, h):
 def main():
     args = [a for a in sys.argv[1:] if a.isdigit()]
     if len(args) >= 2:
-        render("board_%sx%s" % (args[0], args[1]), int(args[0]), int(args[1]))
+        render("board_%sx%s" % (args[0], args[1]), int(args[0]), int(args[1]), 0)
     else:
-        for name, w, h in DEFAULT_SIZES:
-            render(name, w, h)
+        for name, w, h, rot in DEFAULT_SIZES:
+            render(name, w, h, rot)
 
 
 if __name__ == "__main__":

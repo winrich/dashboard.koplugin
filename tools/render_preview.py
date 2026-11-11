@@ -13,18 +13,20 @@ ROOT = os.path.dirname(HERE)
 PLUGIN = "dashboard.koplugin"
 
 SIZES = [
-    ("竖屏 1072×1448", 1072, 1448, 340),
-    ("横屏 1448×1072", 1448, 1072, 560),
+    # (标签, 原生宽, 原生高, 预览显示宽, 起始旋转值)
+    # 真机原生方向是竖屏 1072x1448，横屏 = 把这个 framebuffer 转 90°（奇数档）
+    ("竖屏 1072×1448", 1072, 1448, 340, 0),
+    ("横屏 1448×1072", 1072, 1448, 560, 1),
 ]
 
 # 桩件里的颜色常量（0=白 255=黑 85=深灰）
 FILL = {0: "#ffffff", 255: "#111111", 85: "#8a8a8a"}
 
 
-def grab(w, h):
+def grab(w, h, rotation=0):
     lua = (
         "STUB_FRAME = true\n"
-        f"STUB_W = {w}\nSTUB_H = {h}\n"
+        f"STUB_W = {w}\nSTUB_H = {h}\nSTUB_START_ROTATION = {rotation}\n"
         f'arg = {{ [1] = [[{PLUGIN}]] }}\n'
         f'package.path = [[{PLUGIN}/?.lua;]] .. package.path\n'
         f'dofile([[{HERE}/stub_test.lua]])\n'
@@ -96,10 +98,11 @@ def svg_for(items, w, h, disp_w):
 
 def main():
     cards = []
-    for label, w, h, disp in SIZES:
-        items = grab(w, h)
+    for label, w, h, disp, rot in SIZES:
+        dw, dh = (h, w) if rot % 2 else (w, h)
+        items = grab(w, h, rot)
         cards.append(f'<figure><figcaption>{label}'
-                     f'<span>{w}×{h} px</span></figcaption>{svg_for(items, w, h, disp)}</figure>')
+                     f'<span>{dw}×{dh} px</span></figcaption>{svg_for(items, dw, dh, disp)}</figure>')
         print(f"[OK] {label}：{len(items)} 个绘制元素")
 
     html = """<!doctype html>
