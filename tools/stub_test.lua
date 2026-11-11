@@ -243,12 +243,21 @@ end
 
 function UIManager:show(widget)
     table.insert(stack, widget)
+    -- 真机的窗口栈是 { widget = ..., ... } 结构，插件里有按它兜底回收菜单的逻辑
+    UIManager._window_stack = UIManager._window_stack or {}
+    table.insert(UIManager._window_stack, { widget = widget })
     if widget.paintTo then widget:paintTo(fake_bb, 0, 0) end
 end
 
 function UIManager:close(widget)
     for i = #stack, 1, -1 do
         if stack[i] == widget then table.remove(stack, i) end
+    end
+    local ws = UIManager._window_stack
+    if ws then
+        for i = #ws, 1, -1 do
+            if ws[i].widget == widget then table.remove(ws, i) end
+        end
     end
     if widget.onCloseWidget then widget:onCloseWidget() end
 end
@@ -816,11 +825,10 @@ local layout_before_menu = instance.layout_landscape
 -- 选「与当前相反」的那一项，否则从横屏起步的组合里选了横屏，版式本来就不该变。
 local pick = layout_before_menu and 1 or 2
 local picked = orient_item.sub_item_table[pick]
--- 按 TouchMenu:onMenuSelect 的真实顺序模拟：先 callback，再按分支自动关闭
+-- 【真机对齐】只调 callback，**不模拟** TouchMenu 那条自动关闭分支：
+-- 设备上 onMenuSelect 的 `elseif not keep_menu_open then closeMenu()` 实测没关掉菜单，
+-- 所以菜单必须由 callback 自己撤。能这么测，说明代码不再依赖框架的关闭行为。
 picked.callback(MENU_SHOWN)
-if not (picked.checked or picked.checked_func) and not picked.keep_menu_open then
-    MENU_SHOWN:closeMenu()
-end
 if instance.menu_open then
     print("[FAIL] 菜单里选完方向后菜单没有自动关闭")
     os.exit(1)
@@ -845,7 +853,40 @@ if instance.layout_landscape == layout_before_menu then
     print("[FAIL] 菜单里选了横屏，版式却没变")
     os.exit(1)
 end
+-- 框架在 onMenuSelect 返回后可能还会自己走一次 closeMenu()（→ close_callback），
+-- 这一次必须幂等：不能把版式再切回去，也不能重新弹窗
+local layout_after = instance.layout_landscape
+MENU_SHOWN:closeMenu()
+if instance.layout_landscape ~= layout_after or instance.menu_open then
+    print("[FAIL] 菜单的关闭回调被重复触发后，版式/菜单状态被二次改动")
+    os.exit(1)
+end
 EVENTS[#EVENTS + 1] = "== 菜单里选方向：菜单自动关闭且版式立刻切换 =="
+
+-- 兜底：self.menu 引用丢失 + callback 不带参（真机两种异常都出现过）
+-- 这时只能按 _dashboard_menu 标记去窗口栈里把菜单揪出来撤掉，绝不能留下一个关不掉的菜单
+local menu5 = reopen_menu()
+instance.menu = nil
+local orient_item5
+for _, it in ipairs(menu5.tab or {}) do
+    if it.sub_item_table and it.sub_item_table[1]
+        and it.sub_item_table[1].text:find("竖屏", 1, true) then
+        orient_item5 = it
+    end
+end
+local layout_before_orphan = instance.layout_landscape
+orient_item5.sub_item_table[layout_before_orphan and 1 or 2].callback()
+for _, w in ipairs(stack) do
+    if w == menu5 then
+        print("[FAIL] self.menu 丢失时菜单没被兜底撤掉（屏幕上会留个关不掉的菜单）")
+        os.exit(1)
+    end
+end
+if instance.layout_landscape == layout_before_orphan then
+    print("[FAIL] self.menu 丢失时选方向没生效")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 兜底：self.menu 丢失 + 菜单不传参，仍能关菜单并转向 =="
 
 -- 菜单开着的时候休眠：屏幕停的是菜单，不能把菜单冻成屏保
 reopen_menu()

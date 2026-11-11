@@ -99,6 +99,11 @@ end)()
 local UPDATE_INTERVAL = 30 * 60      -- 天气拉取间隔
 local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 
+-- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
+-- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
+-- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
+local DASHBOARD_VERSION = "2.41"
+
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
 -- 唤醒后第一拍 tick 一定会去拉，正好撞上用户按电源键的那一刻，表现就是「按了没反应」。
@@ -423,7 +428,11 @@ function Dashboard:genMenuItemTable()
     local function orientEntry(text, mode)
         return {
             text = (cur_mode == mode) and (text .. _("（当前）")) or text,
-            callback = function() self:setOrientationFromMenu(mode) end,
+            -- TouchMenu 调 callback 时会把**菜单自己**作为第一个参数传进来
+            -- （源码注释：Provide callback with us, so it can call our closemenu()）。
+            -- 真机上「靠 onMenuSelect 自动关菜单」这条分支没生效，所以这里拿住菜单
+            -- 实例，自己去关，不再赌框架行为。
+            callback = function(menu) self:setOrientationFromMenu(mode, menu) end,
         }
     end
     items[#items + 1] = {
@@ -438,7 +447,8 @@ function Dashboard:genMenuItemTable()
     items[#items + 1] = { text = _("天气服务"), sub_item_table = self:genWeatherMenu() }
 
     items[#items + 1] = {
-        text = _("使用说明"),
+        -- 版本号放这儿：上机时打开菜单扫一眼就知道是不是刚改的那份代码
+        text = _("使用说明") .. "  v" .. DASHBOARD_VERSION,
         callback = function()
             UIManager:show(InfoMessage:new{
                 text = _("手势：点按刷新天气 · 上划退出看板\n"
@@ -451,7 +461,8 @@ function Dashboard:genMenuItemTable()
                     .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
                     .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
                     .. "空闲超时或按电源键休眠时，屏幕会停留在看板上（相当于屏保）。\n"
-                    .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。"),
+                    .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。\n\n"
+                    .. "看板版本 v" .. DASHBOARD_VERSION),
             })
         end,
     }
@@ -1236,16 +1247,24 @@ function Dashboard:openMenu()
             -- 最终都会汇到这里；统一在 onMenuClosed 里收尾（撤控件 + 执行挂起的动作）
             close_callback = function() self:onMenuClosed(menu) end,
         }
+        -- 打个标记：万一 self.menu 引用丢了，还能 closeOrphanMenu() 按它把窗口找回来
+        menu._dashboard_menu = true
+        -- 先存引用再 show：万一 show 期间因为重入把状态搅乱，也不会出现
+        -- 「菜单在屏幕上、self.menu 却是 nil」——那会让 closeMenu 直接放弃关闭。
+        self.menu = menu
         UIManager:show(menu)
     end)
     if not ok then
-        -- 版本差异导致菜单弹不出来时不能把看板一起拖下水
-        self.menu = nil
-        self.menu_open = false
+        -- 版本差异导致菜单弹不出来时不能把看板一起拖下水。
+        -- 但窗口可能已经加进栈了，引用必须留着，否则屏幕上会留个关不掉的菜单。
+        self.menu = menu
+        self.menu_open = (menu ~= nil)
         logger.warn("dashboard: TouchMenu 构造失败", tostring(err))
-        return self:menuFallback()
+        if not menu then
+            return self:menuFallback()
+        end
+        return
     end
-    self.menu = menu
 end
 
 --- 菜单真正关掉之后要做的事：撤控件 + 执行菜单里挂起的动作。
@@ -1253,11 +1272,16 @@ end
 function Dashboard:onMenuClosed(menu)
     if menu then
         if self.menu == menu then self.menu = nil end
-        -- 这里**不做 self.menu == menu 的判断**：菜单窗口可能因为别的路径已经从
-        -- self.menu 上摘掉了，但人还留在窗口栈里。判断失败就跳过 close，结果就是
-        -- 「菜单关不掉、版式不生效」。UIManager:close 对不在栈里的控件是空操作，
-        -- 重复调用无害，所以直接关。
-        pcall(function() UIManager:close(menu) end)
+        if self._closed_menu == menu then
+            -- 已经由 setOrientationFromMenu 主动关掉了，不再重复 close
+            self._closed_menu = nil
+        else
+            -- 这里**不做 self.menu == menu 的判断**：菜单窗口可能因为别的路径已经从
+            -- self.menu 上摘掉了，但人还留在窗口栈里。判断失败就跳过 close，结果就是
+            -- 「菜单关不掉、版式不生效」。UIManager:close 对不在栈里的控件是空操作，
+            -- 重复调用无害，所以直接关。
+            pcall(function() UIManager:close(menu) end)
+        end
     end
     self.menu_open = false
     local mode = self.pending_orientation
@@ -1296,28 +1320,67 @@ function Dashboard:closeMenu()
     return true
 end
 
+--- 兜底：把看板自己弹出的菜单从窗口栈里揪出来撤掉。
+--- 正常路径用不上（我们手里有菜单实例），但真机上出现过「菜单还在屏幕上、
+--- self.menu 却是 nil」的情况——那时任何基于 self.menu 的关闭手段都会空转，
+--- 只能按标记去窗口栈里找。菜单在 openMenu 里被打了 _dashboard_menu 标记，
+--- 所以不会误伤 KOReader 自己的菜单或别的窗口。
+function Dashboard:closeOrphanMenu()
+    local stack = UIManager._window_stack
+    if type(stack) ~= "table" then return false end
+    for i = #stack, 1, -1 do
+        local entry = stack[i]
+        local w = entry and entry.widget
+        if w and w._dashboard_menu then
+            pcall(function() UIManager:close(w) end)
+            logger.dbg("dashboard: 兜底撤掉了一个孤儿菜单")
+            return true
+        end
+    end
+    return false
+end
+
 --- 菜单里选了屏幕方向。
---- 版式三项是**普通叶子项**（没有 checked_func），所以 TouchMenu:onMenuSelect 在
---- 回调返回后会自己调 closeMenu() → close_callback → onMenuClosed()，菜单自动关闭，
---- 关闭那一刻立刻按新方向转屏重排。
---- 以前用 checked_func 走的是另一条分支（只 updateItems、不关菜单），加上再靠
---- nextTick 主动关，多一层异步就多一层不出错的可能，真机上就表现为「点了没反应」。
-function Dashboard:setOrientationFromMenu(mode)
-    -- 从 KOReader 主菜单里进来时没有 self.menu，走普通路径（含「看板没打开」的处理）
-    if not self.menu_open then
+---
+--- 真机上踩过两次，结论是**不能指望 TouchMenu 帮我们关菜单**：
+---   1) 带 checked_func 时，onMenuSelect 走 `updateItems()` 分支，根本不关菜单；
+---   2) 去掉 checked_func 后，理论上该走 `elseif not keep_menu_open then closeMenu()`
+---      自动关，实测仍然不关（那一条在设备上没生效）。
+--- 所以这里改成自己动手：TouchMenu 调 callback 时会把菜单实例作为参数传进来，
+--- 拿住它直接 UIManager:close()——同步执行、一定生效——然后再转屏重排。
+--- 菜单关闭与转屏之间不再有任何异步环节。
+function Dashboard:setOrientationFromMenu(mode, menu)
+    -- 从 KOReader 主菜单里进来时既没有看板菜单、也没有 menu 实参，走普通路径
+    -- （含「看板没打开」的处理）。判断条件是「两者都没有」而不是只看 menu_open：
+    -- 万一 menu_open 标记因为别的原因没置上、但菜单确实开着，照样要能关掉它。
+    if not self.menu_open and not menu then
         return self:setOrientation(mode)
     end
-    self.pending_orientation = mode
-    self.relayout_pending = true
+    self.orientation_mode = mode
     G_reader_settings:saveSetting("dashboard_orientation", mode)
     if G_reader_settings.flush then G_reader_settings:flush() end
-    -- 正常情况下到这里就结束了：TouchMenu 会自己关菜单。这里只留一条兜底，
-    -- 万一某个版本没自动关（或 callback 里设了 keep_menu_open），下一拍补一刀，
-    -- 别让菜单一直挡着看板。nextTick 万一没跑到也不影响主路径。
-    UIManager:nextTick(function()
-        if self.menu_open then self:closeMenu() end
-    end)
-    return false
+
+    -- 撤菜单。menu 来自 callback 的实参；万一某个版本不传，退回 self.menu；
+    -- 连 self.menu 都没有时，按标记去窗口栈里找（见 closeOrphanMenu）。
+    local m = menu or self.menu
+    if m then
+        -- 记一笔：onMenuSelect 返回后 TouchMenu 可能还会自己 closeMenu() 一次，
+        -- onMenuClosed 看到这个标记就跳过重复 close（对已出栈的控件再 close 会重复
+        -- 触发 CloseWidget 事件，没必要）。
+        self._closed_menu = m
+        pcall(function() UIManager:close(m) end)
+    else
+        self:closeOrphanMenu()
+    end
+    self.menu = nil
+    self.menu_open = false
+    self.pending_orientation = nil
+    self.relayout_pending = false
+    logger.dbg("dashboard: 菜单里选方向", mode, "，菜单已撤，开始转屏")
+
+    -- 立刻按新方向重排：转屏 + 重建控件树 + setDirty(nil,"full") 整屏重绘
+    self:setOrientation(mode)
+    return true
 end
 
 --- 菜单弹不出来时的兜底提示，告诉用户从哪还能进设置

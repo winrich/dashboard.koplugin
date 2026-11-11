@@ -98,12 +98,19 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 > 触摸区重叠时框架按注册顺序逐个问，handler 返回 `false` 就继续问下一个，所以顶部下滑区
 > 可以和全屏的上划区共存。
 
-> 菜单「版式」三项为什么**没有勾选框**：`TouchMenu:onMenuSelect` 对菜单项是这么分支的——
+> 菜单「版式」三项为什么不带勾选框、也**不靠 TouchMenu 自动关菜单**：
+> `TouchMenu:onMenuSelect` 对菜单项是这么分支的——
 > `if item.checked or item.checked_func then self:updateItems() ... elseif not item.keep_menu_open
-> then self:closeMenu() end`。也就是说「带勾选」和「点完自动关菜单」在 TouchMenu 里**互斥**：
-> 带 `checked_func` 的项点完只会刷新、菜单一直开着。所以版式三项做成普通叶子项，
-> 点一下 → 回调记下方向 → TouchMenu 原生 `closeMenu()` → `close_callback` 里立刻转屏重排。
+> then self:closeMenu() end`，也就是「带勾选」和「点完自动关菜单」在 TouchMenu 里**互斥**。
+> 但真机上把 `checked_func` 去掉之后，第二条分支仍然没把菜单关掉，所以不能依赖它。
+> 现在的做法是：回调接收 TouchMenu 传进来的菜单实例（源码注释就写明可以用它调 `closemenu()`），
+> 直接 `UIManager:close()` 同步撤窗口，然后立刻转屏重排——不经过 `closeMenu` / `close_callback`。
+> 另外还有一层兜底：菜单弹出时打 `_dashboard_menu` 标记，万一 `self.menu` 引用丢了，
+> `closeOrphanMenu()` 会按标记去窗口栈里把它揪出来关掉。
 > 当前方向改用文字标注（`竖屏（当前）`），不靠勾选框。
+
+> **确认装的是哪一版**：菜单里「使用说明」那一项后面带着版本号（如 `使用说明  v2.41`）。
+> 覆盖插件文件后必须**完全退出并重启 KOReader**，运行中的 Lua 模块不会因文件替换而重新加载。
 
 ## 休眠屏保（休眠时屏幕停在看板上）
 
