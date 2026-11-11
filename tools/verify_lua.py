@@ -18,7 +18,9 @@ import lunar_check as ref
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN = os.path.join(ROOT, "dashboard.koplugin")
 
-LUA_FILES = ["main.lua", "_meta.lua", "dashboard_lunar.lua", "dashboard_cities.lua"]
+LUA_FILES = ["main.lua", "_meta.lua", "dashboard_lunar.lua", "dashboard_cities.lua",
+             "dashboard_qweather.lua", "dashboard_openmeteo.lua",
+             "dashboard_config.lua", "dashboard_config.local.lua"]
 
 
 def syntax_check(lua):

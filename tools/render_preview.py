@@ -46,12 +46,15 @@ def grab(w, h):
 
 
 RUNNER = """
-import sys, codecs
+import sys
+sys.path.insert(0, r"%s")
 from lupa import LuaRuntime
+from run_stub import install_bridges
 script = sys.argv[1]
 lua = LuaRuntime(unpack_returned_tuples=True)
+install_bridges(lua)
 lua.execute(script)
-"""
+""" % HERE
 
 
 def esc(t):

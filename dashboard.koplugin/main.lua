@@ -8,12 +8,15 @@
 显示内容：时钟、公历日期与星期、农历（干支、生肖）、当前节气与距下一节气天数、
 当日天气（图标/温度/现象/体感）、湿度、风向风力、空气质量 AQI、日出日落。
 
-数据源：Open-Meteo 天气 + 空气质量（均免注册、免 API Key）。
-空气质量按 HJ 633-2012 分档由 PM2.5/PM10 浓度换算，属估算值，非官方发布值。
+数据源：和风天气开发服务（QWeather），需要在 dashboard_config.lua 或
+dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host 与 API Key。
+空气质量优先用服务端返回的国标 AQI（cn-mee），境外城市缺该项时按 HJ 633-2012
+由 PM2.5/PM10 浓度换算。和风不可用时自动降级到 Open-Meteo（免凭据），
+界面底部会标明当前数据来自哪一路。
 
-交互：
+交互（走 registerTouchZones 注册触摸区，框架没有 onTap/onHold 这种回调）：
   · 点按屏幕      -> 立即刷新天气
-  · 长按屏幕      -> 退出看板
+  · 上划屏幕      -> 退出看板
 
 设计要点（均已按 KOReader 源码核对，非猜测）：
   · Widget:paintTo 基类是空实现，自绘控件必须自己实现 paintTo，getSize 返回 self.dimen
@@ -25,7 +28,6 @@
 
 local Blitbuffer = require("ffi/blitbuffer")
 local CenterContainer = require("ui/widget/container/centercontainer")
-local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Device = require("device")
 local Font = require("ui/font")
@@ -34,6 +36,7 @@ local HorizontalGroup = require("ui/widget/horizontalgroup")
 local ImageWidget = require("ui/widget/imagewidget")
 local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
+local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
 local NetworkMgr = require("ui/network/manager")
 local TextWidget = require("ui/widget/textwidget")
@@ -43,17 +46,13 @@ local Widget = require("ui/widget/widget")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 
-local JSON = require("json")
-local http = require("socket.http")
-local ltn12 = require("ltn12")
-
 local _ = require("gettext")
 local Lunar = require("dashboard_lunar")
 local CityData = require("dashboard_cities")
+local QWeather = require("dashboard_qweather")
+local OpenMeteo = require("dashboard_openmeteo")
 
 local Screen = Device.screen
-
-http.TIMEOUT = 20
 
 local COLOR_BLACK = Blitbuffer.COLOR_BLACK
 local COLOR_WHITE = Blitbuffer.COLOR_WHITE
@@ -75,47 +74,22 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 local BASE_SHORT = 600
 
 -- 真机字体度量与设计预估总有偏差，装不下时逐级缩小重排，避免底部被截断
-local FIT_MAX_STEPS = 8
+-- 真机字体度量与设计预估相差较大（实测内容高度可达预估的 1.7 倍），步数必须留够，
+-- 否则循环走完仍放不下、画面被裁切到屏幕边缘。0.96^20 ≈ 0.44，足够收敛。
+local FIT_MAX_STEPS = 20
 local FIT_STEP = 0.96
-local FIT_SAFE_RATIO = 0.985
 
--- WMO 天气代码 -> { 中文描述, 图标名 }
-local WEATHER_CODES = {
-    [0]  = { "晴",          "clear" },
-    [1]  = { "晴间多云",     "mainly_clear" },
-    [2]  = { "多云",        "partly" },
-    [3]  = { "阴",          "overcast" },
-    [45] = { "雾",          "fog" },
-    [48] = { "雾凇",        "fog" },
-    [51] = { "毛毛雨",       "drizzle" },
-    [53] = { "毛毛雨",       "drizzle" },
-    [55] = { "浓毛毛雨",     "drizzle" },
-    [56] = { "冻毛毛雨",     "freezing_rain" },
-    [57] = { "冻毛毛雨",     "freezing_rain" },
-    [61] = { "小雨",        "rain" },
-    [63] = { "中雨",        "rain" },
-    [65] = { "大雨",        "rain" },
-    [66] = { "冻雨",        "freezing_rain" },
-    [67] = { "强冻雨",       "freezing_rain" },
-    [71] = { "小雪",        "snow" },
-    [73] = { "中雪",        "snow" },
-    [75] = { "大雪",        "snow" },
-    [77] = { "米雪",        "snow" },
-    [80] = { "阵雨",        "shower" },
-    [81] = { "强阵雨",       "shower" },
-    [82] = { "暴阵雨",       "shower" },
-    [85] = { "阵雪",        "snow_shower" },
-    [86] = { "强阵雪",       "snow_shower" },
-    [95] = { "雷阵雨",       "thunder" },
-    [96] = { "雷阵雨伴冰雹",  "thunder" },
-    [99] = { "雷阵雨伴冰雹",  "thunder" },
-}
+-- 四边留白：15 个设计单位（600px 短边机型上正好 15px，PW3 上约 27px）。
+-- 分隔线以前是通屏宽、内容又是居中放置，视觉上就贴着屏幕边缘；现在整块版心
+-- 按 (屏幕 - 2*边距) 排版，长横线跟着缩进，四边都有稳定白边。
+local EDGE_UNITS = 15
+local EDGE_MIN_PX = 15
 
--- 蒲福风级（km/h 下限），索引即风级
-local WIND_LEVEL_BOUNDS = { 1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118 }
+-- 风向（8 方位）。和风返回角度，这里换算成中文方位；风级直接用接口给的 scale
 local WIND_DIRS = { "北", "东北", "东", "东南", "南", "西南", "西", "西北" }
 
--- 空气质量：HJ 633-2012 浓度限值 { 浓度下限, 浓度上限, IAQI 下限, IAQI 上限 }
+-- 空气质量回退用：HJ 633-2012 浓度限值 { 浓度下限, 浓度上限, IAQI 下限, IAQI 上限 }
+-- 服务端返回国标 AQI（cn-mee）时优先用服务端值，只有境外城市缺该项才走这张表
 local PM25_BREAKPOINTS = {
     { 0, 35, 0, 50 }, { 35, 75, 50, 100 }, { 75, 115, 100, 150 },
     { 115, 150, 150, 200 }, { 150, 250, 200, 300 }, { 250, 350, 300, 400 },
@@ -184,6 +158,36 @@ function ProgressBar:paintTo(bb, x, y)
     end
 end
 
+-- 电量图标：壳体 + 正极触点 + 电量填充，充电时整体反白（墨水屏上最省笔画的区分方式）
+local BatteryGauge = Widget:extend{}
+function BatteryGauge:getSize()
+    return self.dimen
+end
+function BatteryGauge:paintTo(bb, x, y)
+    local w, h = self.dimen.w, self.dimen.h
+    if w < 6 or h < 4 then return end
+    local bw = math.max(1, self.border or 2)
+    local nub_w = math.max(2, math.floor(w * 0.14))
+    local body_w = w - nub_w - 2
+    local fg = self.charging and COLOR_WHITE or COLOR_BLACK
+
+    if self.charging then
+        bb:paintRect(x, y, w, h, COLOR_BLACK)
+    end
+    -- 壳体与正极触点
+    bb:paintBorder(x, y, body_w, h, bw, fg, nil, false)
+    bb:paintRect(x + body_w + 2, y + math.floor(h * 0.3), nub_w,
+        math.max(2, math.floor(h * 0.4)), fg)
+    -- 电量填充
+    local inner_w = body_w - bw * 2
+    local inner_h = h - bw * 2
+    local ratio = math.max(0, math.min(1, self.ratio or 0))
+    local filled = math.floor(inner_w * ratio + 0.5)
+    if filled > 0 and inner_w > 0 and inner_h > 0 then
+        bb:paintRect(x + bw, y + bw, filled, inner_h, fg)
+    end
+end
+
 -- ------------------------------------------------------------------ 布局小工具
 local function mkPad(w, h)
     return Widget:new{
@@ -208,22 +212,40 @@ local Dashboard = WidgetContainer:extend{
 }
 
 -- 前置声明（实现在文件末尾的数据换算区，避免污染全局命名空间）
-local windLabel
+local windDirName
 
 -- ------------------------------------------------------------------ 生命周期
 function Dashboard:init()
     self.cache = LuaSettings:open(DataStorage:getSettingsDir() .. "/dashboard_cache.lua")
     local cached = self.cache:readSetting("weather")
-    if type(cached) == "table" then
+    -- source 标记用于识别旧版 Open-Meteo 缓存（WMO 代码），避免用错代码表；
+    -- 新版降级路径同样用和风编号，所以两种来源的缓存都能直接用
+    if type(cached) == "table" and (cached.source == "qweather" or cached.source == "open-meteo") then
         self.weather = cached
     end
     local air = self.cache:readSetting("air")
     if type(air) == "table" then
         self.air = air
     end
+    -- 凭据每次启动重新读取，改完配置重启 KOReader 即生效
+    self.config = QWeather.loadConfig(self.path or PLUGIN_DIR, G_reader_settings)
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
     end
+end
+
+--- 配置（惰性读取，插件目录确定后再加载更稳）
+function Dashboard:getConfig()
+    if not self.config then
+        self.config = QWeather.loadConfig(self.path or PLUGIN_DIR, G_reader_settings)
+    end
+    return self.config
+end
+
+--- 配置改动后重新加载
+function Dashboard:reloadConfig()
+    self.config = QWeather.loadConfig(self.path or PLUGIN_DIR, G_reader_settings)
+    return self.config
 end
 
 -- 应用退出时兜底恢复系统状态，避免屏幕保护被一直抑制
@@ -246,6 +268,8 @@ function Dashboard:genMenuItemTable()
     local items = {
         {
             text = _("打开看板"),
+            -- 已经打开时这个入口没有意义，看板内弹出的菜单会把它过滤掉
+            hide_in_dashboard = true,
             callback = function() self:open() end,
         },
         {
@@ -291,19 +315,153 @@ function Dashboard:genMenuItemTable()
     end
     items[#items + 1] = { text = _("选择时区"), sub_item_table = tz_items }
 
+    items[#items + 1] = { text = _("天气服务"), sub_item_table = self:genWeatherMenu() }
+
     items[#items + 1] = {
         text = _("使用说明"),
         callback = function()
             UIManager:show(InfoMessage:new{
-                text = _("点按屏幕刷新天气，长按屏幕退出看板。\n\n"
+                text = _("手势：点按刷新天气 · 上划退出看板\n"
+                    .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 天气服务）\n"
+                    .. "左右滑动 → 重新布局\n\n"
                     .. "看板按屏幕方向自动切换版式：竖屏为仪表盘，横屏带整月日历。\n"
-                    .. "旋转设备后若版式没跟着变，可从菜单执行「重新布局」。\n\n"
-                    .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。\n"
-                    .. "空气质量由 PM2.5/PM10 浓度按国标分档估算，仅供参考。"),
+                    .. "设备转过向之后若版式没跟着变，左右滑动一次即可重排。\n\n"
+                    .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
+                    .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
+                    .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。"),
             })
         end,
     }
     return items
+end
+
+-- ------------------------------------------------------------------ 天气服务菜单
+local SOURCE_NAMES = {
+    file = _("插件内 dashboard_config.lua"),
+    local_ = _("插件内 dashboard_config.local.lua"),
+    settings = _("设备内录入"),
+    none = _("未配置"),
+}
+
+--- 「天气服务」子菜单：查看 / 录入凭据、测试连接
+function Dashboard:genWeatherMenu()
+    local function source_name(key)
+        if key == "local" then return SOURCE_NAMES.local_ end
+        return SOURCE_NAMES[key] or SOURCE_NAMES.none
+    end
+
+    local function open_input(title, description, hint, getter, setter)
+        local dialog
+        dialog = InputDialog:new{
+            title = title,
+            input = getter() or "",
+            input_hint = hint,
+            description = description,
+            buttons = {
+                {
+                    {
+                        text = _("取消"),
+                        id = "cancel",
+                        callback = function() UIManager:close(dialog) end,
+                    },
+                    {
+                        text = _("保存"),
+                        callback = function()
+                            local value = dialog:getInputText() or ""
+                            value = value:gsub("^%s+", ""):gsub("%s+$", "")
+                            UIManager:close(dialog)
+                            setter(value)
+                        end,
+                    },
+                },
+            },
+        }
+        UIManager:show(dialog)
+        if dialog.onShowKeyboard then dialog:onShowKeyboard() end
+    end
+
+    return {
+        {
+            text = _("查看当前凭据"),
+            keep_menu_open = false,
+            callback = function()
+                local cfg = self:getConfig()
+                local qw = cfg.qweather or {}
+                local lines = {
+                    string.format("%s：%s", _("API Host"),
+                        (qw.api_host and qw.api_host ~= "") and qw.api_host or _("未填写")),
+                    string.format("%s：%s", _("API Key"), QWeather.mask(qw.api_key)),
+                    string.format("%s：%s", _("来源"), source_name(cfg._key_source)),
+                }
+                if qw.credential_id and qw.credential_id ~= "" then
+                    lines[#lines + 1] = string.format("%s：%s", _("凭据 ID"), qw.credential_id)
+                end
+                if qw.project and qw.project ~= "" then
+                    lines[#lines + 1] = string.format("%s：%s", _("项目"), qw.project)
+                end
+                UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+            end,
+        },
+        {
+            text = _("填写 API Host"),
+            keep_menu_open = false,
+            callback = function()
+                open_input(_("和风天气 API Host"),
+                    _("控制台「设置」页里的专属地址，形如 abcxyz.qweatherapi.com，不要带 https://"),
+                    "abcxyz.qweatherapi.com",
+                    function() return self:getConfig().qweather.api_host end,
+                    function(value)
+                        G_reader_settings:saveSetting("dashboard_qw_host", value)
+                        G_reader_settings:flush()
+                        self:reloadConfig()
+                        self:onConfigChanged()
+                    end)
+            end,
+        },
+        {
+            text = _("填写 API Key"),
+            keep_menu_open = false,
+            callback = function()
+                open_input(_("和风天气 API Key"),
+                    _("控制台「项目管理 - 凭据」里创建，需与上面的 API Host 属于同一项目"),
+                    "",
+                    function() return self:getConfig().qweather.api_key end,
+                    function(value)
+                        G_reader_settings:saveSetting("dashboard_qw_key", value)
+                        G_reader_settings:flush()
+                        self:reloadConfig()
+                        self:onConfigChanged()
+                    end)
+            end,
+        },
+        {
+            text = _("测试连接"),
+            keep_menu_open = false,
+            callback = function()
+                self:reloadConfig()
+                UIManager:show(InfoMessage:new{
+                    text = _("正在连接和风天气…"),
+                    timeout = 1,
+                })
+                self:fetchWeather(true)
+            end,
+        },
+        {
+            text = _("清除设备内录入"),
+            keep_menu_open = false,
+            callback = function()
+                G_reader_settings:saveSetting("dashboard_qw_host", "")
+                G_reader_settings:saveSetting("dashboard_qw_key", "")
+                G_reader_settings:flush()
+                self:reloadConfig()
+                self:onConfigChanged()
+                UIManager:show(InfoMessage:new{
+                    text = _("已清除。凭据改由插件目录下的配置文件提供。"),
+                    timeout = 2,
+                })
+            end,
+        },
+    }
 end
 
 -- ------------------------------------------------------------------ 配置读写
@@ -366,6 +524,9 @@ end
 function Dashboard:close()
     if not self.shown then return end
     self.shown = false
+    -- 万一是菜单开着的时候被关掉，别让标记卡住导致以后再也不重排
+    self.menu_open = false
+    self.relayout_pending = false
     if self._tick_fn then
         UIManager:unschedule(self._tick_fn)
     end
@@ -417,14 +578,49 @@ function Dashboard:tick()
         UIManager:setDirty(self.root, "full")
     end
 
-    -- 定时拉取天气：已有数据时 30 分钟一次；还没有数据时 5 分钟重试
+    -- 定时拉取天气：已有数据时按配置间隔（默认 30 分钟）；还没有数据时 5 分钟重试
     local last = self.weather and self.weather.ts or 0
-    local interval = self.weather and UPDATE_INTERVAL or 5 * 60
+    local interval = tonumber(self:getConfig().update_interval) or UPDATE_INTERVAL
+    if not self.weather then
+        interval = 5 * 60
+    end
     if os.time() - last >= interval then
         self:fetchWeather()
     end
 
     self:scheduleTick()
+end
+
+-- ------------------------------------------------------------------ 设备状态
+--- 电量百分比与充电状态。
+--- Device:getPowerDevice() 在个别设备上可能不存在，读不到就返回 nil，
+--- 界面直接不画电量，不影响其他内容（Kindle 上取的是 powerd 的 battLevel）。
+function Dashboard:batteryInfo()
+    if not Device.getPowerDevice then return nil end
+    local ok, powerd = pcall(function() return Device:getPowerDevice() end)
+    if not ok or not powerd or not powerd.getCapacity then return nil end
+
+    local okc, cap = pcall(function() return powerd:getCapacity() end)
+    cap = okc and tonumber(cap) or nil
+    if not cap or cap < 0 then return nil end
+
+    local charging = false
+    if powerd.isCharging then
+        local okh, chg = pcall(function() return powerd:isCharging() end)
+        charging = (okh and chg) and true or false
+    end
+    return math.max(0, math.min(100, math.floor(cap + 0.5))), charging
+end
+
+--- 当前天气数据来自哪一路（降级时如实标注）
+function Dashboard:sourceLabel()
+    local src = self.weather and self.weather.source
+    if src == "open-meteo" then
+        return _("天气 Open-Meteo（降级）")
+    elseif src == "qweather" then
+        return _("天气数据 和风天气")
+    end
+    return nil
 end
 
 -- ------------------------------------------------------------------ 数据整理
@@ -449,13 +645,10 @@ function Dashboard:weatherDisplay()
     }
     if not w then return d end
 
-    local meta = WEATHER_CODES[tonumber(w.code) or -1]
-    if meta then
-        d.cond = _(meta[1])
-        d.icon = meta[2]
-    elseif w.code then
-        d.cond = _("未知天气")
-    end
+    local meta = QWeather.condition(w.code)
+    d.icon = meta[2]
+    -- 服务端给的中文现象更准（如“晴间多云”），缓存里没有时才用本地表
+    d.cond = w.cond or _(meta[1])
 
     if w.temp then
         d.temp = string.format("%d°", math.floor(w.temp + 0.5))
@@ -471,10 +664,10 @@ function Dashboard:weatherDisplay()
         d.hum = string.format("%d%%", math.floor(w.hum + 0.5))
     end
     -- 风向与风级分开返回：三格布局里数值只放“2 级”，风向作为小注，
-    -- 否则“东南风 2 级”会超过单格宽度，跨过分隔线串到相邻格
-    local wdir, wlevel = windLabel(w.wind, w.winddir)
-    d.wind_dir = wdir
-    d.wind = wlevel and string.format("%d 级", wlevel) or nil
+    -- 否则“东南风 2 级”会超过单格宽度，跨过分隔线串到相邻格。
+    -- 风级直接用和风返回的蒲福风级，不再由风速换算。
+    d.wind_dir = windDirName(w.winddir)
+    d.wind = w.wind and string.format("%d 级", w.wind) or nil
     d.sunrise = w.sunrise
     d.sunset = w.sunset
     return d
@@ -483,17 +676,25 @@ end
 --- 空气质量展示文本与等级
 function Dashboard:airDisplay()
     local a = self.air
-    if not a or not a.aqi then
+    if not a then
         return { text = "--", level = _("暂无数据") }
     end
-    local aqi = math.floor(a.aqi + 0.5)
-    local level
-    if aqi <= 50 then level = _("优")
-    elseif aqi <= 100 then level = _("良")
-    elseif aqi <= 150 then level = _("轻度污染")
-    elseif aqi <= 200 then level = _("中度污染")
-    elseif aqi <= 300 then level = _("重度污染")
-    else level = _("严重污染") end
+    -- 国标 AQI 优先；境外城市没有 cn-mee 时按 PM2.5/PM10 回退估算
+    local aqi = a.aqi or self:calcAQI(a.pm25, a.pm10)
+    if not aqi then
+        return { text = "--", level = _("暂无数据") }
+    end
+    aqi = math.floor(aqi + 0.5)
+    local level = a.level
+    if not level then
+        -- 境外城市没有国标 AQI 时，才按 HJ 633-2012 分档
+        if aqi <= 50 then level = _("优")
+        elseif aqi <= 100 then level = _("良")
+        elseif aqi <= 150 then level = _("轻度污染")
+        elseif aqi <= 200 then level = _("中度污染")
+        elseif aqi <= 300 then level = _("重度污染")
+        else level = _("严重污染") end
+    end
     return { text = tostring(aqi), level = level }
 end
 
@@ -520,6 +721,11 @@ end
 -- ------------------------------------------------------------------ 界面构建
 function Dashboard:refreshLayout()
     if not self.shown then return end
+    -- 菜单在屏幕上时重建会把它盖掉，先记下来等菜单关掉再重排
+    if self.menu_open then
+        self.relayout_pending = true
+        return
+    end
     local old = self.root
     self.root = self:createRoot()
     UIManager:show(self.root)
@@ -529,12 +735,152 @@ function Dashboard:refreshLayout()
     UIManager:setDirty(self.root, "full")
 end
 
+--- 左右滑动触发：重建版面并给一句反馈，否则画面没变化会以为手势没生效
+function Dashboard:relayoutFromGesture()
+    if not self.shown then return end
+    self:refreshLayout()
+    local landscape = Screen:getWidth() >= Screen:getHeight()
+    UIManager:show(InfoMessage:new{
+        text = string.format(_("已重新布局（%s）"), landscape and _("横屏") or _("竖屏")),
+        timeout = 2,
+    })
+end
+
+--- 屏幕上缘下滑：打开看板自己的菜单。看板是全屏控件，KOReader 主菜单只在
+--- 阅读界面上缘下拉才出现，滚动到看板里就没有入口了，所以这里复用同一套菜单项
+--- 自己弹一个 TouchMenu。
+--- 注意 TouchMenu 的真实构造参数：没有 title，菜单项放在 tab_item_table[1] 的
+--- 数组部分（该表的 icon/callback 字段是顶部标签栏用的）。
+function Dashboard:openMenu()
+    if not self.shown then return end
+    local loaded, TouchMenu = pcall(require, "ui/widget/touchmenu")
+    if not loaded or type(TouchMenu) ~= "table" then
+        logger.warn("dashboard: TouchMenu 不可用", tostring(TouchMenu))
+        return self:menuFallback()
+    end
+
+    local tab = {
+        icon = "appbar.settings",
+        callback = function() end,
+    }
+    local idx = 0
+    for _, item in ipairs(self:genMenuItemTable()) do
+        if not item.hide_in_dashboard then
+            idx = idx + 1
+            tab[idx] = item
+        end
+    end
+
+    local menu
+    self.menu_open = true
+    local ok, err = pcall(function()
+        menu = TouchMenu:new{
+            width = math.floor(Screen:getWidth() * 0.94),
+            tab_item_table = { tab },
+            close_callback = function()
+                if menu then UIManager:close(menu) end
+                self.menu_open = false
+                if self.relayout_pending then
+                    self.relayout_pending = false
+                    self:refreshLayout()
+                end
+            end,
+        }
+        UIManager:show(menu)
+    end)
+    if not ok then
+        -- 版本差异导致菜单弹不出来时不能把看板一起拖下水
+        self.menu_open = false
+        logger.warn("dashboard: TouchMenu 构造失败", tostring(err))
+        return self:menuFallback()
+    end
+end
+
+--- 菜单弹不出来时的兜底提示，告诉用户从哪还能进设置
+function Dashboard:menuFallback()
+    UIManager:show(InfoMessage:new{
+        text = _("这个 KOReader 版本无法在看板内弹出菜单。\n"
+            .. "请先上划退出看板，再从阅读界面上缘下拉 → 工具 → 桌面看板。\n\n"
+            .. "看板内可直接用的手势：点按刷新、上划退出、左右滑动重新布局。"),
+        timeout = 5,
+    })
+end
+
+--- 日志用截断（按 UTF-8 字符边界切，最多 12 字）
+local function clipText(s)
+    s = tostring(s or "")
+    local n, i = 0, 1
+    while i <= #s and n < 12 do
+        local b = s:byte(i)
+        i = i + ((b >= 0xF0 and 4) or (b >= 0xE0 and 3) or (b >= 0xC0 and 2) or 1)
+        n = n + 1
+    end
+    return i > #s and s or (s:sub(1, i - 1) .. "…")
+end
+
+--- 诊断：把真机字体度量与版面分块尺寸写进日志。
+--- 真机排版与桩件估算差得远时，只能靠这份日志定位是哪一块超限，不能靠猜。
+function Dashboard:logLayoutDiag(tag, body, avail_w, avail_h)
+    local function sz(w)
+        local ok, r = pcall(function() return w:getSize() end)
+        if ok and r then return math.floor(r.w or 0), math.floor(r.h or 0) end
+        return -1, -1
+    end
+
+    -- ① 字体真实度量：每个字号 100 时，一个汉字/一个字母的宽高各是多少
+    local okp, probe = pcall(function()
+        local face = Font:getFace("cfont", 100)
+        local tw = TextWidget:new{ text = "中", face = face, padding = 0 }
+        local aw = TextWidget:new{ text = "A", face = face, padding = 0 }
+        local th, ah = tw:getSize(), aw:getSize()
+        return string.format(
+            "字体@100 请求字号=%s 实际=%s 汉字 %dx%d 字母 %dx%d（em 宽 汉字%.2f 字母%.2f，行高%.2f）",
+            tostring(face.size), tostring(face.orig_font or face.font or "?"),
+            th.w, th.h, ah.w, ah.h, th.w / 100, ah.w / 100, th.h / 100)
+    end)
+    logger.warn(string.format("dashboard[diag/%s] %s", tag,
+        okp and probe or ("字体探测失败: " .. tostring(probe))))
+
+    -- ② 顶层每一行
+    for i = 1, #body do
+        local row = body[i]
+        local w, h = sz(row)
+        local hint = row.text and (" «" .. clipText(row.text) .. "»") or ""
+        logger.warn(string.format("dashboard[diag/%s] 行%-2d %5dx%-5d%s", tag, i, w, h, hint))
+    end
+
+    -- ③ 最宽的若干叶子文本：直接指出是谁把宽度撑破的
+    local leaves = {}
+    local function walk(node, path, depth)
+        if type(node) ~= "table" or depth > 5 then return end
+        if type(node.text) == "string" then
+            local w, h = sz(node)
+            leaves[#leaves + 1] = { w = w, h = h, path = path, text = node.text }
+        end
+        for i = 1, #node do walk(node[i], path .. "." .. i, depth + 1) end
+    end
+    walk(body, "", 0)
+    table.sort(leaves, function(a, b) return a.w > b.w end)
+    for i = 1, math.min(6, #leaves) do
+        local o = leaves[i]
+        logger.warn(string.format("dashboard[diag/%s] 文本%s %dx%d «%s»",
+            tag, o.path, o.w, o.h, clipText(o.text)))
+    end
+    local bw, bh = sz(body)
+    logger.warn(string.format("dashboard[diag/%s] 版心 %dx%d，内容实测 %dx%d", tag, avail_w, avail_h, bw, bh))
+end
+
 --- 文本控件工厂：字号与颜色统一在这里处理
+---
+--- 字号一律传「设计单位」，**不要乘 ctx.S**。Font:getFace 内部会调
+--- Screen:scaleBySize()（frontend/ui/font.lua:276），而它的实现正好是
+--- ceil(px * min(屏宽,屏高) / 600)，与 ctx.S 是同一条公式。之前两边各乘一次，
+--- 文字被放大到 1.79 倍两遍，真机实测内容 1500x1902 撑破 1020x1396 的版心。
 function Dashboard:makeText(ctx, str, px, opts)
     opts = opts or {}
     return TextWidget:new{
         text = str or "",
-        face = Font:getFace(opts.face or "cfont", math.max(11, math.floor(px * ctx.S))),
+        face = Font:getFace(opts.face or "cfont", math.max(11, math.floor(px))),
         bold = opts.bold or false,
         fgcolor = opts.gray and COLOR_GRAY or COLOR_BLACK,
         padding = 0,
@@ -559,21 +905,44 @@ function Dashboard:createRoot()
     }
     ctx.cur_term, ctx.next_term = Lunar.current_term(now.year, now.month, now.day, tz.offset)
 
-    -- 先按物理基准排一次；若高度超出屏幕（真机字体度量比预估高，或横屏纵向空间
-    -- 本就比竖屏紧），按 FIT_STEP 逐级缩小重排，最多 FIT_MAX_STEPS 次。
+    -- 先按物理基准排一次；若高度超出可用区（真机字体度量比预估高，或横屏纵向
+    -- 空间本就比竖屏紧），按 FIT_STEP 逐级缩小重排，最多 FIT_MAX_STEPS 次。
     -- 布局构建是纯计算，重排无副作用；稳定后 self.scale 记录实际倍率。
     local S = math.min(W, H) / BASE_SHORT
+    local edge = math.max(EDGE_MIN_PX, math.floor(EDGE_UNITS * S))
+    local avail_w, avail_h = W - edge * 2, H - edge * 2
+    -- 版心宽度：所有行都按它排，长横线随之内缩，四边自然留出 edge
+    ctx.edge = edge
+    ctx.body_w = avail_w
+
     local body
-    for _ = 1, FIT_MAX_STEPS do
+    local steps_used = 0
+    for step = 1, FIT_MAX_STEPS do
         ctx.S = S
         body = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
         local bs = body:getSize()
-        if bs.h <= H * FIT_SAFE_RATIO and bs.w <= W then break end
+        if bs.h <= avail_h and bs.w <= avail_w then
+            steps_used = step
+            break
+        end
+        -- 只在第一次超限时打完整诊断，避免日志被刷屏
+        if step == 1 then
+            pcall(self.logLayoutDiag, self,
+                string.format("%s S=%.3f", landscape and "横屏" or "竖屏", S), body, avail_w, avail_h)
+        end
         logger.warn(string.format(
-            "dashboard: 内容 %dx%d 超出可用区 %dx%d，缩放至 %.3f 重排", bs.w, bs.h, W, H, S * FIT_STEP))
+            "dashboard: 内容 %dx%d 超出可用区 %dx%d（四边留白 %d），缩放至 %.3f 重排",
+            bs.w, bs.h, avail_w, avail_h, edge, S * FIT_STEP))
         S = S * FIT_STEP
+        steps_used = step
     end
     self.scale = S
+    -- 只有真的缩过才写日志，正常情况下不刷屏
+    if steps_used > 1 then
+        local bs = body:getSize()
+        logger.warn(string.format("dashboard: 内容放不下，缩放至 S=%.3f 收敛，内容 %dx%d / 可用 %dx%d",
+            S, bs.w, bs.h, avail_w, avail_h))
+    end
 
     local root = InputContainer:new{
         dimen = Geom:new{ w = W, h = H },
@@ -596,8 +965,64 @@ function Dashboard:createRoot()
         body,
     }
 
-    root.onTap = function() self:fetchWeather(true) end
-    root.onHold = function() self:askExit() end
+    -- KOReader 框架没有 onTap/onHold 这类回调（那只是普通字段，永远不会被调用，
+    -- 之前长按退不出就是这个原因）。手势必须用 registerTouchZones 注册成触摸区，
+    -- 框架才会把 Gesture 事件派发到 InputContainer:onGesture。
+    -- 多个触摸区重叠时框架按注册顺序依次问，handler 返回 false 就继续问下一个，
+    -- 所以「顶部下滑」区可以安全地和全屏的上划区共存。
+    root:registerTouchZones({
+        {
+            id = "dashboard_tap",
+            ges = "tap",
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+            handler = function()
+                self:fetchWeather(true)
+                return true
+            end,
+        },
+        {
+            id = "dashboard_swipe_up",
+            ges = "swipe",
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+            handler = function(ges)
+                -- 只有上划（north = 手指向上）才退出，其他方向让给后面的区
+                if ges and ges.direction == "north" then
+                    -- 在事件分发过程中直接销毁控件容易踩到重入，推迟一拍再关
+                    UIManager:nextTick(function() self:close() end)
+                    return true
+                end
+                return false
+            end,
+        },
+        {
+            id = "dashboard_swipe_down",
+            ges = "swipe",
+            -- 只看屏幕上缘 1/6 高度：从顶部往下拉打开看板自己的菜单
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 / 6 },
+            handler = function(ges)
+                if ges and ges.direction == "south" then
+                    UIManager:nextTick(function() self:openMenu() end)
+                    return true
+                end
+                return false
+            end,
+        },
+        {
+            id = "dashboard_swipe_side",
+            ges = "swipe",
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+            handler = function(ges)
+                local dir = ges and ges.direction
+                if dir == "east" or dir == "west" then
+                    -- 左右滑动 = 重新布局：设备转过向（或改了 KOReader 方向设置）之后
+                    -- 用这个手势让看板按新尺寸重排，不必再进菜单
+                    UIManager:nextTick(function() self:relayoutFromGesture() end)
+                    return true
+                end
+                return false
+            end,
+        },
+    })
     -- 只有「当前正在显示的根控件」被外部关掉时才做清理；
     -- refreshLayout 替换旧根时 self.root 已指向新根，这里会直接跳过，
     -- 否则重绘会把刚建好的界面一起关掉（画面变空）。
@@ -612,15 +1037,41 @@ function Dashboard:createRoot()
     return root
 end
 
---- 顶部条：城市 · 时区（左） + 更新时间（右），两端撑满
+--- 顶部条：城市 · 时区（左） + 更新时间与电量（右），两端撑满
 function Dashboard:buildHeader(ctx, pad_lr)
-    local W = ctx.W
+    local W, S = ctx.body_w or ctx.W, ctx.S
     local avail = W - pad_lr * 2
-    local left = self:makeText(ctx, string.format("%s · %s", self:getCityName(), ctx.tz.iana), 26,
-        { max_width = math.floor(avail * 0.58) })
-    local right = self:makeText(ctx, self:updateLabel(ctx), 20,
-        { gray = true, max_width = math.floor(avail * 0.38) })
-    local fill = math.max(0, avail - left:getSize().w - right:getSize().w)
+
+    -- 右侧：更新时间 + 电量图标 + 百分比
+    local right_items = {
+        align = "center",
+        self:makeText(ctx, self:updateLabel(ctx), 19, { gray = true }),
+    }
+    local cap, charging = self:batteryInfo()
+    if cap then
+        right_items[#right_items + 1] = mkPad(math.floor(14 * S), 1)
+        right_items[#right_items + 1] = BatteryGauge:new{
+            dimen = Geom:new{
+                w = math.floor(34 * S),
+                h = math.max(10, math.floor(17 * S)),
+            },
+            border = math.max(1, math.floor(2 * S)),
+            ratio = cap / 100,
+            charging = charging,
+        }
+        right_items[#right_items + 1] = mkPad(math.floor(6 * S), 1)
+        right_items[#right_items + 1] = self:makeText(ctx, string.format("%d%%", cap), 19,
+            { gray = true })
+    end
+    local right = HorizontalGroup:new(right_items)
+
+    -- 左侧城市条按右侧实际占用反推可用宽度，避免两端挤在一起
+    local min_fill = math.floor(16 * S)
+    local left_w = math.floor(avail - right:getSize().w - min_fill)
+    left_w = math.max(math.floor(avail * 0.35), left_w)
+    local left = self:makeText(ctx, string.format("%s · %s", self:getCityName(), ctx.tz.iana),
+        26, { max_width = left_w })
+    local fill = math.max(min_fill, avail - left:getSize().w - right:getSize().w)
     return HorizontalGroup:new{
         align = "center",
         mkPad(pad_lr, 1), left, mkPad(fill, 1), right, mkPad(pad_lr, 1),
@@ -628,25 +1079,35 @@ function Dashboard:buildHeader(ctx, pad_lr)
 end
 
 --- 天气块：图标与温度左右并列，压缩纵向占用
-function Dashboard:buildWeatherBlock(ctx, icon_px, temp_px)
+--- 天气块：图标 + 温度/现象/体感。
+--- max_w 是这一块能占的最大像素宽度：天气现象文字长度在不同天气下差三四倍
+--- （「晴」对「雷阵雨伴冰雹」），不设上限会让整行宽度随措辞浮动，长名字直接把
+--- 版心撑破、触发自动缩放。给了上限就只会折行，版式稳定。
+function Dashboard:buildWeatherBlock(ctx, icon_px, temp_px, max_w)
+    local S = ctx.S
     local d = self:weatherDisplay()
+    local icon_w = math.floor(icon_px * S)
+    local gap = math.floor(8 * S)
     local icon = ImageWidget:new{
         file = self:iconPath(d.icon),
-        width = math.floor(icon_px * ctx.S),
-        height = math.floor(icon_px * ctx.S),
+        width = icon_w,
+        height = icon_w,
         scale_factor = 0,
         alpha = true,
     }
+    -- 文字区可用的宽度；留一个下限，避免极端情况下被压成一条竖线
+    local side_max = max_w and math.max(math.floor(60 * S), max_w - icon_w - gap) or nil
     local side = VerticalGroup:new{
         align = "left",
-        self:makeText(ctx, d.temp, temp_px),
-        self:makeText(ctx, d.cond, 28),
-        d.feels and self:makeText(ctx, d.feels, 20, { gray = true }) or mkPad(1, 1),
+        self:makeText(ctx, d.temp, temp_px, { max_width = side_max }),
+        self:makeText(ctx, d.cond, 28, { max_width = side_max }),
+        d.feels and self:makeText(ctx, d.feels, 20, { gray = true, max_width = side_max })
+            or mkPad(1, 1),
     }
     return HorizontalGroup:new{
         align = "center",
         icon,
-        mkPad(math.floor(8 * ctx.S), 1),
+        mkPad(gap, 1),
         side,
     }
 end
@@ -671,8 +1132,8 @@ end
 
 -- ---------------------------------------------------------------- 竖屏：仪表盘
 function Dashboard:buildPortrait(ctx)
-    local W, S = ctx.W, ctx.S
-    local pad_lr = math.floor(32 * S)
+    local W, S = ctx.body_w or ctx.W, ctx.S
+    local pad_lr = math.floor(28 * S)
     local content_w = W - pad_lr * 2
     local rows = {}
     local function push(widget) rows[#rows + 1] = widget end
@@ -694,8 +1155,10 @@ function Dashboard:buildPortrait(ctx)
         mkPad(1, math.floor(6 * S)),
         date_line,
     }
-    local weather_block = self:buildWeatherBlock(ctx, 84, 56)
-    local clock_fill = math.max(math.floor(14 * S),
+    local min_gap = math.floor(14 * S)
+    local weather_block = self:buildWeatherBlock(ctx, 76, 50,
+        content_w - clock_block:getSize().w - min_gap)
+    local clock_fill = math.max(min_gap,
         content_w - clock_block:getSize().w - weather_block:getSize().w)
     push(HorizontalGroup:new{
         align = "center",
@@ -797,39 +1260,36 @@ function Dashboard:buildPortrait(ctx)
     })
 
     push(mkPad(W, math.floor(14 * S)))
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        self:makeText(ctx, self.footerText(ctx), 18, { gray = true }),
-    })
+    push(self:buildHintRow(ctx, content_w, pad_lr, 17))
 
     return VerticalGroup:new{ align = "left", unpack(rows) }
 end
 
 -- ---------------------------------------------------------------- 横屏：上下分区
 function Dashboard:buildLandscape(ctx)
-    local W, S = ctx.W, ctx.S
+    local W, S = ctx.body_w or ctx.W, ctx.S
     local pad_lr = math.floor(34 * S)
     local rows = {}
     local function push(widget) rows[#rows + 1] = widget end
 
     push(self:buildHeader(ctx, pad_lr))
-    push(mkPad(W, math.floor(4 * S)))
+    push(mkPad(W, math.floor(3 * S)))
     push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(4 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(8 * S)))
+    push(mkPad(W, math.floor(4 * S)))
 
     -- 时钟与日期（左） / 天气（右），中间空白撑开
     self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text, 92)
+    self.clock_widget = self:makeText(ctx, self.clock_text, 82)
     local date_line = self:makeText(ctx, string.format("%d年%d月%d日 星期%s",
         ctx.now.year, ctx.now.month, ctx.now.day, Lunar.WEEKDAY_NAMES[ctx.now.wday] or ""), 28)
     local clock_block = VerticalGroup:new{
         align = "left",
         self.clock_widget,
-        mkPad(1, math.floor(4 * S)),
+        mkPad(1, math.floor(3 * S)),
         date_line,
     }
-    local weather = self:buildWeatherBlock(ctx, 78, 60)
+    local weather = self:buildWeatherBlock(ctx, 78, 60,
+        W - pad_lr * 2 - clock_block:getSize().w)
     local fill = math.max(0, W - pad_lr * 2 - clock_block:getSize().w - weather:getSize().w)
     push(HorizontalGroup:new{
         align = "center",
@@ -840,9 +1300,9 @@ function Dashboard:buildLandscape(ctx)
         mkPad(pad_lr, 1),
     })
 
-    push(mkPad(W, math.floor(8 * S)))
+    push(mkPad(W, math.floor(4 * S)))
     push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(3 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(8 * S)))
+    push(mkPad(W, math.floor(4 * S)))
 
     -- 下半区：左整月日历 / 右农历节气。
     -- 宽度必须由可用空间反推：固定 52*S 的列宽在 300ppi 的 1448px 屏上，
@@ -872,6 +1332,10 @@ function Dashboard:buildLandscape(ctx)
         mkPad(pad_lr, 1),
     })
 
+    -- 底部操作提示：横屏宽，固定一行，正好抵掉从右栏挪走的来源声明
+    push(mkPad(W, math.floor(6 * S)))
+    push(self:buildHintRow(ctx, avail, pad_lr, 20))
+
     return VerticalGroup:new{ align = "left", unpack(rows) }
 end
 
@@ -880,7 +1344,7 @@ function Dashboard:buildCalendar(ctx, cell_w)
     local now = ctx.now
     -- 单元格内容为「日号 + 圆点」，约 36 设计单位高，设定值低于此不起作用
     local row_h = math.floor(36 * ctx.S)
-    local head_h = math.floor(26 * ctx.S)
+    local head_h = math.floor(24 * ctx.S)
 
     local first = Lunar.days_from_civil(now.year, now.month, 1)
     local ny = (now.month == 12) and (now.year + 1) or now.year
@@ -927,14 +1391,14 @@ function Dashboard:buildCalendar(ctx, cell_w)
                 local y2, m2, d2 = Lunar.civil_from_days(daynum)
                 row[#row + 1] = mkBox(cell_w, row_h, VerticalGroup:new{
                     align = "center",
-                    self:makeText(ctx, tostring(d2), 21, { gray = true }),
+                    self:makeText(ctx, tostring(d2), 19, { gray = true }),
                     mkPad(1, 1),
                 }, { auto_h = true })
             else
                 local y2, m2, d2 = Lunar.civil_from_days(daynum)
                 local is_today = (daynum == today_num)
                 local term = terms[d2]
-                local num_text = self:makeText(ctx, tostring(d2), is_today and 23 or 21,
+                local num_text = self:makeText(ctx, tostring(d2), is_today and 21 or 19,
                     { fg = nil })
                 if is_today then
                     num_text.fgcolor = COLOR_WHITE
@@ -942,7 +1406,7 @@ function Dashboard:buildCalendar(ctx, cell_w)
                 local stack = VerticalGroup:new{
                     align = "center",
                     num_text,
-                    mkPad(1, math.floor(2 * ctx.S)),
+                    mkPad(1, math.floor(1 * ctx.S)),
                     term
                         and Solid:new{ dimen = Geom:new{ w = math.floor(6 * ctx.S), h = math.floor(6 * ctx.S) }, color = COLOR_BLACK }
                         or mkPad(math.floor(6 * ctx.S), math.floor(6 * ctx.S)),
@@ -1020,32 +1484,57 @@ function Dashboard:buildSidePanel(ctx, width)
     return VerticalGroup:new(items)
 end
 
-function Dashboard:footerText(ctx)
-    return _("点按刷新 · 长按退出")
+--- 底部操作提示：固定一行。文案变长或真机字体更宽时自动降字号，绝不换行
+--- （换行会把版心撑高，横屏本来余量就小，一换行就触发整体缩放）
+--- 底部单行操作提示。
+--- 关键：量宽度必须用「不带 max_width」的探针。带了 max_width 的 TextWidget
+--- 会折行，getSize().w 永远等于上限值，降字号的循环第一次就误判为“放得下”，
+--- 结果真机上折成两行（实测 920x84 而不是 920x42）。
+function Dashboard:buildHintRow(ctx, max_w, pad_lr, base_px)
+    local text = self:hintLine()
+    local px, natural = base_px, 0
+    for _ = 1, 8 do
+        natural = self:makeText(ctx, text, px):getSize().w
+        if natural <= max_w then break end
+        px = math.max(11, math.floor(px * 0.92))
+    end
+    local widget = self:makeText(ctx, text, px, { gray = true, max_width = max_w })
+    self.hint_used = { px = px, w = natural, max_w = max_w }
+    local w = widget:getSize().w
+    return HorizontalGroup:new{
+        align = "center",
+        mkPad(pad_lr, 1),
+        widget,
+        mkPad(math.max(0, max_w - w), 1),
+        mkPad(pad_lr, 1),
+    }
 end
 
-function Dashboard:askExit()
-    UIManager:show(ConfirmBox:new{
-        text = _("退出桌面看板？"),
-        ok_text = _("退出"),
-        cancel_text = _("继续显示"),
-        ok_callback = function() self:close() end,
-    })
+--- 页脚用的短来源标注：底部只有一行，长的会把字号压小
+function Dashboard:sourceShort()
+    local src = self.weather and self.weather.source
+    if src == "open-meteo" then return _("Open-Meteo 降级") end
+    if src == "qweather" then return _("和风天气") end
+    return nil
+end
+
+--- 单行操作提示文案（竖屏横屏共用，只有一个版本）
+function Dashboard:hintLine()
+    local line = _("点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动重排")
+    if self:getConfig().show_attribution then
+        local src = self:sourceShort()
+        if src then line = line .. " · " .. src end
+    end
+    return line
 end
 
 -- ------------------------------------------------------------------ 数据换算
---- 风速与风向 -> 风向名（如“东南风”）、风级（数字）
-function windLabel(speed_kmh, deg)
-    local speed = tonumber(speed_kmh)
-    if not speed then return nil, nil end
-    local level = 0
-    for i = 1, #WIND_LEVEL_BOUNDS do
-        if speed >= WIND_LEVEL_BOUNDS[i] then level = i end
-    end
+--- 风向角度 -> 中文方位（如“东南风”）。风级由接口直接给，这里不再换算
+function windDirName(deg)
     local d = tonumber(deg)
-    if not d then return nil, level end
+    if not d then return nil end
     local idx = math.floor(((d % 360) + 22.5) % 360 / 45) + 1
-    return (WIND_DIRS[idx] or "") .. "风", level
+    return (WIND_DIRS[idx] or "") .. "风"
 end
 
 --- 单项 IAQI（线性插值，HJ 633-2012）
@@ -1070,33 +1559,7 @@ function Dashboard:calcAQI(pm25, pm10)
     return a or b
 end
 
--- ------------------------------------------------------------------ 网络请求
-function Dashboard:httpGet(url)
-    local modules = {}
-    if url:match("^https") then
-        local ok, ssl_https = pcall(require, "ssl.https")
-        if ok and ssl_https then
-            modules[#modules + 1] = ssl_https
-        end
-    end
-    modules[#modules + 1] = http
-
-    for _, mod in ipairs(modules) do
-        local sink = {}
-        local req_ok, code = mod.request{
-            url = url,
-            method = "GET",
-            headers = { ["User-Agent"] = "KOReader-Dashboard/2.0" },
-            sink = ltn12.sink.table(sink),
-        }
-        if req_ok == 1 and code == 200 then
-            return table.concat(sink)
-        end
-        logger.warn("dashboard: request failed, http code:", tostring(code))
-    end
-    return nil
-end
-
+-- ------------------------------------------------------------------ 天气拉取
 function Dashboard:fetchWeather(manual)
     if self.fetching then return end
     self.fetching = true
@@ -1117,87 +1580,55 @@ function Dashboard:fetchWeather(manual)
         end
     end
 
+    local cfg = self:getConfig()
     local city, tz = self:getCity(), self:getTz()
-    local url = string.format(
-        "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-        .. "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code"
-        .. ",wind_speed_10m,wind_direction_10m"
-        .. "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset"
-        .. "&timezone=%s&forecast_days=1",
-        city.lat, city.lon, tz.iana)
-
-    local air_url = string.format(
-        "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=%.4f&longitude=%.4f"
-        .. "&current=pm2_5,pm10&timezone=%s",
-        city.lat, city.lon, tz.iana)
 
     NetworkMgr:runWhenOnline(function()
-        local ok = false
+        -- 请求三个接口是同步的，用 pcall 兜住意外错误，否则 fetching 标志会卡死，
+        -- 之后再也不会重试
+        local called, weather, air, err = pcall(QWeather.fetch, {
+            city = city,
+            tz = tz,
+            config = cfg,
+        })
+        if not called then
+            logger.warn("dashboard: 和风拉取异常", tostring(weather))
+            weather, air, err = nil, nil, tostring(weather)
+        end
 
-        local body = self:httpGet(url)
-        if body then
-            local parsed_ok, data = pcall(JSON.decode, body)
-            if parsed_ok and type(data) == "table" and type(data.current) == "table" then
-                local cur = data.current
-                local daily = type(data.daily) == "table" and data.daily or {}
-                local function first(tbl)
-                    return type(tbl) == "table" and tbl[1] or nil
-                end
-                local sunrise, sunset
-                if type(first(daily.sunrise)) == "string" then
-                    sunrise = first(daily.sunrise):sub(12, 16)
-                end
-                if type(first(daily.sunset)) == "string" then
-                    sunset = first(daily.sunset):sub(12, 16)
-                end
-                self.weather = {
-                    city = city.name,
-                    temp = tonumber(cur.temperature_2m),
-                    code = tonumber(cur.weather_code),
-                    hum = tonumber(cur.relative_humidity_2m),
-                    feels = tonumber(cur.apparent_temperature),
-                    wind = tonumber(cur.wind_speed_10m),
-                    winddir = tonumber(cur.wind_direction_10m),
-                    tmax = tonumber(first(daily.temperature_2m_max)),
-                    tmin = tonumber(first(daily.temperature_2m_min)),
-                    sunrise = sunrise,
-                    sunset = sunset,
-                    ts = os.time(),
-                }
-                self.cache:saveSetting("weather", self.weather)
-                ok = true
+        -- 主源拿不到数据就降级到 Open-Meteo：免凭据，只求界面不空着。
+        -- 降级成功时页脚会标注来源，不会让人误以为仍是和风的数据。
+        if not weather and cfg.fallback_openmeteo ~= false then
+            logger.warn("dashboard: 和风不可用，降级到 Open-Meteo：", tostring(err))
+            local ok2, w2, a2, e2 = pcall(OpenMeteo.fetch, { city = city, tz = tz })
+            if not ok2 then
+                logger.warn("dashboard: Open-Meteo 降级异常", tostring(w2))
+                err = (err and (err .. "；") or "") .. tostring(w2)
+            elseif w2 then
+                weather, air = w2, a2 or air
+                err = nil
             else
-                logger.warn("dashboard: json decode failed")
+                err = (err and (err .. "；") or "") .. tostring(e2 or _("降级同样失败"))
             end
         end
 
-        -- 空气质量独立请求，失败不影响天气显示
-        local air_body = self:httpGet(air_url)
-        if air_body then
-            local parsed_ok, adata = pcall(JSON.decode, air_body)
-            if parsed_ok and type(adata) == "table" and type(adata.current) == "table" then
-                local pm25 = tonumber(adata.current.pm2_5)
-                local pm10 = tonumber(adata.current.pm10)
-                self.air = {
-                    pm25 = pm25,
-                    pm10 = pm10,
-                    aqi = self:calcAQI(pm25, pm10),
-                    ts = os.time(),
-                }
-                self.cache:saveSetting("air", self.air)
-                ok = true
-            end
+        if weather then
+            self.weather = weather
+            self.cache:saveSetting("weather", self.weather)
         end
-
+        if air then
+            self.air = air
+            self.cache:saveSetting("air", self.air)
+        end
         self.cache:flush()
 
-        if manual and not ok then
+        self.fetching = false
+        if manual and not weather and not air then
             UIManager:show(InfoMessage:new{
-                text = _("天气更新失败。请确认设备已联网，再点按屏幕重试。"),
-                timeout = 4,
+                text = string.format(_("天气更新失败：%s"), err or _("未知原因")),
+                timeout = 5,
             })
         end
-        self.fetching = false
         if self.shown then
             self:refreshLayout()
         end

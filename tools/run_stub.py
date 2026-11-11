@@ -8,6 +8,8 @@
 用法（在项目根目录）：
     python tools/run_stub.py
 """
+import gzip
+import json
 import os
 import sys
 
@@ -21,7 +23,12 @@ SYNTAX_FILES = [
     f"{PLUGIN_DIR}/main.lua",
     f"{PLUGIN_DIR}/dashboard_lunar.lua",
     f"{PLUGIN_DIR}/dashboard_cities.lua",
+    f"{PLUGIN_DIR}/dashboard_qweather.lua",
+    f"{PLUGIN_DIR}/dashboard_openmeteo.lua",
+    f"{PLUGIN_DIR}/dashboard_config.lua",
+    f"{PLUGIN_DIR}/dashboard_config.local.lua",
 ]
+
 
 DIRECTIONS = [
     ("竖屏 PW3", 1072, 1448),
@@ -29,6 +36,56 @@ DIRECTIONS = [
     ("竖屏 老机型", 600, 800),
     ("横屏 老机型", 800, 600),
 ]
+
+
+def to_lua(lua, obj):
+    """Python 对象 -> 真正的 Lua table（main.lua 里大量用 type(x)=="table" 判断，
+    直接把 Python dict 暴露给 Lua 会让这些判断全部失效）。"""
+    if isinstance(obj, dict):
+        t = lua.table()
+        for k, v in obj.items():
+            t[k] = to_lua(lua, v)
+        return t
+    if isinstance(obj, list):
+        t = lua.table()
+        for i, v in enumerate(obj, 1):
+            t[i] = to_lua(lua, v)
+        return t
+    return obj
+
+
+def install_bridges(lua):
+    """给桩件接上真实的 JSON 解析与 gzip 编解码。
+
+    lupa 在 Lua 与 Python 之间传递 Lua 字符串时会按 UTF-8 解码，二进制 gzip
+    字节必然失败，所以二进制一律走 hex 字符串过渡（纯 ASCII，不会被转码破坏）。
+
+    lupa 里没有 ffi，dashboard_qweather 的 libz 解压走不通，测试时把
+    QWeather.gunzip 换成 Python zlib 实现，用来验证「gzip 字节 -> 解压 -> JSON
+    解析 -> 展示字段」这条完整链路，而不是绕过它。
+    """
+    def json_loads(s):
+        if isinstance(s, bytes):
+            s = s.decode("utf-8", "replace")
+        return to_lua(lua, json.loads(s))
+
+    def gzip_compress_hex(s):
+        if isinstance(s, str):
+            s = s.encode("utf-8")
+        return gzip.compress(s, 6, mtime=0).hex()
+
+    def gzip_decompress_hex(h):
+        if isinstance(h, bytes):
+            h = h.decode("ascii")
+        try:
+            return gzip.decompress(bytes.fromhex(h)).decode("utf-8")
+        except Exception as exc:  # noqa: BLE001 - 需要把失败原因带到 Lua 侧
+            print(f"[stub] gunzip 失败: {exc!r}")
+            return None
+
+    lua.globals().PY_JSON_LOADS = json_loads
+    lua.globals().PY_GZIP_HEX = gzip_compress_hex
+    lua.globals().PY_GUNZIP_HEX = gzip_decompress_hex
 
 
 def check_syntax():
@@ -55,6 +112,8 @@ def run_direction(label, w, h):
     print(f"\n{'=' * 62}\n== {label} {w}x{h}\n{'=' * 62}")
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(f"STUB_W = {w}; STUB_H = {h}")
+    lua.execute(f"STUB_VERBOSE = {str(os.environ.get('STUB_VERBOSE') == '1').lower()}")
+    install_bridges(lua)
     lua.execute(f'arg = {{ [1] = [[{PLUGIN_DIR}]] }}')
     with open(os.path.join(HERE, "stub_test.lua"), encoding="utf-8") as fh:
         src = fh.read()

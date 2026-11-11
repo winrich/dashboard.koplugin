@@ -65,6 +65,14 @@ end
 function WidgetContainer:free() end
 
 local InputContainer = WidgetContainer:extend{}
+-- 真实实现会把触摸区编译进 DepGraph 并按依赖排序；桩件只需按下标保存，
+-- 测试据此确认「点按刷新 / 上划退出」两个区真的注册上了
+function InputContainer:registerTouchZones(zones)
+    self._zones = self._zones or {}
+    for _, z in ipairs(zones) do
+        self._zones[#self._zones + 1] = z
+    end
+end
 
 local CenterContainer = WidgetContainer:extend{}
 function CenterContainer:getSize()
@@ -148,10 +156,22 @@ end
 local TextWidget = Widget:extend{}
 function TextWidget:getSize()
     -- 真实 TextWidget 的高度是 getHeightAndAscender() 取整后加 padding，这里同样取整，
-    -- 否则 VerticalGroup 累加出的 y 坐标会带小数，与真机行为不符
+    -- 否则 VerticalGroup 累加出的 y 坐标会带小数，与真机行为不符。
+    -- max_width 必须实现：真机超宽会折成多行（宽度收到 max_width、高度按行数增），
+    -- 桩件若不折行，就测不出“长文本靠折行兜住版心”这条防线。
+    local size = self.face.size
+    local nat = text_width(tostring(self.text or ""), size)
+    local mw = self.max_width
+    local w, lines = nat, 1
+    if mw and mw > 0 and nat > mw then
+        w = mw
+        lines = math.ceil(nat / mw)
+    end
     return {
-        w = math.floor(text_width(tostring(self.text or ""), self.face.size)),
-        h = math.floor(self.face.size * 1.35),
+        w = math.floor(w),
+        -- 1.363 是真机实测值：getFace("cfont",100) 返回 size=179 时
+        -- TextWidget 高 244（179 * 1.363）。桩件原先按 1.35 估算，系统性偏小 1%。
+        h = math.floor(size * 1.363) * lines,
     }
 end
 function TextWidget:paintTo(bb, x, y)
@@ -181,9 +201,13 @@ function Geom:new(o)
     return o
 end
 
+-- 真机 Font:getFace 内部会调 Screen:scaleBySize()（frontend/ui/font.lua:276），
+-- 其实现是 ceil(px * min(屏宽,屏高) / 600)。桩件必须照做，否则会低估字号 1.79 倍。
+-- 实测对照：真机上 getFace("cfont", 100) 返回 face.size = 179（PW3 1072x1448）。
 local Font = {}
 function Font:getFace(name, size)
-    return { name = name, size = size }
+    local scale = math.min(_G.STUB_W or 600, _G.STUB_H or 800) / 600
+    return { name = name, size = math.ceil((size or 0) * scale) }
 end
 
 ---------------------------------------------------------------- 桩件模块
@@ -247,32 +271,43 @@ end
 function UIManager:preventStandby() standby = standby + 1 end
 function UIManager:allowStandby() standby = standby - 1 end
 function UIManager:askForRestart() end
+-- 上划退出的关闭动作被推迟到 nextTick，桩件里直接同步执行
+function UIManager:nextTick(fn) fn() end
 
-local weather_store = {
-    current = {
-        temperature_2m = 12.4,
-        relative_humidity_2m = 45,
-        apparent_temperature = 10.1,
-        weather_code = 3,
-        wind_speed_10m = 8.2,
-        wind_direction_10m = 135,
-    },
-    daily = {
-        temperature_2m_max = { 16.2 },
-        temperature_2m_min = { 4.8 },
-        sunrise = { "2026-11-11T06:52" },
-        sunset = { "2026-11-11T16:58" },
-    },
+-- 真实和风天气响应样本（2026-11-11 北京实测抓取的字段结构，数值保持原样）。
+-- 三个接口各一份，用来验证「gzip -> 解压 -> JSON 解析 -> 展示字段」整条链路。
+local QW_SAMPLES = {
+    -- /weather/v1/current/
+    ['current'] = '{"condition":{"text":"晴","code":"100"},'
+        .. '"temperature":{"value":13.19,"unit":"\194\176C"},'
+        .. '"feelsLike":{"value":10.16,"unit":"\194\176C"},'
+        .. '"humidity":0.44,'
+        .. '"wind":{"direction":{"degree":185,"compass":"s"},'
+        .. '"speed":{"value":3.38,"unit":"m/s"},"scale":2}}',
+    -- /weather/v1/daily/（localTime=true，时间带 +08:00）
+    ['daily'] = '{"days":[{"astro":{"sunrise":"2026-11-11T06:54+08:00",'
+        .. '"sunset":"2026-11-11T17:02+08:00"},'
+        .. '"temperatureMax":{"value":14.1,"unit":"\194\176C"},'
+        .. '"temperatureMin":{"value":0.56,"unit":"\194\176C"}}]}',
+    -- /airquality/v1/current/（国标 AQI 65，PM2.5 42 / PM10 70）
+    ['air'] = '{"indexes":[{"code":"cn-mee","name":"AQI (CN)","aqi":65,'
+        .. '"category":"\232\137\175"}],'
+        .. '"pollutants":[{"code":"pm2p5","concentration":{"value":42.0}},'
+        .. '{"code":"pm10","concentration":{"value":70.0}}]}',
 }
 
-local air_store = {
-    current = { pm2_5 = 28.4, pm10 = 46.0 },
-}
+-- Lua <-> Python 之间只传 ASCII 的 hex，避免二进制被 UTF-8 转码破坏
+local function bytes_to_hex(s)
+    return (s:gsub(".", function(c) return string.format("%02x", string.byte(c)) end))
+end
+local function hex_to_bytes(h)
+    return (h:gsub("%x%x", function(cc) return string.char(tonumber(cc, 16)) end))
+end
 
 local JSON = {}
 function JSON.decode(s)
-    if type(s) == "string" and s:find('"air"', 1, true) then return air_store end
-    return weather_store
+    if PY_JSON_LOADS then return PY_JSON_LOADS(s) end
+    return {}
 end
 
 local ltn12 = {}
@@ -284,13 +319,36 @@ function ltn12.sink.table(t)
     end
 end
 
+-- Open-Meteo 降级样本（2026-11-11 北京实测抓取，明文不压缩——正好也验证明文直通分支）
+local OM_SAMPLES = {
+    forecast = '{"current":{"temperature_2m":10.0,"relative_humidity_2m":74,'
+        .. '"apparent_temperature":8.2,"weather_code":0,"wind_speed_10m":4.5,'
+        .. '"wind_direction_10m":185},'
+        .. '"daily":{"temperature_2m_max":[11.2],"temperature_2m_min":[1.2],'
+        .. '"sunrise":["2026-11-10T22:54"],"sunset":["2026-11-11T09:01"]}}',
+    air = '{"current":{"pm10":111.5,"pm2_5":108.7}}',
+}
+
+-- 服务端强制 gzip，桩件也照做：返回真实压缩字节，而不是明文 JSON
 local http = {}
 function http.request(req)
-    -- 空气质量走独立域名，返回不同的标记体，让 JSON 桩分流
-    local body = '{"weather":true}'
-    if req.url and req.url:find("air%-quality") then
-        body = '{"air":true}'
+    local url = req.url or ""
+    local body, plain
+    if url:find("air%-quality%-api%.") then
+        body, plain = OM_SAMPLES.air, true
+    elseif url:find("api%.open%-meteo%.") then
+        body, plain = OM_SAMPLES.forecast, true
+    elseif url:find("/weather/v1/current/") then
+        -- _G.STUB_QW_FAIL 用来模拟和风整体不可用，验证降级路径
+        body = _G.STUB_QW_FAIL and '{"error":{"title":"Service Unavailable"}}' or QW_SAMPLES.current
+    elseif url:find("/weather/v1/daily/") then
+        body = _G.STUB_QW_FAIL and '{}' or QW_SAMPLES.daily
+    elseif url:find("/airquality/v1/current/") then
+        body = _G.STUB_QW_FAIL and '{}' or QW_SAMPLES.air
+    else
+        body = '{"error":{"title":"Not Found"}}'
     end
+    if not plain and PY_GZIP_HEX then body = hex_to_bytes(PY_GZIP_HEX(body)) end
     if req.sink then req.sink(body) end
     return 1, 200, {}, "HTTP/1.1 200 OK"
 end
@@ -304,6 +362,7 @@ function G_settings:readSetting(k, d) return store[k] or d end
 function G_settings:saveSetting(k, v) store[k] = v end
 function G_settings:isTrue(k) return store[k] == true end
 function G_settings:nilOrTrue(k) return store[k] ~= false end
+function G_settings:flush() return self end
 
 local LuaSettings = {}
 LuaSettings.__index = LuaSettings
@@ -330,13 +389,68 @@ local Device = {}
 Device.screen = screen
 function Device:isKindle() return true end
 
+-- 电量桩：真机上对应 powerd 的 battLevel / isCharging
+local powerd = { capacity = 78, charging = false }
+function powerd:getCapacity() return self.capacity end
+function powerd:isCharging() return self.charging end
+function Device:getPowerDevice() return powerd end
+_G.STUB_POWERD = powerd
+
+-- GestureRange / DepGraph 桩：registerTouchZones 内部要用，桩件里不需要真正的几何匹配
+local GestureRange = {}
+function GestureRange:new(o)
+    o = o or {}
+    setmetatable(o, self)
+    self.__index = self
+    return o
+end
+function GestureRange:match() return true end
+
+local DepGraph = {}
+function DepGraph:new(o)
+    o = o or {}
+    setmetatable(o, self)
+    self.__index = self
+    o.nodes = {}
+    return o
+end
+function DepGraph:addNode(id) self.nodes[#self.nodes + 1] = id end
+function DepGraph:addNodeDep() end
+function DepGraph:removeNode(id)
+    for i, v in ipairs(self.nodes) do
+        if v == id then table.remove(self.nodes, i) break end
+    end
+end
+function DepGraph:serialize() return self.nodes end
+
+-- STUB_VERBOSE=1 时把插件自己的日志打出来（排查自动缩放用）
 local logger = {}
 for _, lvl in ipairs({ "dbg", "info", "warn", "err" }) do
-    logger[lvl] = function(...) end
+    logger[lvl] = function(...)
+        if _G.STUB_VERBOSE then print("[log:" .. lvl .. "]", ...) end
+    end
 end
 
 local ConfirmBox = Widget:extend{}
 local InfoMessage = Widget:extend{}
+
+-- TouchMenu 桩：记录构造参数，供断言检查「顶部下滑是否弹出菜单」
+-- 真实 TouchMenu 没有 title，菜单项在 tab_item_table[1] 的数组部分
+local MENU_SHOWN = nil
+local TouchMenu = Widget:extend{}
+function TouchMenu:new(args)
+    local o = setmetatable({}, TouchMenu)
+    o.tab = args.tab_item_table and args.tab_item_table[1]
+    o.item_count = o.tab and #o.tab or 0
+    o.close_callback = args.close_callback
+    MENU_SHOWN = o
+    return o
+end
+
+-- InputDialog 桩：只保存构造参数，测试不弹键盘
+local InputDialog = Widget:extend{}
+function InputDialog:getInputText() return self.input or "" end
+function InputDialog:onShowKeyboard() end
 
 ---------------------------------------------------------------- 模块注册
 package.preload["ffi/blitbuffer"] = function()
@@ -352,6 +466,8 @@ package.preload["ui/widget/textwidget"] = function() return TextWidget end
 package.preload["ui/widget/imagewidget"] = function() return ImageWidget end
 package.preload["ui/widget/confirmbox"] = function() return ConfirmBox end
 package.preload["ui/widget/infomessage"] = function() return InfoMessage end
+package.preload["ui/widget/inputdialog"] = function() return InputDialog end
+package.preload["ui/widget/touchmenu"] = function() return TouchMenu end
 package.preload["ui/geometry"] = function() return Geom end
 package.preload["ui/font"] = function() return Font end
 package.preload["ui/uimanager"] = function() return UIManager end
@@ -363,6 +479,8 @@ package.preload["luasettings"] = function() return LuaSettings end
 package.preload["datastorage"] = function() return DataStorage end
 package.preload["device"] = function() return Device end
 package.preload["logger"] = function() return logger end
+package.preload["ui/gesturerange"] = function() return GestureRange end
+package.preload["depgraph"] = function() return DepGraph end
 package.preload["gettext"] = function()
     return function(s) return s end
 end
@@ -384,6 +502,28 @@ package.path = plugin_dir .. "/?.lua;" .. package.path
 local plugin = assert(loadfile(plugin_dir .. "/main.lua"))()
 EVENTS[#EVENTS + 1] = "== 插件加载成功 =="
 
+-- 桩件环境没有 ffi，dashboard_qweather 的 libz 解压走不通：
+-- 1) 先验证非 gzip 数据原样返回（这条分支不碰 ffi）
+-- 2) 再把解压换成 Python 的 zlib，让后续请求走真实 gzip 路径
+local QW = require("dashboard_qweather")
+local passthrough = QW.gunzip('{"a":1}')
+if passthrough ~= '{"a":1}' then
+    print("[FAIL] 非 gzip 数据没有原样返回")
+    os.exit(1)
+end
+if not PY_GUNZIP_HEX then
+    print("[FAIL] 缺少 PY_GUNZIP_HEX 桥接，无法验证 gzip 解压链路")
+    os.exit(1)
+end
+QW.gunzip = function(data)
+    if type(data) ~= "string" or #data < 2 then return data end
+    if data:byte(1) ~= 0x1f or data:byte(2) ~= 0x8b then return data end
+    local out = PY_GUNZIP_HEX(bytes_to_hex(data))
+    if out then return out end
+    return nil, "python gunzip 失败"
+end
+EVENTS[#EVENTS + 1] = "== gzip 解压链路已接管（非 gzip 直通分支已验证）=="
+
 instance = plugin:new{}
 instance.path = plugin_dir
 instance.ui = { menu = { registerToMainMenu = function() end } }
@@ -399,17 +539,37 @@ EVENTS[#EVENTS + 1] = "== init() 通过 =="
 local menu_items = {}
 instance:addToMainMenu(menu_items)
 local desk = menu_items.dashboard_desk
-local city_menu, tz_menu = nil, nil
+local city_menu, tz_menu, weather_menu = nil, nil, nil
 for _, item in ipairs(desk.sub_item_table) do
     if item.text == "选择城市" then city_menu = item end
     if item.text == "选择时区" then tz_menu = item end
+    if item.text == "天气服务" then weather_menu = item end
 end
 local city_count = 0
 for _, g in ipairs(city_menu.sub_item_table) do
     city_count = city_count + #g.sub_item_table
 end
-EVENTS[#EVENTS + 1] = string.format("== 菜单：城市 %d 个（分组 %d），时区 %d 个 ==",
-    city_count, #city_menu.sub_item_table, #tz_menu.sub_item_table)
+if not weather_menu then
+    print("[FAIL] 菜单里没有「天气服务」入口")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 菜单：城市 %d 个（分组 %d），时区 %d 个，天气服务 %d 项 ==",
+    city_count, #city_menu.sub_item_table, #tz_menu.sub_item_table,
+    #weather_menu.sub_item_table)
+
+-- 凭据来源与脱敏显示
+local cfg = instance:getConfig()
+EVENTS[#EVENTS + 1] = string.format("== 凭据：host=%s key=%s 来源=%s ==",
+    cfg.qweather.api_host, QW.mask(cfg.qweather.api_key), tostring(cfg._key_source))
+if cfg.qweather.api_host == "" or cfg.qweather.api_key == "" then
+    print("[FAIL] 没有读到凭据，检查 dashboard_config.local.lua 是否就位")
+    os.exit(1)
+end
+if QW.mask(cfg.qweather.api_key):find(cfg.qweather.api_key, 1, true) then
+    print("[FAIL] 脱敏函数泄露了完整 key")
+    os.exit(1)
+end
 
 -- 打开看板（含渲染与天气请求）
 RECORD = {}
@@ -420,6 +580,107 @@ if not ok then
 end
 EVENTS[#EVENTS + 1] = "== open() 通过 =="
 EVENTS[#EVENTS + 1] = string.format("== 待机抑制计数 = %d，激活的定时器 = %d ==", standby, #timers)
+
+-- 手势：框架不认 onTap/onHold，只有注册成触摸区才会派发事件
+local zone_list = instance.root._zones or {}
+local zone_by_id = {}
+local zone_ids = {}
+for _, z in ipairs(zone_list) do
+    zone_by_id[z.id] = z
+    zone_ids[#zone_ids + 1] = z.id
+end
+if not zone_by_id.dashboard_tap or not zone_by_id.dashboard_swipe_up then
+    print("[FAIL] 触摸区没有注册上（onTap/onHold 是无效写法，长按退不出去就是这个原因）")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 触摸区：" .. table.concat(zone_ids, ", ") .. " =="
+
+-- 非上划方向不拦截
+if zone_by_id.dashboard_swipe_up.handler({ direction = "south" }) ~= false then
+    print("[FAIL] 下划不应被拦截，否则会吃掉其他手势")
+    os.exit(1)
+end
+-- 点按刷新
+instance.fetching = false
+if zone_by_id.dashboard_tap.handler() ~= true then
+    print("[FAIL] 点按 handler 没有返回 true")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 点按刷新触发成功 =="
+-- 上划退出（重新取一次，点按后控件树已重建）
+local root_now = instance.root
+local swipe_zone
+for _, z in ipairs(root_now._zones or {}) do
+    if z.id == "dashboard_swipe_up" then swipe_zone = z end
+end
+swipe_zone.handler({ direction = "north" })
+if instance.shown then
+    print("[FAIL] 上划（north）之后看板没有关闭")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 上划退出成功（看板已关闭）=="
+instance:open()
+EVENTS[#EVENTS + 1] = "== 重新 open() 继续后续检查 =="
+
+-- 顶部下滑 -> 打开看板自己的菜单；左右滑动 -> 重新布局
+local root2 = instance.root
+local down_zone, side_zone
+for _, z in ipairs(root2._zones or {}) do
+    if z.id == "dashboard_swipe_down" then down_zone = z end
+    if z.id == "dashboard_swipe_side" then side_zone = z end
+end
+if not down_zone or not side_zone then
+    print("[FAIL] 缺少「顶部下滑菜单」或「左右滑动重排」触摸区")
+    os.exit(1)
+end
+if down_zone.handler({ direction = "north" }) ~= false then
+    print("[FAIL] 顶部下滑区不该拦截上划，否则会抢走上划退出")
+    os.exit(1)
+end
+if down_zone.handler({ direction = "south" }) ~= true then
+    print("[FAIL] 顶部下滑没有响应")
+    os.exit(1)
+end
+if not MENU_SHOWN then
+    print("[FAIL] 顶部下滑没有弹出看板菜单")
+    os.exit(1)
+end
+if not MENU_SHOWN.item_count or MENU_SHOWN.item_count < 5 then
+    print("[FAIL] 弹出的菜单项数量不对")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 顶部下滑弹出菜单：%d 项 ==", MENU_SHOWN.item_count)
+if not instance.menu_open then
+    print("[FAIL] menu_open 标记没有置位")
+    os.exit(1)
+end
+-- 菜单打开期间不能重建版面，否则会把菜单盖掉
+instance.relayout_pending = nil
+instance:refreshLayout()
+if instance.root ~= root2 or not instance.relayout_pending then
+    print("[FAIL] 菜单打开时 refreshLayout 没有挂起")
+    os.exit(1)
+end
+MENU_SHOWN.close_callback()
+if instance.menu_open then
+    print("[FAIL] 菜单关闭后 menu_open 没有复位")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 菜单打开期间重建已挂起，关闭后自动补做 =="
+
+for _, z in ipairs(instance.root._zones or {}) do
+    if z.id == "dashboard_swipe_side" then side_zone = z end
+end
+if side_zone.handler({ direction = "north" }) ~= false then
+    print("[FAIL] 左右滑动区不该拦截上划")
+    os.exit(1)
+end
+if side_zone.handler({ direction = "east" }) ~= true
+    or side_zone.handler({ direction = "west" }) ~= true then
+    print("[FAIL] 左右滑动没有触发重新布局")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 左右滑动重新布局成功 =="
 
 -- 渲染结果（文本层）
 print("---------- 渲染出的文本行 ----------")
@@ -440,6 +701,27 @@ for _, r in ipairs(rows) do
         math.floor(r.x), math.floor(r.y), math.floor(r.w), math.floor(r.h), r.text))
 end
 
+-- 电量与操作提示必须真的出现在画面上（不是只写进代码）
+local has_pct, has_hint = false, false
+local pct_text, hint_text
+for _, r in ipairs(RECORD) do
+    if r.kind == "text" then
+        local t = tostring(r.text)
+        if t:find("78%", 1, true) then has_pct = true; pct_text = t end
+        if t:find("上划退出", 1, true) then has_hint = true; hint_text = t end
+    end
+end
+if not has_pct then
+    print("[FAIL] 画面上没有电量百分比（桩件电量 78%）")
+    os.exit(1)
+end
+if not has_hint then
+    print("[FAIL] 画面上没有操作提示文字")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 电量显示：%s / 提示：%s ==",
+    tostring(pct_text), tostring(hint_text))
+
 -- 检查总高度是否溢出屏幕
 local group = instance.root[1][1]
 local gs = group:getSize()
@@ -455,6 +737,61 @@ EVENTS[#EVENTS + 1] = string.format(
     SW - math.floor(gs.w), SH - math.floor(gs.h),
     instance.scale or -1, (gs.h / (instance.scale or 1)) / math.min(SW, SH) * 100)
 
+-- 四边留白：直接查最终帧里每个可见元素的像素位置，白底铺满那一块要排除
+-- 先清空记录并重画一次，否则拿到的是历次重绘的累积
+RECORD = {}
+instance.root:paintTo(fake_bb, 0, 0)
+local EDGE_MIN = 15
+local scale_now = instance.scale or 1
+local edge_expect = math.max(EDGE_MIN, math.floor(15 * scale_now))
+local tight = {}
+for _, r in ipairs(RECORD) do
+    local w, h = r.w or 0, r.h or 0
+    local is_bg = (r.kind == "rect" and r.color ~= 255 and w >= SW and h >= SH)
+    if not is_bg and r.kind ~= "exec" then
+        local x, y = r.x or 0, r.y or 0
+        if x < edge_expect - 1 or y < edge_expect - 1
+            or x + w > SW - edge_expect + 1 or y + h > SH - edge_expect + 1 then
+            tight[#tight + 1] = string.format("%s@(%d,%d) %dx%d", r.kind, math.floor(x), math.floor(y),
+                math.floor(w), math.floor(h))
+        end
+    end
+end
+if #tight > 0 then
+    print(string.format("[FAIL] 有 %d 个元素没有落在四边 %d px 留白内：%s",
+        #tight, edge_expect, table.concat(tight, " | ", 1, math.min(4, #tight))))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 四边留白 %d px：所有元素都在安全区内 ==", edge_expect)
+
+-- 操作提示必须只有一行（多行会把版心撑高，横屏会触发整体缩放）。
+-- 注意：折行的 TextWidget 仍然只画一次，数记录条数测不出来 —— 必须比
+--   ① 自然宽度是否超过上限（超了就会折行）
+--   ② 实际渲染高度是否等于单行行高（折行会翻倍）
+local hu = instance.hint_used
+if type(hu) ~= "table" then
+    print("[FAIL] 没有记录到提示行的排版信息 hint_used")
+    os.exit(1)
+end
+if hu.w > hu.max_w then
+    print(string.format("[FAIL] 提示行自然宽 %d 超过上限 %d，会折行", hu.w, hu.max_w))
+    os.exit(1)
+end
+local face_px = math.ceil(hu.px * (math.min(SW, SH) / 600))
+local one_line = math.floor(face_px * 1.363)
+for _, r in ipairs(RECORD) do
+    if r.kind == "text" and tostring(r.text):find("上划退出", 1, true) then
+        if r.h > one_line * 1.5 then
+            print(string.format("[FAIL] 提示行实际渲染高 %d，单行应为 %d，说明折了行",
+                r.h, one_line))
+            os.exit(1)
+        end
+        break
+    end
+end
+EVENTS[#EVENTS + 1] = string.format("== 操作提示为 1 行（字号 %d，自然宽 %d / 上限 %d）==",
+    hu.px, hu.w, hu.max_w)
+
 -- 模拟跨分钟 tick
 local texts_before = RECORD[#RECORD]
 instance:tick()
@@ -467,15 +804,82 @@ if not ok then
     print("fetchWeather 失败: " .. tostring(err))
     os.exit(1)
 end
-EVENTS[#EVENTS + 1] = string.format("== fetchWeather() 通过，温度 %.1f，天气码 %d ==",
-    instance.weather.temp, instance.weather.code)
+if not instance.weather then
+    print("[FAIL] fetchWeather 之后没有天气数据")
+    os.exit(1)
+end
+local w = instance.weather
 local shown = instance:weatherDisplay()
-EVENTS[#EVENTS + 1] = string.format("== 风力 %s，日出 %s，日落 %s ==",
-    tostring(shown.wind), tostring(shown.sunrise), tostring(shown.sunset))
-EVENTS[#EVENTS + 1] = string.format("== 空气质量 AQI = %s（PM2.5 %.1f，PM10 %.1f）==",
+EVENTS[#EVENTS + 1] = string.format(
+    "== 实况：温度 %.2f°，体感 %.2f°，现象 %s(%d)，湿度 %.0f%%，风向 %s(%s°)，风级 %s ==",
+    w.temp, w.feels, tostring(w.cond), w.code, w.hum,
+    tostring(shown.wind_dir), tostring(w.winddir), tostring(shown.wind))
+EVENTS[#EVENTS + 1] = string.format(
+    "== 预报：最高 %.1f° 最低 %.1f°，日出 %s 日落 %s ==",
+    w.tmax, w.tmin, tostring(w.sunrise), tostring(w.sunset))
+EVENTS[#EVENTS + 1] = string.format(
+    "== 空气：AQI %s（%s），PM2.5 %.1f，PM10 %.1f ==",
     tostring(instance.air and instance.air.aqi),
+    tostring(instance.air and instance.air.level),
     tonumber(instance.air and instance.air.pm25) or -1,
     tonumber(instance.air and instance.air.pm10) or -1)
+
+-- 逐项对照样本值：跑通但数值错同样算失败
+local mismatches = {}
+local function near(a, b, tol)
+    return type(a) == "number" and math.abs(a - b) <= (tol or 0.01)
+end
+if not near(w.temp, 13.19) then mismatches[#mismatches + 1] = "温度" end
+if w.code ~= 100 then mismatches[#mismatches + 1] = "天气代码" end
+if not near(w.hum, 44, 0.51) then mismatches[#mismatches + 1] = "湿度（0~1 比例应乘 100）" end
+if w.wind ~= 2 then mismatches[#mismatches + 1] = "风级" end
+if w.sunrise ~= "06:54" then mismatches[#mismatches + 1] = "日出" end
+if w.sunset ~= "17:02" then mismatches[#mismatches + 1] = "日落" end
+if not near(w.tmax, 14.1) then mismatches[#mismatches + 1] = "最高温" end
+if not near(w.tmin, 0.56) then mismatches[#mismatches + 1] = "最低温" end
+if not (instance.air and instance.air.aqi == 65) then
+    mismatches[#mismatches + 1] = "AQI（应取国标 cn-mee=65）"
+end
+if shown.wind_dir ~= "南风" then
+    mismatches[#mismatches + 1] = "风向（185° 应为南风）"
+end
+if mismatches[1] then
+    print("[FAIL] 字段不符: " .. table.concat(mismatches, "，"))
+    os.exit(1)
+end
+
+-- 降级路径：和风整体失败 -> Open-Meteo，来源标记必须跟着变
+_G.STUB_QW_FAIL = true
+instance.weather, instance.air = nil, nil
+ok, err = pcall(function() instance:fetchWeather(true) end)
+_G.STUB_QW_FAIL = false
+if not ok then
+    print("降级 fetchWeather 失败: " .. tostring(err))
+    os.exit(1)
+end
+local w2 = instance.weather
+if not w2 or w2.source ~= "open-meteo" then
+    print("[FAIL] 和风失败后没有降级到 Open-Meteo，当前来源 = "
+        .. tostring(w2 and w2.source))
+    os.exit(1)
+end
+local bad = {}
+if not near(w2.temp, 10.0) then bad[#bad + 1] = "温度" end
+if w2.code ~= 100 then bad[#bad + 1] = "现象代码（WMO 0 应映射成和风 100）" end
+if w2.sunrise ~= "06:54" then bad[#bad + 1] = "日出（GMT 22:54 + 8h 应为 06:54）" end
+if w2.wind ~= 1 then bad[#bad + 1] = "风级（4.5 km/h 应为 1 级）" end
+if instance:airDisplay().text ~= "142" then
+    bad[#bad + 1] = "降级 AQI（PM2.5 108.7 / PM10 111.5 应换算为 142）"
+end
+if instance:sourceLabel() ~= "天气 Open-Meteo（降级）" then bad[#bad + 1] = "来源标签" end
+if bad[1] then
+    print("[FAIL] 降级字段不符: " .. table.concat(bad, "，"))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 降级：%s %.1f° 代码 %d 日出 %s 日落 %s AQI %s（%s）==",
+    tostring(w2.cond), w2.temp, w2.code, tostring(w2.sunrise), tostring(w2.sunset),
+    instance:airDisplay().text, tostring(instance:sourceLabel()))
 
 if _G.STUB_FRAME then dump_frame() end
 
