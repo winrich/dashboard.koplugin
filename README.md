@@ -67,7 +67,7 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 2. USB 连接 Kindle，打开其存储根目录（本次实测为 `F:`）。
 3. 把 `dashboard.koplugin` **整个目录**拷到 `koreader/plugins/` 下。
 4. 安全弹出，在设备上打开 KOReader。
-5. 菜单 -> 工具 -> 桌面看板 -> 先选「选择城市」「选择时区」，再点「打开看板」。
+5. 菜单 -> 设置 -> 屏幕 -> 屏保 -> 桌面看板 -> 先选「选择城市」「选择时区」，再点「打开看板」。
 
 关键点：目录名必须以 `.koplugin` 结尾，否则 KOReader 的插件加载器会直接跳过它。
 
@@ -90,7 +90,16 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 弹出的是看板自己的菜单——用的是同一份菜单项（`TouchMenu`）。若某个 KOReader 版本弹不出来，
 会退化成一段提示文字，告诉你可以上划退出后再从阅读界面菜单进入。
 
-菜单另一入口：退出看板后 → KOReader 阅读界面 → 屏幕上缘下拉 → 工具 → 桌面看板。
+菜单另一入口（也是不开看板时唯一的入口）：KOReader 阅读界面 / 文件浏览器 → 屏幕上缘下拉 →
+**设置 → 屏幕 → 屏保 → 桌面看板**，内容和看板内菜单完全一样（同一份 `genMenuItemTable()`）。
+
+> 为什么放在「屏保」下面而不是「工具」：看板现在的常态就是**当屏保用**，配置项和屏保其他设置
+> 放一起才找得到；而且看板全屏盖住画面时进不去 KOReader 菜单，这些配置本来就得在"没开看板"时改。
+> 挂进去靠的是 KOReader 自己的机制：`frontend/ui/menusorter.lua` 对带 `sorting_hint` 的插件项会
+> `findById` **递归**找到目标菜单，再 `table.insert` 进它的 `sub_item_table`；而 `readermenu.lua`
+> 里屏保那项的 id 就是 `screensaver`。所以只要 `sorting_hint = "screensaver"`，不用改核心文件。
+> 注意坑：hint 目标不存在时 menusorter 是**直接丢掉**该项（不会退回顶层），所以先用
+> `Device:supportsScreensaver()` 判断，不支持屏保的设备退回 `"tools"`。
 
 > 手势实现说明：KOReader 框架没有 `onTap` / `onHold` 这类回调字段，写上也不会被调用
 > （早期版本长按退不出去就是这个原因）。这里用 `registerTouchZones` 注册四个触摸区
@@ -115,7 +124,7 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 ## 休眠屏保（休眠时屏幕停在看板上）
 
 按电源键或空闲自动休眠时，看板会留在屏幕上，而不是被 KOReader 的原生屏保（书封 / Sleep 提示）盖住。
-菜单「桌面看板 → 休眠时显示看板（屏保）」可以关掉这个行为。
+菜单「桌面看板 → 休眠时显示看板（屏保）」可以关掉这个行为（路径：设置 → 屏幕 → 屏保 → 桌面看板）。
 
 **为什么要接管，而不是设个属性了事**：早期版本用 `lipc-set-prop com.lab126.powerd preventScreenSaver 1`
 来"防止屏保盖掉看板"，代价是 **powerd 会完全忽略电源键**——按下去毫无反应，设备也不会自动休眠。
@@ -282,7 +291,7 @@ MobileRead 上做 Kindle 屏保工具的开发者的原话：
 | 节气算法 | 2021–2034 抽样 341 个日期，节气归属/已过天数/距下一节气天数完全一致 |
 | 关键单点 | 2026-11-11 -> 丙午年十月初三；立冬第 5 天；距小雪 11 天；生肖马（与权威万年历一致） |
 | 接口连通 | 2026-11-11 用真实凭据实测三接口 HTTP 200，响应确为 gzip；`python tools/qweather_check.py` 可复现 |
-| 手势 | 注册了四个触摸区 `dashboard_tap` / `dashboard_swipe_up` / `dashboard_swipe_down` / `dashboard_swipe_side`；上划（north）关闭看板、下划不拦截上划、顶部下滑（south）弹出 7 项菜单、东/西滑动切换版式 |
+| 手势 | 注册了四个触摸区 `dashboard_tap` / `dashboard_swipe_up` / `dashboard_swipe_down` / `dashboard_swipe_side`；上划（north）关闭看板、下划不拦截上划、顶部下滑（south）弹出 8 项菜单、东/西滑动切换版式 |
 | 版式切换 | 断言滑动后 `layout_landscape` 必须变化，且转屏支持时屏幕尺寸必须真的互换（旋转值奇偶变化）、版式方向与新屏幕方向一致；再滑一次必须回到原版式 |
 | 菜单互相不打架 | 顶部下滑区对 north 返回 false，不抢上划；菜单打开期间 `refreshLayout` 自动挂起，菜单关掉后补做，不会把菜单盖掉 |
 | 四边留白 | 逐个检查最终帧里所有可见元素的像素位置：竖屏左右各 26、上下各 29；横屏左右各 26、上下各 27；无一个元素越出安全区 |
@@ -306,6 +315,7 @@ MobileRead 上做 Kindle 屏保工具的开发者的原话：
 | 唤醒重建 | 唤醒后 `root` 是新的一棵（证明真的重建了版面，而不是让旧时钟挂在屏幕上） |
 | 唤醒宽限期 | 天气强制过期 + 刚唤醒 → `tick` 不拉取；宽限期过后再 `tick` → 正常拉取 |
 | tick 间隔异常 | 把上一拍时间往前拨 1 小时 → `tick` 自动重建版面（模拟"休眠唤醒后定时器漂移"） |
+| 菜单挂载位置 | 断言 `menu_items.dashboard_desk.sorting_hint == "screensaver"` 且带 `separator`：hint 写错或目标不存在时 menusorter 会**静默丢弃**该项，入口就凭空消失了 |
 | 菜单里选方向 | 断言版式三项**不带 `checked_func`**（带了就永不自动关菜单）、当前方向有且只有一处文字标注；按 `onMenuSelect` 的真实顺序（先回调、再自动关）模拟后：菜单自动关闭、`self.menu` 清空、菜单控件出栈、`pending_orientation` 已消费、版式立刻切换 |
 | 屏保树触摸 | 屏保树上的点按 / 滑动 handler 在 `shown == false` 时一律返回 `false`，不会误触发拉天气或退出 |
 | 电源键 | 打开看板时把 `preventScreenSaver` 写 **0**（旧版写 1 会让电源键完全失效），关闭时把 `lipc-get-prop` 读到的原值还原 |

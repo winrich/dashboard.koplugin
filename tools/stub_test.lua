@@ -411,6 +411,9 @@ Device.screen = screen
 Device.screen_saver_mode = false     -- 真机 generic/device.lua 的同名字段
 Device.canSuspend = true
 function Device:isKindle() return true end
+-- 真机 generic/device.lua 里是 return false，Kindle 覆写成 true（kindle/device.lua）。
+-- 看板用它决定菜单挂到「设置→屏幕→屏保」还是退回「工具」标签页。
+function Device:supportsScreensaver() return true end
 
 -- 屏保桩：真机上 Screensaver:show() 负责画屏保，看板插件会接管这两个入口。
 -- 这里如实实现 show/close 的语义，才能验证「休眠画看板 / 唤醒撤掉并重绘」。
@@ -601,6 +604,16 @@ EVENTS[#EVENTS + 1] = "== init() 通过 =="
 local menu_items = {}
 instance:addToMainMenu(menu_items)
 local desk = menu_items.dashboard_desk
+-- 配置入口要落到「设置 → 屏幕 → 屏保」之下：menusorter 递归按 id 找目标，
+-- 屏保那项的 id 就是 "screensaver"。hint 写错（或目标不存在）项会被静默丢弃。
+if desk.sorting_hint ~= "screensaver" then
+    print("[FAIL] 菜单没挂到屏保之下，sorting_hint = " .. tostring(desk.sorting_hint))
+    os.exit(1)
+end
+if not desk.separator then
+    print("[FAIL] 没说要在屏保原生项前画分隔线")
+    os.exit(1)
+end
 local city_menu, tz_menu, weather_menu = nil, nil, nil
 for _, item in ipairs(desk.sub_item_table) do
     if item.text == "选择城市" then city_menu = item end

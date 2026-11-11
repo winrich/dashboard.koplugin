@@ -18,6 +18,10 @@ dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host �
   · 点按屏幕      -> 立即刷新天气
   · 上划屏幕      -> 退出看板
 
+配置入口（两处，同一份菜单项 genMenuItemTable）：
+  · 设置 → 屏幕 → 屏保 → 桌面看板（不开看板时改，靠 sorting_hint="screensaver" 挂进去）
+  · 看板打开时屏幕上缘下滑（TouchMenu；KOReader 菜单被看板盖住时进不去）
+
 设计要点（均已按 KOReader 源码核对，非猜测）：
   · Widget:paintTo 基类是空实现，自绘控件必须自己实现 paintTo，getSize 返回 self.dimen
   · WidgetContainer:paintTo 不处理 background，白底必须自己刷，否则透出下层界面
@@ -102,7 +106,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.41"
+local DASHBOARD_VERSION = "2.42"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -343,10 +347,33 @@ function Dashboard:onCloseWidget()
 end
 
 -- ------------------------------------------------------------------ 菜单
+--- 把看板配置挂到「设置 → 屏幕 → 屏保」之下（v2.42）。
+---
+--- 为什么能挂进去：KOReader 的插件菜单项只按 sorting_hint 归位，而
+--- frontend/ui/menusorter.lua 的 sort() 对「带 sorting_hint 的项」是这样处理的：
+---   local m = self:findById(menu_table["KOMenu:menu_buttons"], sorting_hint)
+---   m = m.sub_item_table or m
+---   table.insert(m, v)
+--- 而 findById 是**递归**遍历 sub_item_table 的，所以 hint 指到哪个子菜单，项就追加进
+--- 那个子菜单。readermenu.lua 里注册屏保那一项的写法是
+---   self.menu_items.screensaver = { text = _("Sleep screen"),
+---       sub_item_table = dofile("frontend/ui/elements/screensaver_menu.lua") }
+--- id 正好是 "screensaver"，所以 hint 给 "screensaver" 就落到屏保菜单里，不用改核心文件。
+---
+--- 一个坑：hint 目标不存在时，menusorter 是**直接把项丢掉**（只有没 hint 的项才会
+--- 被塞进第一个标签页当孤儿，带 hint 找不到就 logger.warn 然后什么也不做）。
+--- 所以先确认设备支持屏保；不支持就退回「工具」标签页，不能让入口凭空消失。
 function Dashboard:addToMainMenu(menu_items)
+    local hint = "tools"
+    local ok, supports = pcall(function() return Device:supportsScreensaver() end)
+    if ok and supports then
+        hint = "screensaver"
+    end
     menu_items.dashboard_desk = {
-        sorting_hint = "tools",
+        sorting_hint = hint,
         text = _("桌面看板"),
+        -- 和屏保自带的那几组设置之间画一条线，视觉上分开
+        separator = true,
         sub_item_table = self:genMenuItemTable(),
     }
 end
@@ -453,6 +480,7 @@ function Dashboard:genMenuItemTable()
             UIManager:show(InfoMessage:new{
                 text = _("手势：点按刷新天气 · 上划退出看板\n"
                     .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 版式 / 天气服务）\n"
+                    .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
                     .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
                     .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
                     .. "所以横屏要靠左右滑动（或菜单「版式」）手动切，切完请把设备横着拿。\n"
@@ -1387,7 +1415,7 @@ end
 function Dashboard:menuFallback()
     UIManager:show(InfoMessage:new{
         text = _("这个 KOReader 版本无法在看板内弹出菜单。\n"
-            .. "请先上划退出看板，再从阅读界面上缘下拉 → 工具 → 桌面看板。\n\n"
+            .. "请先上划退出看板，再从阅读界面上缘下拉 → 设置 → 屏幕 → 屏保 → 桌面看板。\n\n"
             .. "看板内可直接用的手势：点按刷新、上划退出、左右滑动重新布局。"),
         timeout = 5,
     })
