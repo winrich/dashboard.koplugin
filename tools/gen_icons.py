@@ -2,14 +2,17 @@
 """生成桌面看板所需的单色天气图标（黑底透明，RGBA PNG）。
 
 不依赖第三方库：自带最小 PNG 编码器（zlib + struct），逐像素绘制。
-输出 160x160，插件侧按需缩放，避免小尺寸下的锯齿。
+
+坐标一律按 160x160 的设计网格书写，实际输出 320x320（2 倍超采样）：
+KPW3 是 300ppi，图标在屏上占 150~180px，用 160px 源图会被放大而发虚。
 """
 
 import os
 import struct
 import zlib
 
-SIZE = 160
+DESIGN = 160      # 设计网格边长，绘制代码按这个尺寸写坐标
+SIZE = 320        # 实际输出边长，2 倍超采样
 
 
 # ------------------------------------------------------------------ PNG 编码
@@ -37,6 +40,8 @@ def write_png(path, width, height, rgba):
 class Canvas:
     def __init__(self, size=SIZE):
         self.w = self.h = size
+        # 设计单位 -> 像素的倍率，所有坐标与线宽在基元内部统一放大
+        self.k = size / float(DESIGN)
         self.buf = bytearray(b"\x00" * (size * size * 4))
 
     def px(self, x, y, a):
@@ -51,16 +56,23 @@ class Canvas:
                 self.buf[i + 3] = a
 
     def circle(self, cx, cy, r, a=255):
+        k = self.k
+        cx, cy, r = cx * k, cy * k, r * k
         r2 = r * r
-        for y in range(int(cy - r), int(cy + r) + 1):
-            for x in range(int(cx - r), int(cx + r) + 1):
+        edge = r + k
+        for y in range(int(cy - edge) - 1, int(cy + edge) + 2):
+            for x in range(int(cx - edge) - 1, int(cx + edge) + 2):
                 d2 = (x - cx) ** 2 + (y - cy) ** 2
                 if d2 <= r2:
                     self.px(x, y, a)
-                elif d2 <= (r + 1) ** 2:
-                    self.px(x, y, int(a * (1 - (d2 ** 0.5 - r))))
+                elif d2 <= edge * edge:
+                    fade = 1.0 - (d2 ** 0.5 - r) / k
+                    if fade > 0:
+                        self.px(x, y, int(a * fade))
 
     def ring(self, cx, cy, r, thick, a=255):
+        k = self.k
+        cx, cy, r, thick = cx * k, cy * k, r * k, thick * k
         r_in = r - thick
         for y in range(int(cy - r), int(cy + r) + 1):
             for x in range(int(cx - r), int(cx + r) + 1):
@@ -69,11 +81,15 @@ class Canvas:
                     self.px(x, y, a)
 
     def rect(self, x0, y0, x1, y1, a=255):
-        for y in range(int(y0), int(y1) + 1):
-            for x in range(int(x0), int(x1) + 1):
+        k = self.k
+        for y in range(int(y0 * k), int(y1 * k) + 1):
+            for x in range(int(x0 * k), int(x1 * k) + 1):
                 self.px(x, y, a)
 
     def line(self, x0, y0, x1, y1, thick=6, a=255):
+        k = self.k
+        x0, y0, x1, y1 = x0 * k, y0 * k, x1 * k, y1 * k
+        thick = thick * k
         dx, dy = x1 - x0, y1 - y0
         length = max(1.0, (dx * dx + dy * dy) ** 0.5)
         r = thick / 2.0
@@ -86,6 +102,8 @@ class Canvas:
                     self.px(x, y, a)
 
     def poly(self, pts, a=255):
+        k = self.k
+        pts = [(x * k, y * k) for (x, y) in pts]
         ys = [p[1] for p in pts]
         for y in range(int(min(ys)), int(max(ys)) + 1):
             xs = []

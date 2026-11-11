@@ -196,6 +196,22 @@ local fake_bb = {}
 function fake_bb:paintRect(x, y, w, h, color)
     RECORD[#RECORD + 1] = { kind = "rect", x = x, y = y, w = w, h = h, color = color }
 end
+
+-- 机器可读的最终帧导出，供 tools/render_preview.py 还原版面
+local instance        -- 前置声明：dump_frame 是闭包，必须在此之前可见
+local function dump_frame()
+    RECORD = {}
+    instance.root:paintTo(fake_bb, 0, 0)
+    for _, r in ipairs(RECORD) do
+        local tag = ({ text = "T", rect = "R", border = "B", image = "I" })[r.kind]
+        if tag then
+            print(string.format("FRAME|%s|%d|%d|%d|%d|%d|%s", tag,
+                math.floor(r.x or 0), math.floor(r.y or 0), math.floor(r.w or 0),
+                math.floor(r.h or 0), math.floor(r.color or 0), tostring(r.text or "")))
+        end
+    end
+    print("FRAME|END")
+end
 -- 节气进度条的外框走 paintBorder
 function fake_bb:paintBorder(x, y, w, h, bw, color)
     RECORD[#RECORD + 1] = { kind = "border", x = x, y = y, w = w, h = h, color = color }
@@ -368,7 +384,7 @@ package.path = plugin_dir .. "/?.lua;" .. package.path
 local plugin = assert(loadfile(plugin_dir .. "/main.lua"))()
 EVENTS[#EVENTS + 1] = "== 插件加载成功 =="
 
-local instance = plugin:new{}
+instance = plugin:new{}
 instance.path = plugin_dir
 instance.ui = { menu = { registerToMainMenu = function() end } }
 
@@ -433,9 +449,11 @@ if overflow then
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = string.format(
-    "== 内容总尺寸 %dx%d（屏幕 %dx%d），水平余量 %d px，垂直余量 %d px ==",
+    "== 内容总尺寸 %dx%d（屏幕 %dx%d），水平余量 %d px，垂直余量 %d px，"
+    .. "缩放 %.3f，设计单位约占短边 %.1f%% ==",
     math.floor(gs.w), math.floor(gs.h), SW, SH,
-    SW - math.floor(gs.w), SH - math.floor(gs.h))
+    SW - math.floor(gs.w), SH - math.floor(gs.h),
+    instance.scale or -1, (gs.h / (instance.scale or 1)) / math.min(SW, SH) * 100)
 
 -- 模拟跨分钟 tick
 local texts_before = RECORD[#RECORD]
@@ -458,6 +476,8 @@ EVENTS[#EVENTS + 1] = string.format("== 空气质量 AQI = %s（PM2.5 %.1f，PM1
     tostring(instance.air and instance.air.aqi),
     tonumber(instance.air and instance.air.pm25) or -1,
     tonumber(instance.air and instance.air.pm10) or -1)
+
+if _G.STUB_FRAME then dump_frame() end
 
 -- 关闭，检查状态恢复
 ok, err = pcall(function() instance:close() end)

@@ -1,4 +1,9 @@
-"""在竖屏 600x800 与横屏 1024x758 两种尺寸下运行插件冒烟测试。
+"""在多种屏幕尺寸下运行插件冒烟测试。
+
+覆盖：
+  · KPW3 竖屏 1072x1448（300ppi，3000 系列，用户实际设备）
+  · KPW3 横屏 1448x1072
+  · 600x800 与 800x600（167ppi 老机型，回归用）
 
 用法（在项目根目录）：
     python tools/run_stub.py
@@ -19,8 +24,10 @@ SYNTAX_FILES = [
 ]
 
 DIRECTIONS = [
-    ("竖屏", 600, 800),
-    ("横屏", 1024, 758),
+    ("竖屏 PW3", 1072, 1448),
+    ("横屏 PW3", 1448, 1072),
+    ("竖屏 老机型", 600, 800),
+    ("横屏 老机型", 800, 600),
 ]
 
 
@@ -67,7 +74,7 @@ def main():
     for label, w, h in DIRECTIONS:
         ok = run_direction(label, w, h) and ok
     print()
-    print("[PASS] 两个方向全部通过" if ok else "[FAIL] 存在失败项")
+    print("[PASS] 全部尺寸通过" if ok else "[FAIL] 存在失败项")
     return 0 if ok else 1
 
 

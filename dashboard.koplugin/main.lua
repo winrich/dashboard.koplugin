@@ -69,9 +69,15 @@ end)()
 local UPDATE_INTERVAL = 30 * 60      -- 天气拉取间隔
 local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 
--- 竖屏 / 横屏设计稿的基准短边，用于字号与间距等比缩放
-local BASE_SHORT_PORTRAIT = 600      -- 600x800
-local BASE_SHORT_LANDSCAPE = 758     -- 1024x758
+-- 设计基准：屏幕短边 600 像素 = 1 倍。
+-- 600x800@167ppi 与 1072x1448@300ppi 都是 6 英寸，短边比 1.787，物理尺寸一致；
+-- 因此竖屏与横屏共用同一个缩放系数，旋转设备时字号的物理大小不变。
+local BASE_SHORT = 600
+
+-- 真机字体度量与设计预估总有偏差，装不下时逐级缩小重排，避免底部被截断
+local FIT_MAX_STEPS = 8
+local FIT_STEP = 0.96
+local FIT_SAFE_RATIO = 0.985
 
 -- WMO 天气代码 -> { 中文描述, 图标名 }
 local WEATHER_CODES = {
@@ -546,8 +552,6 @@ function Dashboard:createRoot()
         W = W,
         H = H,
         landscape = landscape,
-        -- 短边等比：竖屏按 600 设计，横屏按 758 设计
-        S = math.min(W, H) / (landscape and BASE_SHORT_LANDSCAPE or BASE_SHORT_PORTRAIT),
         now = now,
         tz = tz,
         lunar = Lunar.solar_to_lunar(now.year, now.month, now.day),
@@ -555,7 +559,21 @@ function Dashboard:createRoot()
     }
     ctx.cur_term, ctx.next_term = Lunar.current_term(now.year, now.month, now.day, tz.offset)
 
-    local body = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
+    -- 先按物理基准排一次；若高度超出屏幕（真机字体度量比预估高，或横屏纵向空间
+    -- 本就比竖屏紧），按 FIT_STEP 逐级缩小重排，最多 FIT_MAX_STEPS 次。
+    -- 布局构建是纯计算，重排无副作用；稳定后 self.scale 记录实际倍率。
+    local S = math.min(W, H) / BASE_SHORT
+    local body
+    for _ = 1, FIT_MAX_STEPS do
+        ctx.S = S
+        body = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
+        local bs = body:getSize()
+        if bs.h <= H * FIT_SAFE_RATIO and bs.w <= W then break end
+        logger.warn(string.format(
+            "dashboard: 内容 %dx%d 超出可用区 %dx%d，缩放至 %.3f 重排", bs.w, bs.h, W, H, S * FIT_STEP))
+        S = S * FIT_STEP
+    end
+    self.scale = S
 
     local root = InputContainer:new{
         dimen = Geom:new{ w = W, h = H },
@@ -667,7 +685,7 @@ function Dashboard:buildPortrait(ctx)
 
     -- 时钟与天气左右并列
     self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text, 118)
+    self.clock_widget = self:makeText(ctx, self.clock_text, 112)
     local date_line = self:makeText(ctx, string.format("%d月%d日 星期%s",
         ctx.now.month, ctx.now.day, Lunar.WEEKDAY_NAMES[ctx.now.wday] or ""), 32)
     local clock_block = VerticalGroup:new{
@@ -676,12 +694,16 @@ function Dashboard:buildPortrait(ctx)
         mkPad(1, math.floor(6 * S)),
         date_line,
     }
+    local weather_block = self:buildWeatherBlock(ctx, 84, 56)
+    local clock_fill = math.max(math.floor(14 * S),
+        content_w - clock_block:getSize().w - weather_block:getSize().w)
     push(HorizontalGroup:new{
         align = "center",
         mkPad(pad_lr, 1),
         clock_block,
-        mkPad(math.floor(16 * S), 1),
-        self:buildWeatherBlock(ctx, 86, 58),
+        mkPad(clock_fill, 1),
+        weather_block,
+        mkPad(pad_lr, 1),
     })
 
     push(mkPad(W, math.floor(16 * S)))
@@ -689,9 +711,8 @@ function Dashboard:buildPortrait(ctx)
     push(mkPad(W, math.floor(14 * S)))
 
     -- 农历
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
+    push(CenterContainer:new{
+        dimen = Geom:new{ w = W, h = math.floor(20 * S * 1.4) },
         self:makeText(ctx, _("农历"), 20, { gray = true }),
     })
     push(mkPad(W, math.floor(2 * S)))
@@ -701,12 +722,16 @@ function Dashboard:buildPortrait(ctx)
         mkPad(1, math.floor(4 * S)),
         self:makeText(ctx, string.format("%s年", Lunar.zodiac(ctx.lunar)), 22, { gray = true }),
     }
+    local lunar_big = self:makeText(ctx, Lunar.month_day_text(ctx.lunar), 54)
+    local lunar_fill = math.max(math.floor(20 * S),
+        content_w - lunar_big:getSize().w - lunar_side:getSize().w)
     push(HorizontalGroup:new{
         align = "center",
         mkPad(pad_lr, 1),
-        self:makeText(ctx, Lunar.month_day_text(ctx.lunar), 54),
-        mkPad(math.floor(20 * S), 1),
+        lunar_big,
+        mkPad(lunar_fill, 1),
         lunar_side,
+        mkPad(pad_lr, 1),
     })
     push(mkPad(W, math.floor(14 * S)))
 
@@ -721,10 +746,13 @@ function Dashboard:buildPortrait(ctx)
     else
         term_text = string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1)
     end
+    local term_label = self:makeText(ctx, term_text, 26)
     push(HorizontalGroup:new{
         align = "center",
         mkPad(pad_lr, 1),
-        self:makeText(ctx, term_text, 26),
+        term_label,
+        mkPad(math.max(0, content_w - term_label:getSize().w), 1),
+        mkPad(pad_lr, 1),
     })
     push(mkPad(W, math.floor(10 * S)))
     push(HorizontalGroup:new{
@@ -780,28 +808,28 @@ end
 
 -- ---------------------------------------------------------------- 横屏：上下分区
 function Dashboard:buildLandscape(ctx)
-    local W, S, H = ctx.W, ctx.S, ctx.H
-    local pad_lr = math.floor(40 * S)
+    local W, S = ctx.W, ctx.S
+    local pad_lr = math.floor(34 * S)
     local rows = {}
     local function push(widget) rows[#rows + 1] = widget end
 
     push(self:buildHeader(ctx, pad_lr))
-    push(mkPad(W, math.floor(6 * S)))
+    push(mkPad(W, math.floor(4 * S)))
     push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(4 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(12 * S)))
+    push(mkPad(W, math.floor(8 * S)))
 
     -- 时钟与日期（左） / 天气（右），中间空白撑开
     self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text, 124)
+    self.clock_widget = self:makeText(ctx, self.clock_text, 92)
     local date_line = self:makeText(ctx, string.format("%d年%d月%d日 星期%s",
-        ctx.now.year, ctx.now.month, ctx.now.day, Lunar.WEEKDAY_NAMES[ctx.now.wday] or ""), 32)
+        ctx.now.year, ctx.now.month, ctx.now.day, Lunar.WEEKDAY_NAMES[ctx.now.wday] or ""), 28)
     local clock_block = VerticalGroup:new{
         align = "left",
         self.clock_widget,
-        mkPad(1, math.floor(6 * S)),
+        mkPad(1, math.floor(4 * S)),
         date_line,
     }
-    local weather = self:buildWeatherBlock(ctx, 100, 72)
+    local weather = self:buildWeatherBlock(ctx, 78, 60)
     local fill = math.max(0, W - pad_lr * 2 - clock_block:getSize().w - weather:getSize().w)
     push(HorizontalGroup:new{
         align = "center",
@@ -812,25 +840,35 @@ function Dashboard:buildLandscape(ctx)
         mkPad(pad_lr, 1),
     })
 
-    push(mkPad(W, math.floor(10 * S)))
+    push(mkPad(W, math.floor(8 * S)))
     push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(3 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(10 * S)))
+    push(mkPad(W, math.floor(8 * S)))
 
-    -- 下半区：左整月日历 / 右农历节气
-    local cell_w = math.floor(52 * S)
-    local cal_w = cell_w * 7
-    local gap = math.floor(28 * S)
+    -- 下半区：左整月日历 / 右农历节气。
+    -- 宽度必须由可用空间反推：固定 52*S 的列宽在 300ppi 的 1448px 屏上，
+    -- 日历 + 右栏会超出屏幕 40px，右栏被裁掉。
+    local avail = W - pad_lr * 2
+    local gap = math.floor(24 * S)
     local vline_w = math.max(2, math.floor(3 * S))
-    local right_w = math.max(math.floor(330 * S), W - pad_lr * 2 - cal_w - gap * 2 - vline_w)
+    local right_min = math.floor(330 * S)
+    local cell_w = math.min(math.floor(52 * S),
+        math.floor((avail - right_min - gap * 2 - vline_w) / 7))
+    cell_w = math.max(math.floor(34 * S), cell_w)
+    local cal_w = cell_w * 7
+    local right_w = math.max(math.floor(260 * S), avail - cal_w - gap * 2 - vline_w)
+
+    local calendar = self:buildCalendar(ctx, cell_w)
+    local panel = self:buildSidePanel(ctx, right_w)
+    local vline_h = math.max(calendar:getSize().h, panel:getSize().h)
 
     push(HorizontalGroup:new{
         align = "top",
         mkPad(pad_lr, 1),
-        self:buildCalendar(ctx, cell_w),
+        calendar,
         mkPad(gap, 1),
-        Solid:new{ dimen = Geom:new{ w = vline_w, h = math.floor(318 * S) }, color = COLOR_BLACK },
+        Solid:new{ dimen = Geom:new{ w = vline_w, h = vline_h }, color = COLOR_BLACK },
         mkPad(gap, 1),
-        self:buildSidePanel(ctx, right_w),
+        panel,
         mkPad(pad_lr, 1),
     })
 
@@ -840,9 +878,9 @@ end
 --- 整月日历：周一起始、跨月补位、今天反白、节气日带点
 function Dashboard:buildCalendar(ctx, cell_w)
     local now = ctx.now
-    -- 单元格内容为「日号 + 圆点」，最小高度约 40px（基准），设定值低于此不起作用
-    local row_h = math.floor(40 * ctx.S)
-    local head_h = math.floor(30 * ctx.S)
+    -- 单元格内容为「日号 + 圆点」，约 36 设计单位高，设定值低于此不起作用
+    local row_h = math.floor(36 * ctx.S)
+    local head_h = math.floor(26 * ctx.S)
 
     local first = Lunar.days_from_civil(now.year, now.month, 1)
     local ny = (now.month == 12) and (now.year + 1) or now.year
@@ -864,9 +902,9 @@ function Dashboard:buildCalendar(ctx, cell_w)
     local lines = {}
     lines[#lines + 1] = HorizontalGroup:new{
         align = "center",
-        self:makeText(ctx, string.format("%d 年 %d 月", now.year, now.month), 24, { gray = true }),
+        self:makeText(ctx, string.format("%d 年 %d 月", now.year, now.month), 22, { gray = true }),
     }
-    lines[#lines + 1] = mkPad(1, math.floor(6 * ctx.S))
+    lines[#lines + 1] = mkPad(1, math.floor(4 * ctx.S))
 
     -- 表头：一 二 三 四 五 六 日
     local head = { align = "center" }
@@ -874,7 +912,7 @@ function Dashboard:buildCalendar(ctx, cell_w)
         local wd = (2 + i - 1) % 7 + 1
         local is_weekend = (wd == 1 or wd == 7)
         head[#head + 1] = mkBox(cell_w, head_h, self:makeText(ctx,
-            Lunar.WEEKDAY_NAMES[wd] or "", 20, { gray = is_weekend }))
+            Lunar.WEEKDAY_NAMES[wd] or "", 18, { gray = is_weekend }))
     end
     lines[#lines + 1] = HorizontalGroup:new(head)
 
@@ -889,14 +927,14 @@ function Dashboard:buildCalendar(ctx, cell_w)
                 local y2, m2, d2 = Lunar.civil_from_days(daynum)
                 row[#row + 1] = mkBox(cell_w, row_h, VerticalGroup:new{
                     align = "center",
-                    self:makeText(ctx, tostring(d2), 22, { gray = true }),
+                    self:makeText(ctx, tostring(d2), 21, { gray = true }),
                     mkPad(1, 1),
                 }, { auto_h = true })
             else
                 local y2, m2, d2 = Lunar.civil_from_days(daynum)
                 local is_today = (daynum == today_num)
                 local term = terms[d2]
-                local num_text = self:makeText(ctx, tostring(d2), is_today and 24 or 22,
+                local num_text = self:makeText(ctx, tostring(d2), is_today and 23 or 21,
                     { fg = nil })
                 if is_today then
                     num_text.fgcolor = COLOR_WHITE
@@ -919,22 +957,24 @@ function Dashboard:buildCalendar(ctx, cell_w)
         lines[#lines + 1] = HorizontalGroup:new(row)
     end
 
-    lines[#lines + 1] = mkPad(1, math.floor(6 * ctx.S))
+    lines[#lines + 1] = mkPad(1, math.floor(4 * ctx.S))
     lines[#lines + 1] = HorizontalGroup:new{
         align = "center",
         Solid:new{ dimen = Geom:new{ w = math.floor(10 * ctx.S), h = math.floor(10 * ctx.S) }, color = COLOR_BLACK },
         mkPad(math.floor(6 * ctx.S), 1),
-        self:makeText(ctx, _("今天"), 18, { gray = true }),
+        self:makeText(ctx, _("今天"), 17, { gray = true }),
         mkPad(math.floor(16 * ctx.S), 1),
         Solid:new{ dimen = Geom:new{ w = math.floor(6 * ctx.S), h = math.floor(6 * ctx.S) }, color = COLOR_BLACK },
         mkPad(math.floor(6 * ctx.S), 1),
-        self:makeText(ctx, _("节气"), 18, { gray = true }),
+        self:makeText(ctx, _("节气"), 17, { gray = true }),
     }
 
     return VerticalGroup:new{ align = "left", unpack(lines) }
 end
 
 --- 横屏右栏：农历 / 节气进度 / 天文与空气
+-- 横屏纵向只有「短边」那么多（PW3 为 1072px，折合 600 设计单位），
+-- 右栏又是下半区里最高的一列，所以这里的字号与间距比竖屏更克制。
 function Dashboard:buildSidePanel(ctx, width)
     local S = ctx.S
     local ratio, elapsed, remain = self:solarTermRatio(ctx)
@@ -943,38 +983,38 @@ function Dashboard:buildSidePanel(ctx, width)
 
     local items = {
         align = "left",
-        self:makeText(ctx, _("农历"), 20, { gray = true }),
+        self:makeText(ctx, _("农历"), 18, { gray = true }),
         mkPad(1, math.floor(2 * S)),
-        self:makeText(ctx, Lunar.month_day_text(ctx.lunar), 38),
+        self:makeText(ctx, Lunar.month_day_text(ctx.lunar), 32),
         mkPad(1, math.floor(4 * S)),
         self:makeText(ctx, string.format("%s · %s年", Lunar.ganzhi_year(ctx.lunar),
-            Lunar.zodiac(ctx.lunar)), 24, { gray = true }),
-        mkPad(1, math.floor(16 * S)),
-        Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
-        mkPad(1, math.floor(14 * S)),
-        self:makeText(ctx, _("节气"), 20, { gray = true }),
-        mkPad(1, math.floor(2 * S)),
-        self:makeText(ctx, string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1), 30),
+            Lunar.zodiac(ctx.lunar)), 20, { gray = true }),
         mkPad(1, math.floor(8 * S)),
+        Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
+        mkPad(1, math.floor(8 * S)),
+        self:makeText(ctx, _("节气"), 18, { gray = true }),
+        mkPad(1, math.floor(2 * S)),
+        self:makeText(ctx, string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1), 26),
+        mkPad(1, math.floor(6 * S)),
         ProgressBar:new{
-            dimen = Geom:new{ w = math.floor(width * 0.82), h = math.max(8, math.floor(12 * S)) },
+            dimen = Geom:new{ w = math.floor(width * 0.82), h = math.max(8, math.floor(10 * S)) },
             ratio = ratio,
             border = math.max(1, math.floor(2 * S)),
         },
-        mkPad(1, math.floor(6 * S)),
+        mkPad(1, math.floor(4 * S)),
         self:makeText(ctx, ctx.next_term
             and string.format("%s%s %d 天", _("距"), ctx.next_term.name, remain)
-            or "", 20, { gray = true }),
-        mkPad(1, math.floor(14 * S)),
+            or "", 18, { gray = true }),
+        mkPad(1, math.floor(8 * S)),
         Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
-        mkPad(1, math.floor(14 * S)),
-        self:makeText(ctx, _("天文与空气"), 20, { gray = true }),
-        mkPad(1, math.floor(4 * S)),
+        mkPad(1, math.floor(8 * S)),
+        self:makeText(ctx, _("天文与空气"), 18, { gray = true }),
+        mkPad(1, math.floor(3 * S)),
         self:makeText(ctx, string.format("%s %s   %s %s",
-            _("日出"), d.sunrise or "--:--", _("日落"), d.sunset or "--:--"), 22),
-        mkPad(1, math.floor(6 * S)),
+            _("日出"), d.sunrise or "--:--", _("日落"), d.sunset or "--:--"), 19),
+        mkPad(1, math.floor(4 * S)),
         self:makeText(ctx, string.format("%s   %s AQI %s",
-            d.feels or "--", _("空气"), air.text), 22),
+            d.feels or "--", _("空气"), air.text), 19),
     }
 
     return VerticalGroup:new(items)
