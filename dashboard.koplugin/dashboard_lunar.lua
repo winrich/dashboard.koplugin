@@ -160,6 +160,12 @@ function M.lunar_text(lunar)
     return string.format("%s年%s%s", gz, month_txt, DAY_NAMES[lunar.day])
 end
 
+--- 农历月日，不含年份，例如 “十月初三” / “闰六月初一”
+function M.month_day_text(lunar)
+    local month_txt = (lunar.leap and "闰" or "") .. MONTH_NAMES[lunar.month] .. "月"
+    return month_txt .. DAY_NAMES[lunar.day]
+end
+
 function M.zodiac(lunar)
     return ZODIAC[(lunar.year - 4) % 12 + 1]
 end
@@ -204,6 +210,14 @@ local function solar_term_days(year, k, tz_minutes)
     local days = math.floor(jd - 2440587.5)
     local y, m, d = M.civil_from_days(days)
     return days, y, m, d
+end
+
+--- 第 k 个节气（0=小寒 … 23=冬至）在指定时区下的公历日期
+-- 月历用来标记节气所在的那一天，避免把整月的 current_term 循环算一遍
+-- @return 年, 月, 日
+function M.solar_term_date(year, k, tz_minutes)
+    local _, y, m, d = solar_term_days(year, k, tz_minutes or 480)
+    return y, m, d
 end
 
 --- 返回当日所处节气与下一节气

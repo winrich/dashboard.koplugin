@@ -147,9 +147,11 @@ end
 
 local TextWidget = Widget:extend{}
 function TextWidget:getSize()
+    -- 真实 TextWidget 的高度是 getHeightAndAscender() 取整后加 padding，这里同样取整，
+    -- 否则 VerticalGroup 累加出的 y 坐标会带小数，与真机行为不符
     return {
-        w = text_width(tostring(self.text or ""), self.face.size),
-        h = self.face.size * 1.35,
+        w = math.floor(text_width(tostring(self.text or ""), self.face.size)),
+        h = math.floor(self.face.size * 1.35),
     }
 end
 function TextWidget:paintTo(bb, x, y)
@@ -194,6 +196,10 @@ local fake_bb = {}
 function fake_bb:paintRect(x, y, w, h, color)
     RECORD[#RECORD + 1] = { kind = "rect", x = x, y = y, w = w, h = h, color = color }
 end
+-- 节气进度条的外框走 paintBorder
+function fake_bb:paintBorder(x, y, w, h, bw, color)
+    RECORD[#RECORD + 1] = { kind = "border", x = x, y = y, w = w, h = h, color = color }
+end
 
 function UIManager:show(widget)
     table.insert(stack, widget)
@@ -226,22 +232,32 @@ function UIManager:preventStandby() standby = standby + 1 end
 function UIManager:allowStandby() standby = standby - 1 end
 function UIManager:askForRestart() end
 
-local json_store = {
+local weather_store = {
     current = {
         temperature_2m = 12.4,
         relative_humidity_2m = 45,
         apparent_temperature = 10.1,
         weather_code = 3,
         wind_speed_10m = 8.2,
+        wind_direction_10m = 135,
     },
     daily = {
         temperature_2m_max = { 16.2 },
         temperature_2m_min = { 4.8 },
+        sunrise = { "2026-11-11T06:52" },
+        sunset = { "2026-11-11T16:58" },
     },
 }
 
+local air_store = {
+    current = { pm2_5 = 28.4, pm10 = 46.0 },
+}
+
 local JSON = {}
-function JSON.decode(_) return json_store end
+function JSON.decode(s)
+    if type(s) == "string" and s:find('"air"', 1, true) then return air_store end
+    return weather_store
+end
 
 local ltn12 = {}
 ltn12.sink = {}
@@ -254,7 +270,11 @@ end
 
 local http = {}
 function http.request(req)
-    local body = '{"stub":true}'
+    -- 空气质量走独立域名，返回不同的标记体，让 JSON 桩分流
+    local body = '{"weather":true}'
+    if req.url and req.url:find("air%-quality") then
+        body = '{"air":true}'
+    end
     if req.sink then req.sink(body) end
     return 1, 200, {}, "HTTP/1.1 200 OK"
 end
@@ -282,9 +302,13 @@ function LuaSettings:has(k) return self.data[k] ~= nil end
 local DataStorage = {}
 function DataStorage:getSettingsDir() return "/tmp/settings" end
 
+-- 屏幕尺寸由外部注入，用于分别验证竖屏与横屏版式
+local SW = tonumber(_G.STUB_W) or 600
+local SH = tonumber(_G.STUB_H) or 800
+
 local screen = {
-    getWidth = function() return 600 end,
-    getHeight = function() return 800 end,
+    getWidth = function() return SW end,
+    getHeight = function() return SH end,
 }
 local Device = {}
 Device.screen = screen
@@ -300,7 +324,7 @@ local InfoMessage = Widget:extend{}
 
 ---------------------------------------------------------------- 模块注册
 package.preload["ffi/blitbuffer"] = function()
-    return { COLOR_WHITE = 0, COLOR_BLACK = 255 }
+    return { COLOR_WHITE = 0, COLOR_BLACK = 255, COLOR_DARK_GRAY = 0x55 }
 end
 package.preload["ui/widget/widget"] = function() return Widget end
 package.preload["ui/widget/container/widgetcontainer"] = function() return WidgetContainer end
@@ -403,8 +427,15 @@ end
 -- 检查总高度是否溢出屏幕
 local group = instance.root[1][1]
 local gs = group:getSize()
-EVENTS[#EVENTS + 1] = string.format("== 内容总尺寸 %dx%d（屏幕 600x800），水平余量 %d px ==",
-    math.floor(gs.w), math.floor(gs.h), 600 - math.floor(gs.w))
+local overflow = (gs.h > SH + 1) or (gs.w > SW + 1)
+if overflow then
+    print(string.format("[FAIL] 内容 %dx%d 超出屏幕 %dx%d", math.floor(gs.w), math.floor(gs.h), SW, SH))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 内容总尺寸 %dx%d（屏幕 %dx%d），水平余量 %d px，垂直余量 %d px ==",
+    math.floor(gs.w), math.floor(gs.h), SW, SH,
+    SW - math.floor(gs.w), SH - math.floor(gs.h))
 
 -- 模拟跨分钟 tick
 local texts_before = RECORD[#RECORD]
@@ -420,6 +451,13 @@ if not ok then
 end
 EVENTS[#EVENTS + 1] = string.format("== fetchWeather() 通过，温度 %.1f，天气码 %d ==",
     instance.weather.temp, instance.weather.code)
+local shown = instance:weatherDisplay()
+EVENTS[#EVENTS + 1] = string.format("== 风力 %s，日出 %s，日落 %s ==",
+    tostring(shown.wind), tostring(shown.sunrise), tostring(shown.sunset))
+EVENTS[#EVENTS + 1] = string.format("== 空气质量 AQI = %s（PM2.5 %.1f，PM10 %.1f）==",
+    tostring(instance.air and instance.air.aqi),
+    tonumber(instance.air and instance.air.pm25) or -1,
+    tonumber(instance.air and instance.air.pm10) or -1)
 
 -- 关闭，检查状态恢复
 ok, err = pcall(function() instance:close() end)
