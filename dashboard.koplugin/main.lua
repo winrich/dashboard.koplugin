@@ -62,6 +62,17 @@ local function screen_rotation()
     return ok and now or nil
 end
 
+--- 读 Kindle 的 lipc 整型属性。读不到返回 nil（调用方自备默认值）。
+--- 用 io.popen 而不是 liblipclua：这个插件不依赖额外的 .so，越狱环境更稳。
+local function readLipcInt(service, prop)
+    local cmd = string.format("lipc-get-prop -i %s %s 2>/dev/null", service, prop)
+    local ok, handle = pcall(io.popen, cmd)
+    if not ok or not handle then return nil end
+    local line = handle:read("*l")
+    handle:close()
+    return tonumber(line or "")
+end
+
 local COLOR_BLACK = Blitbuffer.COLOR_BLACK
 local COLOR_WHITE = Blitbuffer.COLOR_WHITE
 -- COLOR_DARK_GRAY 在个别老版本上可能不存在，退化成黑色而不是崩掉
@@ -275,6 +286,9 @@ function Dashboard:init()
     -- 关闭时还原，避免插件加载就把整个 KOReader 转了向
     -- 凭据每次启动重新读取，改完配置重启 KOReader 即生效
     self.config = QWeather.loadConfig(self.path or PLUGIN_DIR, G_reader_settings)
+    -- 休眠时把看板当屏保：钩子必须在插件加载时就装上，
+    -- 这样即使看板没打开（在看书 / 书架），休眠也会显示看板
+    self:installScreenSaverHook()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
     end
@@ -326,6 +340,17 @@ function Dashboard:genMenuItemTable()
             text = _("重新布局"),
             callback = function()
                 if self.shown then self:refreshLayout() end
+            end,
+        },
+        {
+            text = _("休眠时显示看板（屏保）"),
+            help_text = _("按电源键或空闲自动休眠时，屏幕停留在看板上，而不是 KOReader 的原生屏保。\n"
+                .. "e-ink 断电保画面，所以休眠期间看板是静止的，唤醒后继续刷新。"),
+            checked_func = function() return self:screensaverEnabled() end,
+            callback = function()
+                local enabled = self:screensaverEnabled()
+                G_reader_settings:saveSetting("dashboard_screensaver", not enabled)
+                if G_reader_settings.flush then G_reader_settings:flush() end
             end,
         },
     }
@@ -584,8 +609,10 @@ function Dashboard:open()
     self.shown = true
     -- 记下打开前的屏幕方向，关闭时原样恢复，别把整个 KOReader 留在横屏
     self.base_rotation = screen_rotation()
+    -- 恢复电源键 + 允许休眠：老版本这里设 preventScreenSaver=1 并 preventStandby，
+    -- 结果是按电源键完全没反应。休眠画面由 installScreenSaverHook 接管成看板，
+    -- 所以这里不再需要抑制系统屏保。
     self:setKindleScreenSaver(true)
-    UIManager:preventStandby()
     -- 沿用上次选定的方向：选了横屏，重启 KOReader 打开看板时仍然是横屏；
     -- 选的是竖屏而设备当前是横的（上次没还原干净），这里也一并转回去
     local mode = G_reader_settings:readSetting("dashboard_orientation")
@@ -617,7 +644,6 @@ function Dashboard:close()
     if root then
         UIManager:close(root)
     end
-    UIManager:allowStandby()
     self:setKindleScreenSaver(false)
     -- 把屏幕转回打开看板前的方向，否则退出看板后整个 KOReader 都是横的
     if self.rotation_changed and self.base_rotation ~= nil and Screen.setRotationMode then
@@ -627,12 +653,126 @@ function Dashboard:close()
     end
 end
 
--- Kindle 上抑制系统屏保（KOReader 自身只负责不主动待机，屏保由 powerd 管）
+--- Kindle 屏保总开关。
+--- 老版本这里设 preventScreenSaver=1，想的是「别让屏保盖掉看板」，
+--- 但 powerd 这个属性的副作用远比预想大：设成 1 之后**电源键会被完全忽略**，
+--- 而且不产生可捕获的事件（MobileRead 上做 Kindle 屏保工具的开发者实测原话：
+--- "If we set preventScreenSaver to 1, the power button seems to be ignored totally"）。
+--- 表现就是按电源键毫无反应、设备也不会自动休眠。
+--- 现在改为显式写 0：电源键恢复、设备可以正常休眠，
+--- 休眠那一刻的画面由下面的屏保钩子接管成看板。
 function Dashboard:setKindleScreenSaver(prevent)
     if not Device:isKindle() then return end
-    local value = prevent and "1" or "0"
-    local ok = os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver " .. value)
-    logger.dbg("dashboard: preventScreenSaver =", value, "result:", tostring(ok))
+    local value
+    if prevent then
+        -- 记下进入前的值，退出看板时还原（多数机器是 0）
+        if self.saved_prevent_ss == nil then
+            self.saved_prevent_ss = readLipcInt("com.lab126.powerd", "preventScreenSaver")
+        end
+        value = 0
+    else
+        value = self.saved_prevent_ss or 0
+        self.saved_prevent_ss = nil
+    end
+    os.execute(string.format("lipc-set-prop -i com.lab126.powerd preventScreenSaver %d", value))
+    logger.dbg("dashboard: preventScreenSaver =", value)
+end
+
+-- ---------------------------------------------------------------- 休眠屏保
+-- Kindle 的休眠链路（已在本机 KOReader 源码里逐层确认）：
+--   按电源键 / 空闲超时
+--     → powerd 发事件 → Device:intoScreenSaver()
+--       → Screensaver:setup() + Screensaver:show()   ← 屏保在这一步画
+--       → powerd:beforeSuspend() → 真正挂起
+-- 我们接管 Screensaver.show()：
+--   · 看板已经打开 → 屏幕本来就是看板，只要阻止 KOReader 画屏保盖掉它
+--   · 看板没打开（在看书 / 书架）→ 现建一棵看板控件树画上去，
+--     数据用 init() 时从 dashboard_cache.lua 载入的那一份
+-- e-ink 断电保画面，于是整个休眠期间屏幕就停在看板上。
+-- 唤醒时接管 Screensaver.close()：撤掉看板，并返回 true 让
+-- Kindle:outofScreenSaver 走一次 setDirty("all","full") 把原界面完整刷回来。
+--
+-- 注意 e-ink 的物理限制：休眠时 CPU 是停的，定时器不走，
+-- 所以休眠期间看板是**静止**的（屏保本来就该是静态的），唤醒后才继续刷新。
+
+--- 是否允许看板接管休眠屏保。默认开；设成 false 就完全走 KOReader 原生屏保。
+function Dashboard:screensaverEnabled()
+    local v = G_reader_settings:readSetting("dashboard_screensaver")
+    return v == nil or v == true
+end
+
+--- 休眠瞬间：把看板画到屏幕上
+function Dashboard:onEnterScreenSaver()
+    if not self.shown then
+        self:renderSaverFrame()
+    end
+    -- Screensaver:show() 本来会设这个标记，我们绕过了它，必须自己设，
+    -- 否则唤醒时 Kindle:outofScreenSaver 不会进 close 分支
+    Device.screen_saver_mode = true
+    self.screensaver_owned = true
+end
+
+--- 建一棵看板控件树并画到屏幕上（仅在休眠时用，不启动定时器）
+function Dashboard:renderSaverFrame()
+    if self.saver_root then return end
+    local ok, root = pcall(self.createRoot, self)
+    if not ok or not root then
+        logger.warn("dashboard: 休眠屏保渲染失败", tostring(root))
+        return
+    end
+    self.saver_root = root
+    UIManager:show(root)
+    UIManager:setDirty(root, "full")
+    -- 挂起紧跟着就发生，必须在这里同步刷完，否则屏幕还停在旧画面上
+    pcall(function() UIManager:forceRePaint() end)
+end
+
+--- 唤醒：撤掉屏保用的看板
+function Dashboard:onLeaveScreenSaver()
+    local root = self.saver_root
+    self.saver_root = nil
+    self.screensaver_owned = false
+    if root then
+        pcall(function() UIManager:close(root) end)
+    end
+end
+
+--- 把我们的逻辑挂到 Screensaver 的 show/close 上（只装一次，只在 Kindle 上装）
+function Dashboard:installScreenSaverHook()
+    if self._ss_hooked or not Device:isKindle() then return end
+    local ok, Screensaver = pcall(require, "ui/screensaver")
+    if not ok or type(Screensaver) ~= "table" then
+        logger.warn("dashboard: 取不到 ui/screensaver，休眠屏保功能不可用")
+        return
+    end
+    self._ss_hooked = true
+    local this = self
+
+    local orig_show = Screensaver.show
+    Screensaver.show = function(ss, ...)
+        if not this:screensaverEnabled() then
+            return orig_show(ss, ...)
+        end
+        local ok2, err = pcall(function() this:onEnterScreenSaver() end)
+        if not ok2 then
+            -- 接管失败就老老实实退回原生屏保，别把休眠弄坏
+            logger.warn("dashboard: 屏保接管失败，回退原生", tostring(err))
+            return orig_show(ss, ...)
+        end
+    end
+
+    local orig_close = Screensaver.close
+    Screensaver.close = function(ss, ...)
+        if not this.screensaver_owned then
+            return orig_close(ss, ...)
+        end
+        local ret = orig_close(ss, ...)
+        this:onLeaveScreenSaver()
+        -- 返回 true 让 outofScreenSaver 做一次全屏重绘，把休眠前的界面刷回来
+        return true
+    end
+
+    logger.dbg("dashboard: 已接管休眠屏保")
 end
 
 -- ------------------------------------------------------------------ 定时器

@@ -270,6 +270,8 @@ end
 
 function UIManager:preventStandby() standby = standby + 1 end
 function UIManager:allowStandby() standby = standby - 1 end
+-- 休眠屏保渲染后要同步刷完再挂起（真机拦的是 _repaint）
+function UIManager:forceRePaint() end
 function UIManager:askForRestart() end
 -- 上划退出的关闭动作被推迟到 nextTick，桩件里直接同步执行
 function UIManager:nextTick(fn) fn() end
@@ -397,7 +399,37 @@ if not _G.STUB_NO_ROTATION then
 end
 local Device = {}
 Device.screen = screen
+Device.screen_saver_mode = false     -- 真机 generic/device.lua 的同名字段
+Device.canSuspend = true
 function Device:isKindle() return true end
+
+-- 屏保桩：真机上 Screensaver:show() 负责画屏保，看板插件会接管这两个入口。
+-- 这里如实实现 show/close 的语义，才能验证「休眠画看板 / 唤醒撤掉并重绘」。
+-- close() 在没建过 widget 时返回 nil（真机 screensaver.lua:713 的行为），
+-- 看板接管的场合要改成返回 true，否则 outofScreenSaver 不会做全屏重绘。
+local Screensaver = {}
+function Screensaver:show()
+    Device.screen_saver_mode = true
+end
+function Screensaver:close()
+    Device.screen_saver_mode = false
+    return nil
+end
+
+-- 照抄 Kindle:intoScreenSaver / outofScreenSaver 的关键分支
+local function stub_sleep()
+    if not Device.screen_saver_mode then
+        Screensaver:show()
+    end
+end
+local function stub_wake()
+    if Device.screen_saver_mode then
+        local widget_was_closed = Screensaver:close()
+        if widget_was_closed then
+            UIManager:setDirty(nil, "full")
+        end
+    end
+end
 
 -- 电量桩：真机上对应 powerd 的 battLevel / isCharging
 local powerd = { capacity = 78, charging = false }
@@ -488,6 +520,7 @@ package.preload["ltn12"] = function() return ltn12 end
 package.preload["luasettings"] = function() return LuaSettings end
 package.preload["datastorage"] = function() return DataStorage end
 package.preload["device"] = function() return Device end
+package.preload["ui/screensaver"] = function() return Screensaver end
 package.preload["logger"] = function() return logger end
 package.preload["ui/gesturerange"] = function() return GestureRange end
 package.preload["depgraph"] = function() return DepGraph end
@@ -596,6 +629,37 @@ if not ok then
 end
 EVENTS[#EVENTS + 1] = "== open() 通过 =="
 EVENTS[#EVENTS + 1] = string.format("== 待机抑制计数 = %d，激活的定时器 = %d ==", standby, #timers)
+
+-- 休眠屏保（1）：看板已经打开时，画面本来就是看板，不该再建第二棵树
+local stack_open = #stack
+stub_sleep()
+if not Device.screen_saver_mode then
+    print("[FAIL] 休眠时没有设 screen_saver_mode，唤醒分支永远不会执行")
+    os.exit(1)
+end
+if instance.saver_root then
+    print("[FAIL] 看板已打开时休眠又建了一棵看板树（画面会重复叠加）")
+    os.exit(1)
+end
+if #stack ~= stack_open then
+    print("[FAIL] 看板已打开时休眠改变了控件栈")
+    os.exit(1)
+end
+if not instance.screensaver_owned then
+    print("[FAIL] 休眠时没有标记屏保归看板接管")
+    os.exit(1)
+end
+-- 唤醒必须返回 true，Kindle:outofScreenSaver 才会做一次全屏重绘
+local woke_ok = Screensaver:close()
+if woke_ok ~= true then
+    print("[FAIL] 唤醒时没有请求重绘（被接管的 close 必须返回 true）")
+    os.exit(1)
+end
+if Device.screen_saver_mode then
+    print("[FAIL] 唤醒后 screen_saver_mode 没有复位")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 休眠（看板已打开）：复用当前画面，唤醒请求全屏重绘 =="
 
 -- 时钟控件必须真的挂在控件树里。纵向拉伸会反复试算版式，而 buildPortrait 每次
 -- 都会把 self.clock_widget 指向当次建的控件——一旦留着被否决那一版，
@@ -992,6 +1056,44 @@ if not ok then
 end
 EVENTS[#EVENTS + 1] = string.format("== close() 通过，待机抑制计数 = %d，定时器 = %d，widget 栈 = %d ==",
     standby, #timers, #stack)
+
+-- 休眠屏保（2）：看板关掉之后（在看书 / 书架）休眠，应现建一棵看板画上去
+local stack_closed = #stack
+RECORD = {}
+stub_sleep()
+if not instance.saver_root then
+    print("[FAIL] 看板未打开时休眠没有渲染看板（会留着空屏或原生屏保）")
+    os.exit(1)
+end
+if #stack ~= stack_closed + 1 then
+    print("[FAIL] 屏保看板没有正确地占用控件栈一层")
+    os.exit(1)
+end
+local saw_time = false
+for _, r in ipairs(RECORD) do
+    if r.kind == "text" and type(r.text) == "string" and r.text:match("^%d%d?:%d%d") then
+        saw_time = true
+        break
+    end
+end
+if not saw_time then
+    print("[FAIL] 屏保看板里没有时钟文本，只建了树没真正画出来")
+    os.exit(1)
+end
+local woke2 = Screensaver:close()
+if woke2 ~= true then
+    print("[FAIL] 从屏保看板唤醒时没有请求重绘")
+    os.exit(1)
+end
+if instance.saver_root then
+    print("[FAIL] 唤醒后屏保看板没有撤掉")
+    os.exit(1)
+end
+if #stack ~= stack_closed then
+    print("[FAIL] 唤醒后控件栈没有恢复到休眠前")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 休眠（看板未打开）：现建看板作屏保；唤醒后栈已恢复 =="
 
 print("---------- 事件序列 ----------")
 for _, e in ipairs(EVENTS) do print(e) end

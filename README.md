@@ -98,7 +98,44 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 > 触摸区重叠时框架按注册顺序逐个问，handler 返回 `false` 就继续问下一个，所以顶部下滑区
 > 可以和全屏的上划区共存。
 
-## 版面边距
+## 休眠屏保（休眠时屏幕停在看板上）
+
+按电源键或空闲自动休眠时，看板会留在屏幕上，而不是被 KOReader 的原生屏保（书封 / Sleep 提示）盖住。
+菜单「桌面看板 → 休眠时显示看板（屏保）」可以关掉这个行为。
+
+**为什么要接管，而不是设个属性了事**：早期版本用 `lipc-set-prop com.lab126.powerd preventScreenSaver 1`
+来"防止屏保盖掉看板"，代价是 **powerd 会完全忽略电源键**——按下去毫无反应，设备也不会自动休眠。
+MobileRead 上做 Kindle 屏保工具的开发者的原话：
+`If we set preventScreenSaver to 1, the power button seems to be ignored totally`。
+现在改成显式写 `0`（恢复电源键与自动休眠），画面改由屏保钩子接管。
+
+**拦截点**（链路已在本机 KOReader 源码逐层核对）：
+
+```
+按电源键 / 空闲超时
+  → powerd 发事件 → Device:intoScreenSaver()          device/kindle/device.lua:752
+    → Screensaver:setup() + Screensaver:show()         ← 在 show 这一层接管
+    → powerd:beforeSuspend() → 真正挂起
+```
+
+`Dashboard:installScreenSaverHook()` 包装 `Screensaver.show` / `Screensaver.close`：
+
+| 场景 | 行为 |
+|---|---|
+| 看板已打开 | 画面本来就是看板，只阻止 KOReader 画屏保盖它，**不再另建控件树**（否则会叠加/闪） |
+| 看板未打开（在看书、书架） | 现建一棵看板树画上去，数据取 `init()` 时从 `dashboard_cache.lua` 载入的缓存 |
+| 唤醒 | 撤掉屏保树，`close` 返回 `true` 让 `Kindle:outofScreenSaver` 做一次 `setDirty("all","full")`，把原界面刷回来 |
+
+两个必须注意的实现细节：
+
+1. `Screensaver:show()` 内部会设 `Device.screen_saver_mode = true`；我们绕过它，**必须自己设**，
+   否则唤醒时 `Kindle:outofScreenSaver` 不会进 close 分支，屏幕就卡在屏保上。
+2. 渲染后要 `UIManager:forceRePaint()` **同步刷完**再让挂起继续，否则屏幕留在旧画面上。
+
+**物理限制**：e-ink 休眠时 CPU 停止、定时器不走，所以休眠期间看板是**静止**的
+（屏保本来就该是静态的），唤醒后才继续刷新。想要"分钟在跳"只能常亮不休眠。
+
+
 
 整块版心按「屏幕尺寸 - 2 × 边距」排版，四边都留白，长分隔线也跟着内缩（以前是通屏宽，
 所以看着贴着屏幕边）：
@@ -225,6 +262,9 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 | 老机型 | 600×800 内容 570×766；800×600 内容 770×568，倍率均 1.000（回归用） |
 | 不支持转屏时 | 桩件去掉 `setRotationMode`：滑动退化为纯版式切换，竖屏机身里跑横屏版式仍是 1020×1002（S 自动降到 1.647），不溢出 |
 | 生命周期 | 控件栈、定时器、待机抑制计数在七种尺寸/方向组合下全部归零 |
+| 休眠屏保（看板已打开） | 模拟 `intoScreenSaver`：复用当前画面、**不另建控件树**（栈深度不变）、`screen_saver_mode` 置位；`close` 返回 `true` 以触发全屏重绘 |
+| 休眠屏保（看板未打开） | 模拟休眠现建看板：控件栈 +1、画笔记录里出现时钟文本（证明真的画了内容而不是空树）；唤醒后 `saver_root` 清空、栈恢复到休眠前 |
+| 电源键 | 打开看板时把 `preventScreenSaver` 写 **0**（旧版写 1 会让电源键完全失效），关闭时把 `lipc-get-prop` 读到的原值还原 |
 | 月历 | 11 月 1 日落在周日列、共 6 行、前后月补位、今天与两个节气日标记均正确 |
 | gzip 链路 | 桩件返回真实 gzip 字节，解压后逐字段比对：温度 13.19、现象 晴(100)、湿度 44%、风级 2、日出 06:54、日落 17:02、AQI 65（良） |
 | 时区换算 | 乌鲁木齐在 UTC+6 下显示 06:58/16:48，切到 UTC+8 变为 08:58/18:48，正好差 2 小时 |
@@ -234,8 +274,11 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 1. ~~真机字体度量与桩件估算有差异~~ **已实测校准**（2026-11-11，设备 v2026.07.1）：
    行高 1.363 em、CJK 宽 1.0 em、ASCII 0.55 em，桩件已按此修正。
    当前横屏上下各 27px 余量，是四个尺寸里最紧的一处；若真机再挤一点会自动缩一档（4%）。
-2. `lipc-set-prop` 是否在 KOReader 进程的 PATH 内（不在则屏保抑制静默失效）。
-3. Kindle 的 powerd 是否会在某些固件上绕过 `preventStandby` 直接休眠。
+2. `lipc-set-prop` / `lipc-get-prop` 是否在 KOReader 进程的 PATH 内
+   （不在则 `preventScreenSaver` 写不进去；看板本身照常显示，只是电源键行为退回系统默认）。
+3. ~~powerd 是否绕过 `preventStandby` 直接休眠~~：现在主动放开待机，休眠是**预期行为**。
+   未验证的是「休眠时看板是否真的留在屏幕上」，以及不同休眠时长（含 1 小时后的深度休眠）唤醒后
+   能否正确刷回原界面——这两条只能上机看。
 4. `ffi` 能否在设备上加载 libz 并成功解压（桩件里用 Python zlib 替代，只验证了算法与解析；
    真机首次拉取若显示「天气数据解压失败」，说明 libz 绑定不可用，日志里会有 `zlib 自检未通过`）。
 5. **转屏是否真的生效**：`Screen:setRotationMode` 在 Kindle 上走软件旋转 blitbuffer
@@ -254,7 +297,8 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 | 菜单里没有「桌面看板」 | 确认目录名以 `.koplugin` 结尾、路径是 `koreader/plugins/` |
 | 打开后黑屏/白屏无内容 | 看 `koreader/crash.log`，多为图标路径问题 |
 | 只显示文字没有天气图标 | `icons/` 是否随目录一起拷贝 |
-| 一分钟后自动黑屏 | 屏保未抑制，检查 `lipc-set-prop` 是否可调用 |
+| 休眠后屏幕变黑 / 出现书封或 Sleep 提示 | 屏保钩子没生效：确认菜单「休眠时显示看板（屏保）」是勾上的；再看 `crash.log` 有没有 `取不到 ui/screensaver` |
+| 按电源键毫无反应 | `preventScreenSaver` 被残留设成了 1（旧版本行为）。执行 `lipc-set-prop -i com.lab126.powerd preventScreenSaver 0` 即可恢复 |
 | 内容超出屏幕 | 降低 `buildPortrait`/`buildLandscape` 里的间距值或字号 |
 | 温度一直是 `--°` | 菜单「天气服务 → 测试连接」看具体报错；`401` 多为 Key/Host 不匹配 |
 | 页脚显示「Open-Meteo（降级）」 | 和风那一路失败了（凭据了解/超时/解压失败），界面靠降级源撑着，先按上一行排查 |
