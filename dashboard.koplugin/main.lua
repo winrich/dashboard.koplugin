@@ -22,8 +22,20 @@ dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host �
   · Widget:paintTo 基类是空实现，自绘控件必须自己实现 paintTo，getSize 返回 self.dimen
   · WidgetContainer:paintTo 不处理 background，白底必须自己刷，否则透出下层界面
   · TextWidget 支持 setText() 与 fgcolor（官方示例即用 Blitbuffer.COLOR_DARK_GRAY）
-  · 防休眠用 UIManager:preventStandby() / allowStandby()（KOReader 官方接口）
+  · 不要用 UIManager:preventStandby()：会让设备永不休眠、看板一直刷。
+    休眠/唤醒的接管点在 Screensaver.show / close，见下面「休眠屏保」一节
   · HTTPS 走 socket.http（KOReader 自带 LuaSec 集成），失败再退到 ssl.https
+
+看板打开之后的状态机（每一条都已按 KOReader 上游源码核对）：
+  触摸            点按刷新天气；上划退出；左右滑切版式；上缘下滑开菜单
+  空闲但未超时      每分钟局部刷新时钟（只重画时钟那一块），每 30 分钟全刷一次清残影
+  空闲超时 / 按电源键  powerd → Device:intoScreenSaver() → Screensaver.show 被我们接管
+                     → 屏幕保持看板 → powerd:beforeSuspend() 真正挂起（CPU 停）
+                     所以「按电源键屏幕没变化」是正常的：它本来就在显示看板
+  休眠中            CPU 停、定时器基于 CLOCK_MONOTONIC 也不走，画面静止（屏保本就该静态）
+  唤醒              Screensaver.close → 重建版面（时钟/电量/日期/跨日内容一次校正）
+                     + 重置定时器；拉天气推迟几秒，避免同步 HTTP 把唤醒拖成「卡死」
+  菜单开着时休眠      先把菜单撤掉再定格看板，别把菜单当屏保
 --]]
 
 local Blitbuffer = require("ffi/blitbuffer")
@@ -86,6 +98,16 @@ end)()
 
 local UPDATE_INTERVAL = 30 * 60      -- 天气拉取间隔
 local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
+
+-- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
+-- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
+-- 唤醒后第一拍 tick 一定会去拉，正好撞上用户按电源键的那一刻，表现就是「按了没反应」。
+local RESUME_FETCH_GRACE = 25
+
+-- 两拍 tick 间隔超过这个值，说明中间经历了休眠（或系统长时间卡住）。
+-- 定时器走 CLOCK_MONOTONIC，休眠期间不走，唤醒后可能还要再等几十秒才到点，
+-- 这期间屏幕上的时钟是睡前的；所以一旦发现间隔异常就直接重建版面校正。
+local TICK_GAP_REBUILD = 180
 
 -- 设计基准：屏幕短边 600 像素 = 1 倍。
 -- 600x800@167ppi 与 1072x1448@300ppi 都是 6 英寸，短边比 1.787，物理尺寸一致；
@@ -389,20 +411,24 @@ function Dashboard:genMenuItemTable()
     items[#items + 1] = {
         text = _("版式（竖屏 / 横屏）"),
         sub_item_table = {
+            -- 这三项带 checked_func，属于「勾选项」；TouchMenu 对勾选项的默认行为
+            -- 是只 updateItems、不关菜单，所以选中后菜单会一直杵在屏幕上，
+            -- 版式要等手动关菜单才变。这里改走 setOrientationFromMenu：
+            -- 记下选择 → 主动关菜单 → 菜单的 close_callback 里立刻转屏重排。
             {
                 text = _("竖屏"),
                 checked_func = function() return self:getOrientation() == "portrait" end,
-                callback = function() self:setOrientation("portrait") end,
+                callback = function() self:setOrientationFromMenu("portrait") end,
             },
             {
                 text = _("横屏（向右转 90°）"),
                 checked_func = function() return self:getOrientation() == "landscape" end,
-                callback = function() self:setOrientation("landscape") end,
+                callback = function() self:setOrientationFromMenu("landscape") end,
             },
             {
                 text = _("横屏（向左转 90°）"),
                 checked_func = function() return self:getOrientation() == "landscape_ccw" end,
-                callback = function() self:setOrientation("landscape_ccw") end,
+                callback = function() self:setOrientationFromMenu("landscape_ccw") end,
             },
         },
     }
@@ -418,9 +444,11 @@ function Dashboard:genMenuItemTable()
                     .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
                     .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
                     .. "所以横屏要靠左右滑动（或菜单「版式」）手动切，切完请把设备横着拿。\n"
+                    .. "菜单「版式」里选中一项后会立即关菜单并按新方向重排，不用手动关菜单。\n"
                     .. "若横屏后文字是倒的，到菜单「版式」里换「向左转 90°」那一项。\n\n"
                     .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
                     .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
+                    .. "空闲超时或按电源键休眠时，屏幕会停留在看板上（相当于屏保）。\n"
                     .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。"),
             })
         end,
@@ -606,22 +634,35 @@ end
 -- ------------------------------------------------------------------ 打开 / 关闭
 function Dashboard:open()
     if self.shown then return end
+    -- 休眠屏保时画的那棵树可能还在屏幕上（比如唤醒事件没走 close 分支、或者
+    -- 用户从菜单里直接打开看板）。先撤掉，否则同一块屏幕上会叠两棵看板树。
+    self:dismissSaverFrame()
     self.shown = true
     -- 记下打开前的屏幕方向，关闭时原样恢复，别把整个 KOReader 留在横屏
     self.base_rotation = screen_rotation()
     -- 恢复电源键 + 允许休眠：老版本这里设 preventScreenSaver=1 并 preventStandby，
     -- 结果是按电源键完全没反应。休眠画面由 installScreenSaverHook 接管成看板，
     -- 所以这里不再需要抑制系统屏保。
-    self:setKindleScreenSaver(true)
+    self:releaseKindleScreenSaverLock()
+    -- 菜单/挂起重排的状态一并清干净，避免上一轮留下的标记把新会话卡住
+    self.menu = nil
+    self.menu_open = false
+    self.relayout_pending = false
+    self.pending_orientation = nil
+    self._last_tick_ts = os.time()
+    self._resume_ts = nil
     -- 沿用上次选定的方向：选了横屏，重启 KOReader 打开看板时仍然是横屏；
     -- 选的是竖屏而设备当前是横的（上次没还原干净），这里也一并转回去
     local mode = G_reader_settings:readSetting("dashboard_orientation")
     if mode == "portrait" or mode == "landscape" or mode == "landscape_ccw" then
         if self:rotateScreen(mode) then
+            -- 转成了：版式由屏幕尺寸自然判定，清掉上一轮留下的强制标记
+            self.force_landscape = nil
             self.rotation_changed = (screen_rotation() ~= self.base_rotation)
-        elseif mode ~= "portrait" then
-            -- 转不了就按横屏版式排（画面方向不变，至少排版是另一套）
-            self.force_landscape = true
+        else
+            -- 转不了就按要的方向排（画面方向不变，至少排版是另一套）。
+            -- 注意「竖屏」也要显式写 false，否则上一轮遗留的 true 会让它一直排横屏。
+            self.force_landscape = (mode ~= "portrait")
         end
     end
     self:refreshLayout()
@@ -632,19 +673,29 @@ end
 function Dashboard:close()
     if not self.shown then return end
     self.shown = false
-    -- 万一是菜单开着的时候被关掉，别让标记卡住导致以后再也不重排
+    -- 万一是菜单开着的时候被关掉，别让标记卡住导致以后再也不重排；
+    -- 菜单控件本身也要撤，否则屏幕上会留一个没人管的孤儿菜单。
+    local menu = self.menu
+    self.menu = nil
     self.menu_open = false
     self.relayout_pending = false
     self.pending_orientation = nil
+    if menu then
+        pcall(function() UIManager:close(menu) end)
+    end
+    -- 屏保用的那棵树同理：正常流程里唤醒时就撤掉了，这里只是兜底
+    self:dismissSaverFrame()
     if self._tick_fn then
         UIManager:unschedule(self._tick_fn)
     end
+    self._last_tick_ts = nil
+    self._resume_ts = nil
     local root = self.root
     self.root = nil
     if root then
         UIManager:close(root)
     end
-    self:setKindleScreenSaver(false)
+    self:restoreKindleScreenSaverLock()
     -- 把屏幕转回打开看板前的方向，否则退出看板后整个 KOReader 都是横的
     if self.rotation_changed and self.base_rotation ~= nil and Screen.setRotationMode then
         pcall(function() Screen:setRotationMode(self.base_rotation) end)
@@ -653,29 +704,32 @@ function Dashboard:close()
     end
 end
 
---- Kindle 屏保总开关。
+--- Kindle 屏保总开关：进入看板时放开它。
 --- 老版本这里设 preventScreenSaver=1，想的是「别让屏保盖掉看板」，
 --- 但 powerd 这个属性的副作用远比预想大：设成 1 之后**电源键会被完全忽略**，
 --- 而且不产生可捕获的事件（MobileRead 上做 Kindle 屏保工具的开发者实测原话：
 --- "If we set preventScreenSaver to 1, the power button seems to be ignored totally"）。
 --- 表现就是按电源键毫无反应、设备也不会自动休眠。
---- 现在改为显式写 0：电源键恢复、设备可以正常休眠，
---- 休眠那一刻的画面由下面的屏保钩子接管成看板。
-function Dashboard:setKindleScreenSaver(prevent)
+--- 现在改为显式写 0：电源键恢复、设备可以正常休眠（这正是我们要的：
+--- 休眠那一刻的画面由下面的屏保钩子接管成看板，比一直亮着省电得多）。
+function Dashboard:releaseKindleScreenSaverLock()
     if not Device:isKindle() then return end
-    local value
-    if prevent then
-        -- 记下进入前的值，退出看板时还原（多数机器是 0）
-        if self.saved_prevent_ss == nil then
-            self.saved_prevent_ss = readLipcInt("com.lab126.powerd", "preventScreenSaver")
-        end
-        value = 0
-    else
-        value = self.saved_prevent_ss or 0
-        self.saved_prevent_ss = nil
+    -- 记下进入前的值，退出看板时还原（多数机器是 0）
+    if self.saved_prevent_ss == nil then
+        self.saved_prevent_ss = readLipcInt("com.lab126.powerd", "preventScreenSaver")
     end
+    os.execute("lipc-set-prop -i com.lab126.powerd preventScreenSaver 0")
+    logger.dbg("dashboard: preventScreenSaver = 0（放开电源键与自动休眠）")
+end
+
+--- 退出看板时把 preventScreenSaver 写回进入前的值。
+function Dashboard:restoreKindleScreenSaverLock()
+    if not Device:isKindle() then return end
+    local value = self.saved_prevent_ss
+    if value == nil then return end
+    self.saved_prevent_ss = nil
     os.execute(string.format("lipc-set-prop -i com.lab126.powerd preventScreenSaver %d", value))
-    logger.dbg("dashboard: preventScreenSaver =", value)
+    logger.dbg("dashboard: preventScreenSaver 还原为", value)
 end
 
 -- ---------------------------------------------------------------- 休眠屏保
@@ -703,6 +757,23 @@ end
 
 --- 休眠瞬间：把看板画到屏幕上
 function Dashboard:onEnterScreenSaver()
+    -- 菜单开着的时候休眠是个坑：屏幕此刻停的是菜单，不是看板，
+    -- 冻成屏保就变成一张「设置菜单截图」。先把菜单撤掉、把看板本体重画一次。
+    -- 挂起的转屏请求直接丢弃：马上要挂起了，这时转屏既慢又容易刷不干净。
+    if self.menu_open or self.menu then
+        self.pending_orientation = nil
+        self.relayout_pending = false
+        local menu = self.menu
+        self.menu = nil
+        self.menu_open = false
+        if menu then
+            pcall(function() UIManager:close(menu) end)
+        end
+        if self.shown then
+            self:refreshLayout()
+            pcall(function() UIManager:forceRePaint() end)
+        end
+    end
     if not self.shown then
         self:renderSaverFrame()
     end
@@ -727,14 +798,28 @@ function Dashboard:renderSaverFrame()
     pcall(function() UIManager:forceRePaint() end)
 end
 
---- 唤醒：撤掉屏保用的看板
-function Dashboard:onLeaveScreenSaver()
+--- 撤掉休眠时画的那棵看板树（幂等，任何时候调用都安全）
+function Dashboard:dismissSaverFrame()
     local root = self.saver_root
     self.saver_root = nil
-    self.screensaver_owned = false
     if root then
         pcall(function() UIManager:close(root) end)
     end
+end
+
+--- 唤醒：撤掉屏保树，并把看板校正到「现在」
+function Dashboard:onLeaveScreenSaver()
+    self:dismissSaverFrame()
+    self.screensaver_owned = false
+    if not self.shown then return end
+    -- 两个问题一起解决：
+    --  · 定时器基于 CLOCK_MONOTONIC，休眠期间不走，唤醒后最多还要再等一整分钟
+    --    才到点，这一分钟里屏幕上还是睡前的时钟；
+    --  · 电量、日期、农历、跨日（睡过去一整晚）也都是旧的。
+    -- 直接重建一次版面最省事，也把电池/日期一次校正。
+    self._resume_ts = os.time()
+    self:refreshLayout()
+    self:scheduleTick()
 end
 
 --- 把我们的逻辑挂到 Screensaver 的 show/close 上（只装一次，只在 Kindle 上装）
@@ -766,9 +851,19 @@ function Dashboard:installScreenSaverHook()
         if not this.screensaver_owned then
             return orig_close(ss, ...)
         end
-        local ret = orig_close(ss, ...)
-        this:onLeaveScreenSaver()
-        -- 返回 true 让 outofScreenSaver 做一次全屏重绘，把休眠前的界面刷回来
+        -- 两种情形都会走到这里：
+        --  · 看板已打开 → 我们没建 widget，orig_close 会走 cleanup() 把
+        --    Device.screen_saver_mode 复位（这是唯一会复位它的地方，别跳过）
+        --  · 休眠时现建的看板树 → 由 onLeaveScreenSaver 撤掉
+        -- orig_close 必须在撤树之前跑：它内部的 cleanup() 是唯一会把
+        -- Device.screen_saver_mode 复位的地方，跳过它下次休眠就进不了 show 分支了。
+        -- 它的返回值（「没有 widget」时是 nil）不能用，我们在下面自己返回 true。
+        orig_close(ss, ...)
+        local ok2, err = pcall(function() this:onLeaveScreenSaver() end)
+        if not ok2 then
+            logger.warn("dashboard: 唤醒处理失败", tostring(err))
+        end
+        -- 一律返回 true 让 outofScreenSaver 做一次全屏重绘，把休眠前的界面刷回来。
         return true
     end
 
@@ -787,8 +882,29 @@ function Dashboard:scheduleTick()
 end
 
 function Dashboard:tick()
-    if not self.shown then return end
+    if not self.shown or not self.root then return end
+    local wall = os.time()
     local now = self:localNow()
+
+    -- 睡眠/长时间中断后的自愈：两拍 tick 相隔过久，说明中间设备挂起过
+    -- （或者被别的东西卡住了）。此时屏幕上的时钟、电量、日期全是旧的，
+    -- 直接重建一次版面，比逐项判断省事也更可靠。
+    local last_ts = self._last_tick_ts
+    self._last_tick_ts = wall
+    if last_ts and wall - last_ts > TICK_GAP_REBUILD then
+        logger.dbg("dashboard: 距上次 tick", wall - last_ts, "秒，按唤醒处理，重建版面")
+        self._resume_ts = self._resume_ts or wall
+        self:refreshLayout()
+        self:scheduleTick()
+        return
+    end
+
+    -- 菜单盖在上面的时候不动画面：e-ink 上局部刷新会把菜单区域一起重画，
+    -- 每分钟闪一下很难看。菜单关掉后下一拍（≤60 秒）自然就补上了。
+    if self.menu_open then
+        self:scheduleTick()
+        return
+    end
 
     -- 分钟级：只改时钟文字，局部刷新
     local clock = string.format("%02d:%02d", now.hour, now.min)
@@ -807,13 +923,18 @@ function Dashboard:tick()
     end
 
     -- 定时拉取天气：已有数据时按配置间隔（默认 30 分钟）；还没有数据时 5 分钟重试
-    local last = self.weather and self.weather.ts or 0
-    local interval = tonumber(self:getConfig().update_interval) or UPDATE_INTERVAL
-    if not self.weather then
-        interval = 5 * 60
-    end
-    if os.time() - last >= interval then
-        self:fetchWeather()
+    -- 刚唤醒的宽限期内先不拉：请求是同步的（http.TIMEOUT=20），会正好卡在
+    -- 用户按电源键的那一刻，看起来就是「按了没反应」。
+    local fresh = self._resume_ts and (wall - self._resume_ts < RESUME_FETCH_GRACE)
+    if not fresh then
+        local last = self.weather and self.weather.ts or 0
+        local interval = tonumber(self:getConfig().update_interval) or UPDATE_INTERVAL
+        if not self.weather then
+            interval = 5 * 60
+        end
+        if wall - last >= interval then
+            self:fetchWeather()
+        end
     end
 
     self:scheduleTick()
@@ -1094,29 +1215,81 @@ function Dashboard:openMenu()
         menu = TouchMenu:new{
             width = math.floor(Screen:getWidth() * 0.94),
             tab_item_table = { tab },
-            close_callback = function()
-                if menu then UIManager:close(menu) end
-                self.menu_open = false
-                if self.pending_orientation then
-                    -- 菜单里选的方向等到这时才真正执行（转屏会让菜单控件错位）
-                    local mode = self.pending_orientation
-                    self.pending_orientation = nil
-                    self.relayout_pending = false
-                    self:setOrientation(mode)
-                elseif self.relayout_pending then
-                    self.relayout_pending = false
-                    self:refreshLayout()
-                end
-            end,
+            -- 用户点菜单外面、按返回键、或者我们自己调 closeMenu()，
+            -- 最终都会汇到这里；统一在 onMenuClosed 里收尾（撤控件 + 执行挂起的动作）
+            close_callback = function() self:onMenuClosed(menu) end,
         }
         UIManager:show(menu)
     end)
     if not ok then
         -- 版本差异导致菜单弹不出来时不能把看板一起拖下水
+        self.menu = nil
         self.menu_open = false
         logger.warn("dashboard: TouchMenu 构造失败", tostring(err))
         return self:menuFallback()
     end
+    self.menu = menu
+end
+
+--- 菜单真正关掉之后要做的事：撤控件 + 执行菜单里挂起的动作。
+--- 由 TouchMenu 的 close_callback 调用（点外面、按返回、我们自己关，三条路都到这里）。
+function Dashboard:onMenuClosed(menu)
+    if menu and self.menu == menu then
+        self.menu = nil
+        pcall(function() UIManager:close(menu) end)
+    end
+    self.menu_open = false
+    local mode = self.pending_orientation
+    self.pending_orientation = nil
+    if mode then
+        -- 菜单里选的方向等到这时才真正执行：菜单控件是按旧尺寸排的，边转边排版会错位
+        self.relayout_pending = false
+        self:setOrientation(mode)
+    elseif self.relayout_pending then
+        self.relayout_pending = false
+        self:refreshLayout()
+    end
+end
+
+--- 主动关掉看板内的菜单（菜单里选完东西要立即生效时用）。
+--- 返回 true 表示确实关了一个菜单。
+function Dashboard:closeMenu()
+    local menu = self.menu
+    if not menu then
+        self.menu_open = false
+        return false
+    end
+    if type(menu.closeMenu) == "function" then
+        local ok, err = pcall(function() menu:closeMenu() end)
+        if ok then
+            -- close_callback 正常已经跑过了；个别版本不触发的话这里兜一次，
+            -- 否则 menu_open 会一直为 true，看板从此再也不重排。
+            if self.menu == menu then self:onMenuClosed(menu) end
+            return true
+        end
+        logger.warn("dashboard: 菜单关闭失败", tostring(err))
+    end
+    self:onMenuClosed(menu)
+    return true
+end
+
+--- 菜单里选了屏幕方向。
+--- TouchMenu 对「带 checked_func 的勾选项」默认只 updateItems、不关菜单，
+--- 所以以前选了方向之后菜单一直开着，版式要等用户手动关菜单才变。
+--- 这里记下选择后主动关菜单，关闭的那一刻 close_callback 立刻按新方向转屏重排。
+function Dashboard:setOrientationFromMenu(mode)
+    -- 从 KOReader 主菜单里进来时没有 self.menu，走普通路径（含「看板没打开」的处理）
+    if not self.menu_open then
+        return self:setOrientation(mode)
+    end
+    self.pending_orientation = mode
+    self.relayout_pending = true
+    G_reader_settings:saveSetting("dashboard_orientation", mode)
+    if G_reader_settings.flush then G_reader_settings:flush() end
+    -- 不能在菜单自己的点击回调里直接销毁菜单：onMenuSelect 返回后还要 updateItems，
+    -- 那时控件已经没了会报错。推迟一拍——本帧先把勾选状态刷出来，下一拍再关。
+    UIManager:nextTick(function() self:closeMenu() end)
+    return false
 end
 
 --- 菜单弹不出来时的兜底提示，告诉用户从哪还能进设置
@@ -1363,6 +1536,9 @@ function Dashboard:createRoot()
             ges = "tap",
             screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
             handler = function()
+                -- 休眠屏保用的那棵树也带着这套触摸区，屏幕一唤醒的第一下触摸会落到
+                -- 它上面；若这时去同步拉天气，用户看到的就是「唤醒后卡住」。
+                if not self.shown then return false end
                 self:fetchWeather(true)
                 return true
             end,
@@ -1372,6 +1548,7 @@ function Dashboard:createRoot()
             ges = "swipe",
             screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
             handler = function(ges)
+                if not self.shown then return false end
                 -- 只有上划（north = 手指向上）才退出，其他方向让给后面的区
                 if ges and ges.direction == "north" then
                     -- 在事件分发过程中直接销毁控件容易踩到重入，推迟一拍再关
@@ -1387,6 +1564,7 @@ function Dashboard:createRoot()
             -- 只看屏幕上缘 1/6 高度：从顶部往下拉打开看板自己的菜单
             screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 / 6 },
             handler = function(ges)
+                if not self.shown then return false end
                 if ges and ges.direction == "south" then
                     UIManager:nextTick(function() self:openMenu() end)
                     return true
@@ -1399,6 +1577,7 @@ function Dashboard:createRoot()
             ges = "swipe",
             screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
             handler = function(ges)
+                if not self.shown then return false end
                 local dir = ges and ges.direction
                 if dir == "east" or dir == "west" then
                     -- 左右滑动 = 重新布局：设备转过向（或改了 KOReader 方向设置）之后

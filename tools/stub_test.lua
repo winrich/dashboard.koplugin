@@ -767,6 +767,94 @@ if instance.menu_open then
 end
 EVENTS[#EVENTS + 1] = "== 菜单打开期间重建已挂起，关闭后自动补做 =="
 
+-- 菜单里改方向：必须「选完就自动关菜单 + 立刻按新方向重排」。
+-- TouchMenu 对带 checked_func 的勾选项默认只 updateItems、不关菜单，
+-- 以前选了方向菜单一直开着，版式要等手动关菜单才变。
+local function reopen_menu()
+    for _, z in ipairs(instance.root._zones or {}) do
+        if z.id == "dashboard_swipe_down" then down_zone = z end
+    end
+    down_zone.handler({ direction = "south" })
+    return MENU_SHOWN
+end
+local menu3 = reopen_menu()
+local orient_item
+for _, it in ipairs(menu3.tab or {}) do
+    if it.sub_item_table and it.sub_item_table[1]
+        and it.sub_item_table[1].text == "竖屏" then
+        orient_item = it
+    end
+end
+if not orient_item then
+    print("[FAIL] 菜单里找不到「版式」子菜单")
+    os.exit(1)
+end
+local layout_before_menu = instance.layout_landscape
+-- 子项顺序：竖屏 / 横屏（向右 90°）/ 横屏（向左 90°）。
+-- 选「与当前相反」的那一项，否则从横屏起步的组合里选了横屏，版式本来就不该变。
+local pick = layout_before_menu and 1 or 2
+orient_item.sub_item_table[pick].callback()
+if instance.menu_open then
+    print("[FAIL] 菜单里选完方向后菜单没有自动关闭")
+    os.exit(1)
+end
+if instance.menu ~= nil then
+    print("[FAIL] 菜单关闭后 self.menu 没有清空（以后会一直误判菜单还开着）")
+    os.exit(1)
+end
+local menu_still_shown = false
+for _, w in ipairs(stack) do
+    if w == menu3 then menu_still_shown = true end
+end
+if menu_still_shown then
+    print("[FAIL] 菜单控件没有被撤掉")
+    os.exit(1)
+end
+if instance.pending_orientation ~= nil then
+    print("[FAIL] 方向切换没有执行，还挂在 pending_orientation 上")
+    os.exit(1)
+end
+if instance.layout_landscape == layout_before_menu then
+    print("[FAIL] 菜单里选了横屏，版式却没变")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 菜单里选方向：菜单自动关闭且版式立刻切换 =="
+
+-- 菜单开着的时候休眠：屏幕停的是菜单，不能把菜单冻成屏保
+reopen_menu()
+local stack_before_sleep2 = #stack
+stub_sleep()
+if instance.menu_open or instance.menu ~= nil then
+    print("[FAIL] 休眠时没有撤掉开着的菜单（屏保会定格成菜单）")
+    os.exit(1)
+end
+if instance.saver_root then
+    print("[FAIL] 看板已打开时休眠不该另建屏保树")
+    os.exit(1)
+end
+if #stack ~= stack_before_sleep2 - 1 then
+    print("[FAIL] 撤菜单后控件栈层数不对")
+    os.exit(1)
+end
+Screensaver:close()
+if instance._resume_ts == nil then
+    print("[FAIL] 唤醒后没有记录唤醒时刻，天气会在唤醒瞬间同步拉取")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 菜单开着时休眠：先撤菜单再定格看板 =="
+
+-- 唤醒要重建版面：定时器走 CLOCK_MONOTONIC，休眠期间不走，
+-- 唤醒后最多还要再等一整分钟才到点，这一分钟里屏幕上是睡前的时钟。
+local root_before_wake = instance.root
+instance._resume_ts = nil
+stub_sleep()
+Screensaver:close()
+if instance.root == root_before_wake then
+    print("[FAIL] 唤醒后没有重建版面（时钟/电量会停在休眠前）")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 唤醒后重建版面并重置定时器 =="
+
 for _, z in ipairs(instance.root._zones or {}) do
     if z.id == "dashboard_swipe_side" then side_zone = z end
 end
@@ -962,6 +1050,35 @@ local texts_before = RECORD[#RECORD]
 instance:tick()
 EVENTS[#EVENTS + 1] = string.format("== tick() 通过，时钟控件文本 = %s，定时器 = %d ==",
     instance.clock_widget.text, #timers)
+
+-- 唤醒宽限期：休眠之后天气必然过期，如果唤醒第一拍 tick 就去同步拉取，
+-- 正好卡在用户按电源键的那一刻（http.TIMEOUT = 20 秒，最坏能卡一分多钟）
+instance.weather.ts = 0                    -- 强制过期，正常逻辑一定会拉
+instance._resume_ts = os.time()
+instance:tick()
+if instance.weather.ts ~= 0 then
+    print("[FAIL] 唤醒宽限期内还是去拉天气了，会把唤醒拖成卡死")
+    os.exit(1)
+end
+instance.weather.ts = 0
+instance._resume_ts = os.time() - 3600     -- 宽限期过了
+instance:tick()
+if instance.weather.ts == 0 then
+    print("[FAIL] 宽限期过后仍然不拉天气，天气会一直停在旧数据")
+    os.exit(1)
+end
+instance._resume_ts = nil
+EVENTS[#EVENTS + 1] = "== 唤醒宽限期内不拉天气，之后再拉 =="
+
+-- 定时器基于 CLOCK_MONOTONIC，休眠期间不走；两拍 tick 相隔过久要直接重建版面
+local root_before_gap = instance.root
+instance._last_tick_ts = os.time() - 3600
+instance:tick()
+if instance.root == root_before_gap then
+    print("[FAIL] tick 间隔异常（休眠过）却没有重建版面，时钟会停在旧时间")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== tick 间隔异常（休眠）后自动重建版面 =="
 
 -- 模拟手动刷新
 ok, err = pcall(function() instance:fetchWeather(true) end)
