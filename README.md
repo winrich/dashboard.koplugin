@@ -140,6 +140,35 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 
 修法是 `makeText` 只传设计单位、不再乘 `ctx.S`。**新增文字时不要把像素值传进去。**
 
+### 留白行不能靠字段探测来识别（真机崩溃过一次）
+
+`stretchGaps` 早期用「有 `dimen`、没子控件、没 `text`/`color`/`ratio`/`file` 就是留白行」
+来判断哪些行可以拉伸。这段代码在桩件里全部通过，**真机上一开看板就崩**：
+
+```
+./luajit: ./ffi/blitbuffer.lua:601: attempt to index local 'color' (a nil value)
+   ffi/blitbuffer.lua:601: in function '__eq'
+   main.lua:1079: in function 'stretchGaps'
+   main.lua:1125: in function 'build'
+   main.lua:1155: in function 'createRoot'
+```
+
+原因是 `COLOR_BLACK` 是 **ffi cdata**（`ffi/blitbuffer.lua:161`：`Color8 = ffi.typeof("Color8")`），
+不是普通 table。LuaJIT 里 `cdata == nil` **不会**像 PUC Lua 那样「类型不同直接返回 false」，
+而是去调 `ColorRGB32_mt.__eq(nil)`，它第一行就是 `color:getColorRGB32()` —— 索引 nil，直接崩。
+顶层那 6 条 `Solid` 分隔线正好只带 `dimen` + `color`，结构上完全符合「留白行」特征，
+所以判定一路走到 `row.color == nil` 就炸了。
+
+**现在的约定**：
+- 留白行只在 `mkPad` 里造，并打上 `is_gap = true` 标记；`stretchGaps` 只认这个标记，
+  **不再对任何控件字段做 `== nil` 探测**。
+- 桩件跑的是 PUC Lua（`_VERSION = Lua 5.5`），颜色还是数字 `255`，
+  **这类 bug 桩件永远测不出来**，所以另加了一道静态检查：
+  `verify_lua.py` 的「0) 颜色字段判空写法」会扫描 `.color / .fgcolor / .bgcolor /
+  .background / .line_color` 与 `nil` 的直接比较，命中即失败。
+- `build()` 里 `stretchGaps` 套了 `pcall`：拉伸属于锦上添花，出岔子只降级为「不拉伸」，
+  不能连带把整个看板弄崩。
+
 ## 数据与算法
 
 - **天气**：和风天气开发服务（QWeather），三个 v1 接口按经纬度查询，不需要 LocationID、不调 GeoAPI：
@@ -183,6 +212,8 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两�
 | 菜单互相不打架 | 顶部下滑区对 north 返回 false，不抢上划；菜单打开期间 `refreshLayout` 自动挂起，菜单关掉后补做，不会把菜单盖掉 |
 | 四边留白 | 逐个检查最终帧里所有可见元素的像素位置：竖屏左右各 26、上下各 29；横屏左右各 26、上下各 27；无一个元素越出安全区 |
 | 纵向铺满 | 逐档拉伸分块间距直到接近铺满：竖屏内容 1020×1389 / 版心 1020×1396（vk=1.75）、横屏 1396×1018 / 1396×1020 |
+| 留白行标记 | 桩件断言「顶层留白行必须被拉伸（`dimen.h > gap_h`）、且至少存在 1 行」，竖屏 11 行 / 横屏 5 行全部命中；`Solid` 分隔线不带 `is_gap` 所以原样不动 |
+| cdata 判空 | `verify_lua.py` 静态扫描颜色字段与 `nil` 的直接比较（真机曾因此在 `stretchGaps` 崩过，桩件的 PUC Lua 抓不到） |
 | 时钟控件 | 断言 `clock_widget` 确实挂在控件树里（拉伸会多次试算版式，选错那一版时钟会静默停住） |
 | 操作提示 | 竖屏横屏都只有 1 行：断言同时校验「自然宽度未超上限」和「渲染高度等于单行行高」（折行的控件也只画一次，数记录条数测不出来） |
 | 字体度量 | 桩件按真机实测校准：`getFace` 复刻 `ceil(px × min(W,H)/600)`，行高 1.363 em（实测 244/179），CJK 宽 1.0 em |

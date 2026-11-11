@@ -814,6 +814,30 @@ EVENTS[#EVENTS + 1] = string.format(
     VW - math.floor(gs.w), VH - math.floor(gs.h),
     instance.scale or -1, (gs.h / (instance.scale or 1)) / math.min(SW, SH) * 100)
 
+-- stretchGaps 的契约：只放大 mkPad 打了 is_gap 的留白行，其余行（分隔线、文字块）原样。
+-- 真机上就是这里出过一次事故：旧实现靠「row.color == nil」逐字段探测留白行，而
+-- COLOR_BLACK 是 ffi cdata，LuaJIT 下 cdata == nil 会走 ColorRGB32_mt.__eq(nil) 直接崩。
+-- 桩件跑 PUC Lua、颜色是数字 255，永远复现不了，所以这里改为断言「契约」而不是崩不崩。
+local gaps, grew, gap_total = 0, 0, 0
+for i = 1, #group do
+    local row = group[i]
+    if row.is_gap then
+        gaps = gaps + 1
+        gap_total = gap_total + row.dimen.h
+        if row.dimen.h > (row.gap_h or 0) then grew = grew + 1 end
+    end
+end
+if gaps == 0 then
+    print("[FAIL] 版式里没有顶层留白行，stretchGaps 无从生效")
+    os.exit(1)
+end
+if grew == 0 then
+    print("[FAIL] 留白行没有被拉伸（is_gap 标记或 vk 倍率没生效）")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 分块间距 %d 行，其中 %d 行被拉伸，留白合计 %d px ==", gaps, grew, gap_total)
+
 -- 四边留白：直接查最终帧里每个可见元素的像素位置，白底铺满那一块要排除
 -- 先清空记录并重画一次，否则拿到的是历次重绘的累积
 RECORD = {}

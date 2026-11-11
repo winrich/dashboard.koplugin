@@ -228,8 +228,14 @@ end
 
 -- ------------------------------------------------------------------ 布局小工具
 local function mkPad(w, h)
+    local hh = math.max(1, math.floor(h))
     return Widget:new{
-        dimen = Geom:new{ w = math.max(0, math.floor(w)), h = math.max(1, math.floor(h)) },
+        dimen = Geom:new{ w = math.max(0, math.floor(w)), h = hh },
+        -- 显式标记「纯留白行」，stretchGaps 只认这个标记。见该函数上方注释：
+        -- 用字段探测（row.color == nil …）会在 LuaJIT 下把 Solid 的 cdata 颜色比爆。
+        is_gap = true,
+        -- 设计高度：桩件用它断言 stretchGaps「只放大、不缩小、不碰非留白行」
+        gap_h = hh,
     }
 end
 
@@ -1066,18 +1072,25 @@ function Dashboard:makeText(ctx, str, px, opts)
 end
 
 --- 把纵向余量吸进「分块之间的空白」。
---- 只放大顶层纯留白行（mkPad 造出来的那种：有 dimen、没子控件、没文字、没颜色/比例）
---- 的行高，所以既不会改变任何文字的字号，也不会改变横向宽度——左右只剩 52px 余量，
---- 任何放大字号的改法都会立刻横向撑破版心。
---- 顶层纯留白行就等于「块与块之间的间距」，块内部的 mkPad 在子控件里，不受影响。
+--- 只放大 mkPad 打上 is_gap 标记的顶层留白行：字号不动、宽度不动（左右只剩 52px
+--- 余量，任何放大字号的改法都会立刻横向撑破版心）。块内部的 mkPad 在子控件里，
+--- 不在 body 顶层，天然不受影响。
+---
+--- 判定必须靠显式标记，**绝对不能**用「row.color == nil」这类逐字段探测：
+--- COLOR_BLACK 是 ffi cdata（ffi/blitbuffer.lua:161 `Color8 = ffi.typeof(...)`），
+--- LuaJIT 里 cdata 与 nil 比较会走 ColorRGB32_mt.__eq，而它第一行就是
+--- color:getColorRGB32()，参数为 nil 直接崩：
+---   ffi/blitbuffer.lua:601: attempt to index local 'color' (a nil value)
+---   ← main.lua:1079 stretchGaps ← build ← createRoot ← refreshLayout ← open
+--- 这是真机 crash.log 里实测到的崩溃（2026-11-11 20:12），桩件抓不到：桩件里
+--- COLOR_BLACK 是数字 255、跑的是 PUC Lua，`table == nil` 不会触发 __eq。
 local function stretchGaps(body, vk)
     if not vk or vk == 1 then return end
     for i = 1, #body do
         local row = body[i]
-        local h = type(row.dimen) == "table" and row.dimen.h or nil
-        if h and h > 1 and row[1] == nil and row.text == nil
-            and row.color == nil and row.ratio == nil and row.file == nil then
-            row.dimen.h = math.max(1, math.floor(h * vk))
+        local dimen = row.dimen
+        if row.is_gap and type(dimen) == "table" and dimen.h > 1 then
+            dimen.h = math.max(1, math.floor(dimen.h * vk))
         end
     end
 end
@@ -1122,7 +1135,12 @@ function Dashboard:createRoot()
     local function build(vk)
         ctx.S = S
         local b = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
-        stretchGaps(b, vk)
+        -- 拉伸只是锦上添花。这里必须兜住：一旦抛出，整个看板会连带崩掉（真机上
+        -- 表现为 KOReader 直接重启），而不拉伸只是上下紧一点。
+        local ok, err = pcall(stretchGaps, b, vk)
+        if not ok then
+            logger.warn("dashboard: 间距自适应失败，按原间距排版", tostring(err))
+        end
         return b, b:getSize()
     end
 
