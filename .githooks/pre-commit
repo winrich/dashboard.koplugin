@@ -1,0 +1,38 @@
+#!/bin/sh
+# 提交前体检：暂存区里不能有填了值的凭据、本机路径、个人收款码等。
+# 启用方式（每个 clone 各做一次）：
+#     git config core.hooksPath .githooks
+# 临时跳过（不推荐）：
+#     SKIP_SECRET_CHECK=1 git commit ...
+# 说明：仓库是公开的，push 之后内容就永久留在 GitHub 上，
+#       事后删文件也删不掉旧 commit，所以必须在提交前挡。
+
+[ -n "$SKIP_SECRET_CHECK" ] && {
+    echo "[secret-check] SKIP_SECRET_CHECK 已设置，跳过体检（内容会进公开仓库）"
+    exit 0
+}
+
+if command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+else
+    echo "[secret-check] 未找到 python，改用 git grep 兜底检查"
+    if git diff --cached -U0 | grep -nE '(api_key[[:space:]]*=[[:space:]]*"[^"]|sk-[A-Za-z0-9]{20,})'; then
+        echo "[secret-check] 暂存区里疑似有真实凭据，提交中止"
+        exit 1
+    fi
+    exit 0
+fi
+
+"$PY" tools/secret_check.py --staged
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo ""
+    echo "[secret-check] 提交已中止。"
+    echo "  真凭据请放 dashboard_config.local.lua（.gitignore 已排除），代码里留空。"
+    echo "  确属误报：在那一行加注释 '# secret-check: allow'。"
+    echo "  急着提交：SKIP_SECRET_CHECK=1 git commit ...（内容会进公开仓库，慎用）"
+    exit 1
+fi
+exit 0

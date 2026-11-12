@@ -1,0 +1,2 @@
+# 钩子脚本必须以 LF 存放：Windows 上 checkout 成 CRLF 会让 shebang 失效
+.githooks/* text eol=lf

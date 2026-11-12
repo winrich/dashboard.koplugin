@@ -1,5 +1,29 @@
-# 本机凭据（含 API Key），不入库
+# ── 本机凭据（含 API Key），一律不入库 ────────────────────────────
+# 真凭据只允许放这两个位置：
+#   1) dashboard_config.local.lua        （已被下面的规则排除）
+#   2) KOReader 设备内的 settings/dashboard_config.lua（根本不在本仓库）
 dashboard.koplugin/dashboard_config.local.lua
+# 任何同型变体都挡掉（.example 模板不受影响，照常提交）
+*.local.lua
+*.local.lua.bak
 
-# 构建产物：zip 里含上面的凭据文件，不入库
+# ── 构建产物：zip 里虽然是干净副本，但没必要入库 ──────────────────
 dist/
+*.zip
+
+# ── 真机回退备份：常常整包复制，里面可能有旧凭据文件 ──────────────
+backup/
+bkp/
+
+# ── 设备日志 / 排查临时物 ────────────────────────────────────────
+crash.log
+*.log
+wifi-*.txt
+_secscan/
+
+# ── 编辑器 / 系统垃圾 ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
