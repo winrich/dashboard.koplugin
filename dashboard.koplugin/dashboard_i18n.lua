@@ -235,8 +235,11 @@ local EN = {
     ["项"] = "items",
     -- 录入失败时的提示。英文要把「怎么写」一起说清楚，否则用户不知道错在哪
     ["内容不能为空。"] = "The text cannot be empty.",
-    ["没认出日期。请写成「圣诞节 2026-12-25」这样。"] =
-        "No date recognised. Write it like: Christmas 2026-12-25",
+    ["名称不能为空。"] = "The name cannot be empty.",
+    -- 两步录入的标题与降级提示
+    ["选日期"] = "Pick a date",
+    ["日期选择器不可用，请更新 KOReader。"] =
+        "The date picker is unavailable. Please update KOReader.",
 
     -- 布局组件菜单
     ["布局组件"] = "Layout components",

@@ -257,6 +257,9 @@ function UIManager:show(widget)
     if widget.paintTo then widget:paintTo(fake_bb, 0, 0) end
 end
 
+-- 取当前最上层窗口：两步录入的测试要「接着刚才弹出来的那个窗口」往下走
+function UIManager:_top() return stack[#stack] end
+
 function UIManager:close(widget)
     for i = #stack, 1, -1 do
         if stack[i] == widget then table.remove(stack, i) end
@@ -590,6 +593,14 @@ local InputDialog = Widget:extend{}
 function InputDialog:getInputText() return self.input or "" end
 function InputDialog:onShowKeyboard() end
 
+-- DateTimeWidget 桩：只记下构造参数（年 / 月 / 日的默认值），
+-- 测试里用 fake_pick 模拟「翻好日期点了保存」，走的是真机同一个 callback。
+local DateTimeWidget = Widget:extend{}
+function DateTimeWidget:fake_pick(y, m, d)
+    self.year, self.month, self.day = y, m, d
+    if self.callback then self.callback(self) end
+end
+
 ---------------------------------------------------------------- 模块注册
 package.preload["ffi/blitbuffer"] = function()
     return { COLOR_WHITE = 0, COLOR_BLACK = 255, COLOR_DARK_GRAY = 0x55 }
@@ -605,6 +616,7 @@ package.preload["ui/widget/imagewidget"] = function() return ImageWidget end
 package.preload["ui/widget/confirmbox"] = function() return ConfirmBox end
 package.preload["ui/widget/infomessage"] = function() return InfoMessage end
 package.preload["ui/widget/inputdialog"] = function() return InputDialog end
+package.preload["ui/widget/datetimewidget"] = function() return DateTimeWidget end
 package.preload["ui/widget/touchmenu"] = function() return TouchMenu end
 package.preload["ui/geometry"] = function() return Geom end
 package.preload["ui/font"] = function() return Font end
@@ -2375,10 +2387,94 @@ local function check_agenda()
         #A.allEvents(), #A.allTodos())
 end
 
+--- 两步录入：第 1 步只填名称（键盘），第 2 步点选日期（不弹键盘）。
+--- 这里把两个窗口的按钮真按一遍，验证「名称在前、日期在后」的链路与日期默认值。
+local function check_two_step()
+    local A = require("dashboard_agenda")
+    local now = instance:localNow()
+    local function fail(msg) print("[FAIL] " .. msg); os.exit(1) end
+
+    -- 记下现有最大 id：测完按 id 清掉本用例新增的条目，别污染后面的渲染帧
+    local max_ev, max_td = 0, 0
+    for _, e in ipairs(A.allEvents()) do if e.id > max_ev then max_ev = e.id end end
+    for _, t in ipairs(A.allTodos()) do if t.id > max_td then max_td = t.id end end
+    local n_ev, n_td = #A.allEvents(), #A.allTodos()
+
+    --- 跑一遍第 1 步：弹输入框 → 填文字 → 点「保存」，返回紧接着弹出的那个窗口
+    local function run_step1(opener, text)
+        opener()
+        local dlg = UIManager:_top()
+        if not dlg or not dlg.buttons then fail("第 1 步没弹出输入框") end
+        if dlg.buttons[1][2].text ~= T("保存") then fail("第 1 步第 2 个按钮不是「保存」") end
+        dlg.input = text
+        dlg.buttons[1][2].callback()
+        return UIManager:_top()
+    end
+
+    -- 1) 倒数日：默认日期是今天，点掉之后写进 store
+    local picker = run_step1(function() instance:promptAddEvent() end, "妈妈生日")
+    if not picker or picker.info_text ~= T("选日期") then fail("第 2 步不是日期选择器") end
+    if picker.year ~= now.year or picker.month ~= now.month or picker.day ~= now.day then
+        fail(string.format("日期默认值不是今天：%s-%s-%s", tostring(picker.year),
+            tostring(picker.month), tostring(picker.day)))
+    end
+    picker:fake_pick(2026, 11, 30)
+    local evs = A.allEvents()
+    local last = evs[#evs]
+    if last.name ~= "妈妈生日" or last.date ~= "2026-11-30" then
+        fail("两步录入的倒数日没写对：" .. tostring(last.name) .. " / " .. tostring(last.date))
+    end
+
+    -- 2) 名称里顺手带了日期：拆出来当默认值，名称只剩前半截
+    picker = run_step1(function() instance:promptAddEvent() end, "圣诞节 2026-12-25")
+    if picker.year ~= 2026 or picker.month ~= 12 or picker.day ~= 25 then
+        fail("名称里夹的日期没有用上做默认值")
+    end
+    picker:fake_pick(2026, 12, 25)
+    evs = A.allEvents()
+    last = evs[#evs]
+    if last.name ~= "圣诞节" or last.date ~= "2026-12-25" then
+        fail("名称里夹日期时没剥干净：" .. tostring(last.name))
+    end
+
+    -- 3) 待办：不给日期就是今天，第 2 步可直接保存
+    local td_before = #A.allTodos()
+    picker = run_step1(function() instance:promptAddTodo() end, "买牛奶")
+    if not picker or picker.info_text ~= T("选日期") then fail("待办第 2 步不是日期选择器") end
+    if picker.year ~= now.year or picker.month ~= now.month or picker.day ~= now.day then
+        fail("待办的日期默认值不是今天")
+    end
+    picker:fake_pick(now.year, now.month, now.day)
+    if #A.allTodos() ~= td_before + 1 then fail("两步录入的待办没写进去") end
+
+    -- 4) 名称空：第 1 步就拦住，不许进第 2 步
+    local ev_before = #A.allEvents()
+    instance:promptAddEvent()
+    local dlg = UIManager:_top()
+    dlg.input = "   "
+    dlg.buttons[1][2].callback()
+    if #A.allEvents() ~= ev_before then fail("空名称也加进去了") end
+    if UIManager:_top().year then fail("空名称仍然进了日期选择") end
+
+    -- 清理：按 id 删掉本用例新增的，check_agenda 留下的数据原样保留
+    local del = {}
+    for _, e in ipairs(A.allEvents()) do if e.id > max_ev then del[#del + 1] = e.id end end
+    for _, id in ipairs(del) do A.removeEvent(id) end
+    del = {}
+    for _, t in ipairs(A.allTodos()) do if t.id > max_td then del[#del + 1] = t.id end end
+    for _, id in ipairs(del) do A.removeTodo(id) end
+    if #A.allEvents() ~= n_ev or #A.allTodos() ~= n_td then fail("用例没清理干净") end
+
+    EVENTS[#EVENTS + 1] = string.format(
+        "== 两步录入：名称→日期点选、默认今天、名称夹日期预填、空名称拦截（事件 %d / 待办 %d）==",
+        #A.allEvents(), #A.allTodos())
+end
+
 if _G.STUB_AGENDA then
     EVENTS[#EVENTS + 1] = "== 预览模式：跳过倒数日 / 待办数据断言（STUB_AGENDA 已注入）=="
 else
     check_agenda()
+    check_two_step()
 end
 
 -- 4) 菜单入口存在且项数正确

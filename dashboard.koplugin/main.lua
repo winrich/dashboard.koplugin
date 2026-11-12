@@ -121,7 +121,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.47"
+local DASHBOARD_VERSION = "2.48"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -673,9 +673,10 @@ function Dashboard:genMenuItemTable()
                     .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
                     .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
                     .. "点「倒数日」「待办」这两块卡片 → 弹出列表（可切换置顶、勾选完成）；\n"
-                    .. "增删改在菜单「倒数日」「待办事项」里，录入是一行输入：\n"
-                    .. "  倒数日：圣诞节 2026-12-25（名称与日期前后均可）\n"
-                    .. "  待办：买牛奶（记今天）· 明天 交周报 · 12-25 取快递\n"
+                    .. "增删改在菜单「倒数日」「待办事项」里，录入分两步：\n"
+                    .. "第 1 步填名称（键盘），第 2 步点选日期（年 / 月 / 日 各自翻页，免键盘）。\n"
+                    .. "  倒数日：名称 + 日期，例「妈妈生日」+ 2026-11-30\n"
+                    .. "  待办：名称 + 日期，日期默认今天\n"
                     .. "数据存在 KOReader 设置目录的 dashboard_agenda.lua，可直接备份。\n\n"
                     .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
                     .. "所以横屏要靠左右滑动（或菜单「版式」）手动切，切完请把设备横着拿。\n"
@@ -694,9 +695,8 @@ function Dashboard:genMenuItemTable()
                     .. "by swiping sideways or via the Layout menu; then hold the device sideways.\n"
                     .. "If the landscape text appears upside down, pick the other rotation.\n\n"
                     .. "Tap the Countdown / To-do card to open its list (pin, tick off);\n"
-                    .. "add and remove them under Countdown / To-dos in the menu, one line each:\n"
-                    .. "  Countdown: Christmas 2026-12-25 (name and date in any order)\n"
-                    .. "  To-do: Buy milk (today) · tomorrow Email report · 12-25 Parcel\n"
+                    .. "add and remove them under Countdown / To-dos in the menu, in two steps:\n"
+                    .. "step 1 types the name, step 2 picks the date (no typing for dates).\n"
                     .. "Data lives in dashboard_agenda.lua in the KOReader settings folder.\n\n"
                     .. "Top right: battery percentage and icon (inverted while charging).\n"
                     .. "Weather comes from QWeather; if unavailable it falls back to Open-Meteo,\n"
@@ -2132,27 +2132,75 @@ function Dashboard:promptOneLine(opts)
     if dialog.onShowKeyboard then dialog:onShowKeyboard() end
 end
 
-function Dashboard:promptAddEvent()
+--- 两步录入的第 2 步：点选日期。年 / 月 / 日 三列各自上下翻，全程不弹键盘
+--- （Kindle 上 KOReader 只能用自己的虚拟键盘，中文要切拼音+翻候选，能少敲就少敲）。
+--- init 是 "YYYY-MM-DD"；给不出合法值就落在今天。
+function Dashboard:promptPickDate(title, init, on_pick)
+    local ok, DateTimeWidget = pcall(require, "ui/widget/datetimewidget")
+    if not ok then
+        UIManager:show(InfoMessage:new{ text = T("日期选择器不可用，请更新 KOReader。"), timeout = 3 })
+        return
+    end
+    local y, m, d = Agenda.parseDate(init)
+    if not y then
+        local now = self:localNow()
+        y, m, d = now.year, now.month, now.day
+    end
+    UIManager:show(DateTimeWidget:new{
+        year = y, month = m, day = d,
+        -- 下限放到 1970：倒数日也会记已经过去的日子（显示「已过 N 天」）
+        year_min = 1970,
+        info_text = title,
+        ok_text = T("保存"),
+        cancel_text = T("取消"),
+        callback = function(sel)
+            on_pick(Agenda.fmtDate(sel.year, sel.month, sel.day))
+        end,
+    })
+end
+
+--- 两步录入的公共壳子：第 1 步一个输入框（名称 / 内容），第 2 步点选日期。
+--- 两步都由调用方给文案；parse(raw, now) 返回 text, date，text 为空即视为没填。
+function Dashboard:promptTwoStep(opts)
     local now = self:localNow()
     self:promptOneLine{
-        title = T("添加倒数日"),
-        description = TL(
-            "一行写完：名称 + 日期，前后顺序随意。\n"
-            .. "日期支持 2026-12-25、2026年12月25日、12-25（今年）、12月25日。\n"
-            .. "例：圣诞节 2026-12-25 · 结婚纪念日 2027-05-01",
-            "One line: name + date, in any order.\n"
-            .. "Dates: 2026-12-25, 2026/12/25, 12-25 (this year).\n"
-            .. "E.g. Christmas 2026-12-25"),
-        hint = "圣诞节 2026-12-25",
+        title = opts.title,
+        description = opts.description,
+        hint = opts.hint,
         onSave = function(raw)
-            local name, date = Agenda.parseEvent(raw, now)
-            if not name then
-                UIManager:show(InfoMessage:new{
-                    text = T("没认出日期。请写成「圣诞节 2026-12-25」这样。"),
-                    timeout = 3,
-                })
+            local text, init = opts.parse(raw, now)
+            if not text or text == "" then
+                UIManager:show(InfoMessage:new{ text = opts.empty_text, timeout = 3 })
                 return
             end
+            -- 输入框刚关掉就弹下一个窗口，等一拍更稳：避免两个窗口在 e-ink 上抢刷新
+            UIManager:nextTick(function()
+                self:promptPickDate(opts.picked_title, init, function(date)
+                    opts.onPick(text, date)
+                end)
+            end)
+        end,
+    }
+end
+
+function Dashboard:promptAddEvent()
+    self:promptTwoStep{
+        title = T("添加倒数日"),
+        description = TL(
+            "第 1 步：填事项名称。\n"
+            .. "第 2 步：点选日期（年、月、日各自翻页，不用敲键盘）。",
+            "Step 1: name the event.\n"
+            .. "Step 2: pick the date (no typing)."),
+        hint = TL("妈妈生日", "Mum's birthday"),
+        empty_text = T("名称不能为空。"),
+        picked_title = T("选日期"),
+        -- 名称里顺手带了日期（"圣诞节 2026-12-25"）也认：拆出来当默认值，省一次翻页
+        parse = function(raw, now)
+            local name, date = Agenda.parseEvent(raw, now)
+            if name then return name, date end
+            return Agenda.trim(raw), nil
+        end,
+        onPick = function(name, date)
             -- 第一条自动置顶：否则大字位会空着，看起来像没生效
             Agenda.addEvent(name, date, #Agenda.allEvents() == 0)
             self:afterAgendaChange()
@@ -2161,23 +2209,21 @@ function Dashboard:promptAddEvent()
 end
 
 function Dashboard:promptAddTodo()
-    local now = self:localNow()
-    self:promptOneLine{
+    self:promptTwoStep{
         title = T("添加待办"),
         description = TL(
-            "直接写内容 → 记到今天。\n"
-            .. "前面加日期或「明天 / 后天」→ 记到那一天。\n"
-            .. "例：买牛奶 · 明天 交周报 · 12-25 取快递",
-            "Type just the text for today.\n"
-            .. "Prefix a date or tomorrow to schedule it.\n"
-            .. "E.g. Buy milk · tomorrow Email report · 12-25 Pick up parcel"),
-        hint = "买牛奶",
-        onSave = function(raw)
-            local text, date = Agenda.parseTodo(raw, now)
-            if not text then
-                UIManager:show(InfoMessage:new{ text = T("内容不能为空。"), timeout = 3 })
-                return
-            end
+            "第 1 步：填待办内容。\n"
+            .. "第 2 步：点选日期（默认今天，可改）。",
+            "Step 1: the task text.\n"
+            .. "Step 2: pick the date (today by default)."),
+        hint = TL("交周报", "Email report"),
+        empty_text = T("内容不能为空。"),
+        picked_title = T("选日期"),
+        -- 没写日期就是今天（parseTodo 的既有约定）
+        parse = function(raw, now)
+            return Agenda.parseTodo(raw, now)
+        end,
+        onPick = function(text, date)
             Agenda.addTodo(text, date)
             self:afterAgendaChange()
         end,
