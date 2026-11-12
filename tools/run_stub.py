@@ -26,6 +26,7 @@ SYNTAX_FILES = [
     f"{PLUGIN_DIR}/dashboard_cities.lua",
     f"{PLUGIN_DIR}/dashboard_qweather.lua",
     f"{PLUGIN_DIR}/dashboard_openmeteo.lua",
+    f"{PLUGIN_DIR}/dashboard_i18n.lua",
     f"{PLUGIN_DIR}/dashboard_config.lua",
 ]
 

@@ -673,6 +673,42 @@ if not ok then
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = "== open() 通过 =="
+
+-- 布局体检（STUB_DIAG=1 时生效，只打印不改流程）：
+-- 逐行输出根容器的子块尺寸，用于确定 A/B/C 分区权重与各组件自然高度。
+if os.getenv("STUB_DIAG") == "1" then
+    local function kind(w)
+        if w.is_gap then return "gap" end
+        if w[1] then return "group" end
+        if w.face then return "text" end
+        if w.color then return "solid" end
+        if w.dimen then return "box" end
+        return "?"
+    end
+    local function container(w, d)
+        if d > 4 then return nil end
+        if w[1] == nil then return nil end
+        if #w > 2 then return w end
+        return container(w[1], d + 1)
+    end
+    local root = instance.root
+    local rs = root:getSize()
+    print(string.format("\n[DIAG] root=%dx%d  S=%.3f  vk=%s  landscape=%s",
+        rs.w, rs.h, instance.scale or 0, tostring(instance.vk),
+        tostring(instance.layout_landscape)))
+    local c = container(root, 1)
+    if c then
+        local acc = 0
+        for i = 1, #c do
+            local ch = c[i]
+            local cs = ch:getSize()
+            acc = acc + cs.h
+            print(string.format("[DIAG] %2d %-6s %5dx%-4d cum=%4d %s", i, kind(ch),
+                cs.w, cs.h, acc, ch.is_gap and ("gap_h=" .. tostring(ch.gap_h)) or ""))
+        end
+        print(string.format("[DIAG] 合计 %d", acc))
+    end
+end
 EVENTS[#EVENTS + 1] = string.format("== 待机抑制计数 = %d，激活的定时器 = %d ==", standby, #timers)
 
 -- 休眠屏保（1）：看板已经打开时，画面本来就是看板，不该再建第二棵树
@@ -827,7 +863,9 @@ end
 local menu3 = reopen_menu()
 local orient_item
 for _, it in ipairs(menu3.tab or {}) do
-    if it.sub_item_table and it.sub_item_table[1]
+    -- 只认「版式」：恰好 3 项且首项是竖屏。不能只判首项含"竖屏"——
+    -- 新增的「布局组件」首项是"竖屏布局"，会把匹配抢走（本轮踩过）。
+    if it.sub_item_table and #it.sub_item_table == 3 and it.sub_item_table[1]
         and it.sub_item_table[1].text:find("竖屏", 1, true) then
         orient_item = it
     end
@@ -901,7 +939,7 @@ local menu5 = reopen_menu()
 instance.menu = nil
 local orient_item5
 for _, it in ipairs(menu5.tab or {}) do
-    if it.sub_item_table and it.sub_item_table[1]
+    if it.sub_item_table and #it.sub_item_table == 3 and it.sub_item_table[1]
         and it.sub_item_table[1].text:find("竖屏", 1, true) then
         orient_item5 = it
     end
@@ -1083,8 +1121,25 @@ if gaps == 0 then
     print("[FAIL] 版式里没有顶层留白行，stretchGaps 无从生效")
     os.exit(1)
 end
-if grew == 0 then
-    print("[FAIL] 留白行没有被拉伸（is_gap 标记或 vk 倍率没生效）")
+-- 断言要与「整数取整」对齐：mkPad 的高度是整数，vk=1.05 时 6*1.05=6.3→6，
+-- 这一行本来就不会长高。所以先算出「按当前 vk 应当长大的行数」，再逐一比对，
+-- 而不是简单地要求 grew>0（v2.44 分区盒子填满后 gap 变小，旧的写法会误报）。
+local vk_now = instance.vk or 1
+local expect = 0
+for i = 1, #group do
+    local row = group[i]
+    if row.is_gap and row.gap_h
+        and math.floor((row.dimen.h / vk_now) * vk_now) > row.gap_h then
+        expect = expect + 1
+    end
+end
+if vk_now > 1 and expect > 0 and grew ~= expect then
+    print(string.format("[FAIL] 留白拉伸行数不符：应 %d 行、实 %d 行（vk=%.2f）",
+        expect, grew, vk_now))
+    os.exit(1)
+end
+if vk_now <= 1 and grew > 0 then
+    print("[FAIL] vk=1 却拉伸了留白行，说明倍率计算错位")
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = string.format(
@@ -1368,6 +1423,112 @@ if #stack ~= stack_after_hint then
 end
 instance.getConfig = real_get_config
 EVENTS[#EVENTS + 1] = "== 未配置提示：缺凭据弹一次，配好后不再弹 =="
+
+-- ================= 分区组件与多语言（v2.44）
+local I18n = require("dashboard_i18n")
+
+-- 1) 没有设置时，三区必须回落到默认组件（升级后视觉不变）
+local lay = instance:getZoneLayout()
+if lay.portrait.A ~= "clock_weather" or lay.portrait.B ~= "lunar_term"
+    or lay.portrait.C ~= "stats_cells" or lay.landscape.A ~= "clock_weather"
+    or lay.landscape.B ~= "calendar" or lay.landscape.C ~= "side_panel" then
+    print("[FAIL] 无设置时没有回落到默认分区")
+    os.exit(1)
+end
+
+-- 2) 脏数据 / 越区组件都要回落：side_panel 不许进竖屏 B，calendar 不许进横屏 C
+G_reader_settings:saveSetting("dashboard_components", {
+    portrait = { A = "nope", B = "side_panel", C = "calendar" },
+    landscape = { A = "lunar_term", B = "side_panel", C = "calendar" },
+})
+local lay2 = instance:getZoneLayout()
+if lay2.portrait.A ~= "clock_weather" or lay2.portrait.B ~= "lunar_term"
+    or lay2.portrait.C ~= "stats_cells" then
+    print(string.format("[FAIL] 竖屏非法组件未回落：%s/%s/%s",
+        lay2.portrait.A, lay2.portrait.B, lay2.portrait.C))
+    os.exit(1)
+end
+if lay2.landscape.A ~= "clock_weather" or lay2.landscape.C ~= "side_panel" then
+    print("[FAIL] 横屏越区组件未回落默认")
+    os.exit(1)
+end
+
+-- 3) 每个组件在允许的每个区都能出画面，且内容不超出屏幕
+local tried = 0
+for _, orient in ipairs({ "portrait", "landscape" }) do
+    for _, zone in ipairs({ "A", "B", "C" }) do
+        for _, id in ipairs(instance:componentIdsFor(orient, zone)) do
+            instance:setZoneComponent(orient, zone, id)
+            -- 直接重建一次版面树来量尺寸：不依赖 self.shown/self.root 的状态，
+            -- 也让每个组合都在「同一份上下文」下比较
+            local root = instance:createRoot()
+            local body = root[1] and root[1][1]
+            if not body then
+                print("[FAIL] 换组件后没有版面树")
+                os.exit(1)
+            end
+            local bs = body:getSize()
+            local sw, sh = screen.getWidth(), screen.getHeight()
+            if bs.w > sw or bs.h > sh then
+                print(string.format("[FAIL] %s/%s 放 %s 后超屏：%dx%d",
+                    orient, zone, id, bs.w, bs.h))
+                os.exit(1)
+            end
+            tried = tried + 1
+            instance:resetZoneLayout()
+        end
+    end
+end
+EVENTS[#EVENTS + 1] = string.format("== 组件矩阵：%d 种组合逐一渲染不崩 ==", tried)
+
+-- 4) 菜单入口存在且项数正确
+local menu_items = instance:genMenuItemTable()
+local layout_item, lang_item
+for _, it in ipairs(menu_items) do
+    if it.text and it.text:find("布局组件", 1, true) then layout_item = it end
+    if it.text and it.text:find("语言", 1, true) then lang_item = it end
+end
+if not layout_item or #layout_item.sub_item_table ~= 4 then
+    print("[FAIL] 布局组件菜单缺失或项数不对")
+    os.exit(1)
+end
+if not lang_item or #lang_item.sub_item_table ~= 3 then
+    print("[FAIL] 语言菜单缺失或项数不对")
+    os.exit(1)
+end
+-- 层级：布局组件 → 竖屏布局 → A 区 → 具体组件项
+local zone_a = layout_item.sub_item_table[1].sub_item_table
+if #zone_a ~= 3 then
+    print("[FAIL] 竖屏布局应有 A/B/C 三个区，实际 " .. #zone_a)
+    os.exit(1)
+end
+for _, it in ipairs(zone_a[1].sub_item_table) do
+    if not it.checked_func or not it.callback then
+        print("[FAIL] 区组件菜单项缺少勾选或回调：" .. tostring(it.text))
+        os.exit(1)
+    end
+end
+
+-- 5) 多语言：命中返回英文，未收录原样退回中文
+I18n.setLang("en")
+if I18n.T("湿度") ~= "Humidity" or I18n.T("月历") ~= "Month calendar" then
+    print("[FAIL] 英文词条没生效")
+    os.exit(1)
+end
+if I18n.T("这个词条不存在") ~= "这个词条不存在" then
+    print("[FAIL] 未收录词条应原样返回，不能变成 nil")
+    os.exit(1)
+end
+if I18n.dateLine({ year = 2026, month = 11, day = 12, wday = 4 }, true):find("Nov") == nil then
+    print("[FAIL] 英文日期行没有走本地化格式")
+    os.exit(1)
+end
+I18n.setLang("zh")
+if I18n.T("湿度") ~= "湿度" then
+    print("[FAIL] 切回中文失败")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 多语言：英文本地化、未收录回落、切回中文 =="
 
 print("---------- 事件序列 ----------")
 for _, e in ipairs(EVENTS) do print(e) end

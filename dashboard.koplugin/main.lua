@@ -51,6 +51,7 @@ local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local ImageWidget = require("ui/widget/imagewidget")
 local InfoMessage = require("ui/widget/infomessage")
+local I18n = require("dashboard_i18n")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
@@ -67,6 +68,10 @@ local Lunar = require("dashboard_lunar")
 local CityData = require("dashboard_cities")
 local QWeather = require("dashboard_qweather")
 local OpenMeteo = require("dashboard_openmeteo")
+
+-- 多语言：T() 查表，未收录时原样返回中文（缺词条不会崩，只会退回中文）
+local T = I18n.T
+local TL = I18n.TL
 
 local Screen = Device.screen
 
@@ -106,7 +111,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.42"
+local DASHBOARD_VERSION = "2.43"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -292,6 +297,58 @@ local function mkBox(w, h, child, opts)
     }
 end
 
+-- ------------------------------------------------------------------ 分区与组件
+-- 三区骨架：header 与 hint 之外，剩余纵向空间切成 A / B / C 三个「盒子」。
+-- 每个区只放一个组件（单选替换，不做叠加），盒子高度固定，组件在盒内自适应：
+-- 先按 k=1 建，装不下就按 K_LADDER 逐档收紧字号（宽度不动），绝不裁切。
+--
+-- 高度是「设计单位」，乘 S 得真机像素。数值来自 PW3 桩件实测（见 memory 2026-11-12）：
+--   竖屏 版心 1020×1389、内容列 920 → A 414 / B 518 / C 239 px
+--   横屏 版心 1396×1018、内容列 1276 → A 295 / 下半 565（B 630 + 分隔 53 + C 593）
+local ZONE_SPEC = {
+    portrait  = { A = 228, B = 283, C = 130, gap = 9, sep = 4, sep2 = 3, pad = 28 },
+    landscape = { A = 165, lower = 310,          gap = 4, sep = 4, sep2 = 3, pad = 34 },
+}
+
+-- 组装骨架时必须按这个顺序取区，与配置表的键一致
+local ZONE_KEYS = { "A", "B", "C" }
+
+--- 每区的默认组件。老用户升级后没有 dashboard_components 设置，
+--- 全部回落到这里 → 视觉与升级前一致。
+local ZONE_DEFAULT = {
+    portrait  = { A = "clock_weather", B = "lunar_term", C = "stats_cells" },
+    landscape = { A = "clock_weather", B = "calendar",   C = "side_panel" },
+}
+
+--- 组件注册表。zones 按方向分别声明白名单（同一个组件在竖屏能进的区
+--- 和在横屏能进的区并不一样，例如侧栏只在横屏 C）。
+--- build 存方法名而不是函数，避免在表构造时就要拿到 Dashboard 的方法。
+local COMPONENTS = {
+    clock_weather = {
+        label = "时钟与天气", zones = { portrait = { "A" }, landscape = { "A" } },
+        build = "compClockWeather",
+    },
+    lunar_term = {
+        label = "农历与节气", zones = { portrait = { "B" }, landscape = { "B", "C" } },
+        build = "compLunar",
+    },
+    stats_cells = {
+        label = "三格状态", zones = { portrait = { "C" }, landscape = { "C" } },
+        build = "compStats",
+    },
+    calendar = {
+        label = "月历", zones = { portrait = { "B" }, landscape = { "B" } },
+        build = "compCalendar",
+    },
+    side_panel = {
+        label = "侧栏三合一", zones = { portrait = {}, landscape = { "C" } },
+        build = "compSidePanel",
+    },
+}
+
+-- 收紧档位：只降字号，不换布局、不裁内容
+local K_LADDER = { 1, 0.94, 0.88, 0.82, 0.76 }
+
 local Dashboard = WidgetContainer:extend{
     name = "dashboard",
     is_doc_only = false,
@@ -356,7 +413,7 @@ end
 ---   table.insert(m, v)
 --- 而 findById 是**递归**遍历 sub_item_table 的，所以 hint 指到哪个子菜单，项就追加进
 --- 那个子菜单。readermenu.lua 里注册屏保那一项的写法是
----   self.menu_items.screensaver = { text = _("Sleep screen"),
+---   self.menu_items.screensaver = { text = T("Sleep screen"),
 ---       sub_item_table = dofile("frontend/ui/elements/screensaver_menu.lua") }
 --- id 正好是 "screensaver"，所以 hint 给 "screensaver" 就落到屏保菜单里，不用改核心文件。
 ---
@@ -371,7 +428,7 @@ function Dashboard:addToMainMenu(menu_items)
     end
     menu_items.dashboard_desk = {
         sorting_hint = hint,
-        text = _("桌面看板"),
+        text = T("桌面看板"),
         -- 和屏保自带的那几组设置之间画一条线，视觉上分开
         separator = true,
         sub_item_table = self:genMenuItemTable(),
@@ -381,25 +438,29 @@ end
 function Dashboard:genMenuItemTable()
     local items = {
         {
-            text = _("打开看板"),
+            text = T("打开看板"),
             -- 已经打开时这个入口没有意义，看板内弹出的菜单会把它过滤掉
             hide_in_dashboard = true,
             callback = function() self:open() end,
         },
         {
-            text = _("立即刷新天气"),
+            text = T("立即刷新天气"),
             callback = function() self:fetchWeather(true) end,
         },
         {
-            text = _("重新布局"),
+            text = T("重新布局"),
             callback = function()
                 if self.shown then self:refreshLayout() end
             end,
         },
         {
-            text = _("休眠时显示看板（屏保）"),
-            help_text = _("按电源键或空闲自动休眠时，屏幕停留在看板上，而不是 KOReader 的原生屏保。\n"
-                .. "e-ink 断电保画面，所以休眠期间看板是静止的，唤醒后继续刷新。"),
+            text = T("休眠时显示看板（屏保）"),
+            help_text = TL(
+                "按电源键或空闲自动休眠时，屏幕停留在看板上，而不是 KOReader 的原生屏保。\n"
+                .. "e-ink 断电保画面，所以休眠期间看板是静止的，唤醒后继续刷新。",
+                "When the device sleeps, the screen keeps showing the dashboard instead of\n"
+                .. "KOReader's native screensaver. E-ink holds the image without power,\n"
+                .. "so the dashboard is static while asleep and refreshes on wake."),
             checked_func = function() return self:screensaverEnabled() end,
             callback = function()
                 local enabled = self:screensaverEnabled()
@@ -410,9 +471,9 @@ function Dashboard:genMenuItemTable()
     }
 
     local city_groups = {
-        { key = "直辖市", text = _("直辖市") },
-        { key = "省会",   text = _("省会与首府") },
-        { key = "港澳台", text = _("港澳台") },
+        { key = "直辖市", text = T("直辖市") },
+        { key = "省会",   text = T("省会与首府") },
+        { key = "港澳台", text = T("港澳台") },
     }
     local city_items = {}
     for _, g in ipairs(city_groups) do
@@ -428,7 +489,7 @@ function Dashboard:genMenuItemTable()
         end
         city_items[#city_items + 1] = { text = g.text, sub_item_table = sub }
     end
-    items[#items + 1] = { text = _("选择城市"), sub_item_table = city_items }
+    items[#items + 1] = { text = T("选择城市"), sub_item_table = city_items }
 
     local tz_items = {}
     for _, t in ipairs(CityData.timezones) do
@@ -438,7 +499,7 @@ function Dashboard:genMenuItemTable()
             callback = function() self:setTz(t.iana) end,
         }
     end
-    items[#items + 1] = { text = _("选择时区"), sub_item_table = tz_items }
+    items[#items + 1] = { text = T("选择时区"), sub_item_table = tz_items }
 
     -- 版式三项**刻意不用 checked_func**。TouchMenu:onMenuSelect 里是这么分支的
     -- （v2025/v2026 一致）：
@@ -454,7 +515,7 @@ function Dashboard:genMenuItemTable()
     local cur_mode = self:currentOrientationMode()
     local function orientEntry(text, mode)
         return {
-            text = (cur_mode == mode) and (text .. _("（当前）")) or text,
+            text = (cur_mode == mode) and (text .. T("（当前）")) or text,
             -- TouchMenu 调 callback 时会把**菜单自己**作为第一个参数传进来
             -- （源码注释：Provide callback with us, so it can call our closemenu()）。
             -- 真机上「靠 onMenuSelect 自动关菜单」这条分支没生效，所以这里拿住菜单
@@ -463,22 +524,27 @@ function Dashboard:genMenuItemTable()
         }
     end
     items[#items + 1] = {
-        text = _("版式（竖屏 / 横屏）"),
+        text = T("版式（竖屏 / 横屏）"),
         sub_item_table = {
-            orientEntry(_("竖屏"), "portrait"),
-            orientEntry(_("横屏（向右转 90°）"), "landscape"),
-            orientEntry(_("横屏（向左转 90°）"), "landscape_ccw"),
+            orientEntry(T("竖屏"), "portrait"),
+            orientEntry(T("横屏（向右转 90°）"), "landscape"),
+            orientEntry(T("横屏（向左转 90°）"), "landscape_ccw"),
         },
     }
 
-    items[#items + 1] = { text = _("天气服务"), sub_item_table = self:genWeatherMenu() }
+    items[#items + 1] = { text = T("布局组件"), sub_item_table = self:genLayoutMenu() }
+
+    items[#items + 1] = { text = T("语言 / Language"), sub_item_table = self:genLangMenu() }
+
+    items[#items + 1] = { text = T("天气服务"), sub_item_table = self:genWeatherMenu() }
 
     items[#items + 1] = {
         -- 版本号放这儿：上机时打开菜单扫一眼就知道是不是刚改的那份代码
-        text = _("使用说明") .. "  v" .. DASHBOARD_VERSION,
+        text = T("使用说明") .. "  v" .. DASHBOARD_VERSION,
         callback = function()
             UIManager:show(InfoMessage:new{
-                text = _("手势：点按刷新天气 · 上划退出看板\n"
+                text = TL(
+                    "手势：点按刷新天气 · 上划退出看板\n"
                     .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 版式 / 天气服务）\n"
                     .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
                     .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
@@ -490,26 +556,112 @@ function Dashboard:genMenuItemTable()
                     .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
                     .. "空闲超时或按电源键休眠时，屏幕会停留在看板上（相当于屏保）。\n"
                     .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。\n\n"
-                    .. "看板版本 v" .. DASHBOARD_VERSION),
+                    .. "看板版本 v" .. DASHBOARD_VERSION,
+                    "Gestures: tap to refresh · swipe up to exit\n"
+                    .. "Swipe down from the top edge: dashboard menu (city / time zone / layout)\n"
+                    .. "When closed: Settings → Screen → Sleep screen → Desk dashboard\n"
+                    .. "Swipe sideways: switch portrait ↔ landscape (really rotates the screen)\n\n"
+                    .. "Kindles have no accelerometer, so landscape must be triggered manually\n"
+                    .. "by swiping sideways or via the Layout menu; then hold the device sideways.\n"
+                    .. "If the landscape text appears upside down, pick the other rotation.\n\n"
+                    .. "Top right: battery percentage and icon (inverted while charging).\n"
+                    .. "Weather comes from QWeather; if unavailable it falls back to Open-Meteo,\n"
+                    .. "and the footer shows the current source.\n"
+                    .. "On idle or power-button sleep the screen keeps the dashboard (acts as a\n"
+                    .. "screensaver). For long display, keep it plugged in; a full refresh runs\n"
+                    .. "every 30 minutes to clear e-ink ghosting.\n\n"
+                    .. "Dashboard version v" .. DASHBOARD_VERSION),
             })
         end,
     }
     return items
 end
 
+-- ------------------------------------------------------------------ 布局组件菜单
+--- 「布局组件」：竖屏 / 横屏 → A/B/C → 该区可选的组件（单选，当前项打勾）。
+--- 用 checked_func 会让 TouchMenu「只刷新、不关菜单」，正好方便连续改三个区；
+--- 每选一次都会经 onConfigChanged → refreshLayout 立即生效。
+function Dashboard:genLayoutMenu()
+    local function zone_entry(orient, key, title)
+        local sub = {}
+        for _, id in ipairs(self:componentIdsFor(orient, key)) do
+            local c = COMPONENTS[id]
+            local is_default = (ZONE_DEFAULT[orient][key] == id)
+            sub[#sub + 1] = {
+                text = T(c.label) .. (is_default and (" · " .. T("默认")) or ""),
+                checked_func = function()
+                    return self:getZoneLayout()[orient][key] == id
+                end,
+                callback = function() self:setZoneComponent(orient, key, id) end,
+            }
+        end
+        return { text = title, sub_item_table = sub }
+    end
+
+    return {
+        {
+            text = T("竖屏布局"),
+            sub_item_table = {
+                zone_entry("portrait", "A", T("A 区（上）")),
+                zone_entry("portrait", "B", T("B 区（中）")),
+                zone_entry("portrait", "C", T("C 区（下）")),
+            },
+        },
+        {
+            text = T("横屏布局"),
+            sub_item_table = {
+                zone_entry("landscape", "A", T("A 区（上）")),
+                zone_entry("landscape", "B", T("B 区（左下）")),
+                zone_entry("landscape", "C", T("C 区（右下）")),
+            },
+        },
+        {
+            text = T("复制竖屏布局到横屏"),
+            callback = function() self:copyPortraitLayoutToLandscape() end,
+        },
+        {
+            text = T("恢复默认布局"),
+            callback = function() self:resetZoneLayout() end,
+        },
+    }
+end
+
+-- ------------------------------------------------------------------ 语言菜单
+--- 语言：auto 跟随 KOReader（未显式设置语言时按中文），或强制 zh / en。
+--- 改完立刻重排，菜单保持打开也能看到背后变化。
+function Dashboard:genLangMenu()
+    local function entry(text, value)
+        return {
+            text = text,
+            checked_func = function() return I18n.setting() == value end,
+            callback = function()
+                I18n.setLang(value)
+                if self.shown then self:refreshLayout() end
+            end,
+        }
+    end
+    return {
+        entry(T("跟随 KOReader"), "auto"),
+        entry("中文", "zh"),
+        entry("English", "en"),
+    }
+end
+
 -- ------------------------------------------------------------------ 天气服务菜单
 local SOURCE_NAMES = {
-    file = _("插件内 dashboard_config.lua"),
-    local_ = _("插件内 dashboard_config.local.lua"),
-    settings = _("设备内录入"),
-    none = _("未配置"),
+    file = "插件内 dashboard_config.lua",
+    local_ = "插件内 dashboard_config.local.lua",
+    settings = "设备内录入",
+    none = "未配置",
 }
 
 --- 「天气服务」子菜单：查看 / 录入凭据、测试连接
 function Dashboard:genWeatherMenu()
+    -- 这里刻意不在表里预先翻译：语言可以在运行中切换，表若在加载时求值就会
+    -- 永远停在启动那一刻的语言。存原文、用时再 T()。
     local function source_name(key)
-        if key == "local" then return SOURCE_NAMES.local_ end
-        return SOURCE_NAMES[key] or SOURCE_NAMES.none
+        if key == "local" then return T(SOURCE_NAMES.local_) end
+        return T(SOURCE_NAMES[key] or SOURCE_NAMES.none)
     end
 
     local function open_input(title, description, hint, getter, setter)
@@ -522,12 +674,12 @@ function Dashboard:genWeatherMenu()
             buttons = {
                 {
                     {
-                        text = _("取消"),
+                        text = T("取消"),
                         id = "cancel",
                         callback = function() UIManager:close(dialog) end,
                     },
                     {
-                        text = _("保存"),
+                        text = T("保存"),
                         callback = function()
                             local value = dialog:getInputText() or ""
                             value = value:gsub("^%s+", ""):gsub("%s+$", "")
@@ -544,32 +696,32 @@ function Dashboard:genWeatherMenu()
 
     return {
         {
-            text = _("查看当前凭据"),
+            text = T("查看当前凭据"),
             keep_menu_open = false,
             callback = function()
                 local cfg = self:getConfig()
                 local qw = cfg.qweather or {}
                 local lines = {
-                    string.format("%s：%s", _("API Host"),
-                        (qw.api_host and qw.api_host ~= "") and qw.api_host or _("未填写")),
-                    string.format("%s：%s", _("API Key"), QWeather.mask(qw.api_key)),
-                    string.format("%s：%s", _("来源"), source_name(cfg._key_source)),
+                    string.format("%s：%s", T("API Host"),
+                        (qw.api_host and qw.api_host ~= "") and qw.api_host or T("未填写")),
+                    string.format("%s：%s", T("API Key"), QWeather.mask(qw.api_key)),
+                    string.format("%s：%s", T("来源"), source_name(cfg._key_source)),
                 }
                 if qw.credential_id and qw.credential_id ~= "" then
-                    lines[#lines + 1] = string.format("%s：%s", _("凭据 ID"), qw.credential_id)
+                    lines[#lines + 1] = string.format("%s：%s", T("凭据 ID"), qw.credential_id)
                 end
                 if qw.project and qw.project ~= "" then
-                    lines[#lines + 1] = string.format("%s：%s", _("项目"), qw.project)
+                    lines[#lines + 1] = string.format("%s：%s", T("项目"), qw.project)
                 end
                 UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
             end,
         },
         {
-            text = _("填写 API Host"),
+            text = T("填写 API Host"),
             keep_menu_open = false,
             callback = function()
-                open_input(_("和风天气 API Host"),
-                    _("控制台「设置」页里的专属地址，形如 abcxyz.qweatherapi.com，不要带 https://"),
+                open_input(T("和风天气 API Host"),
+                    T("控制台「设置」页里的专属地址，形如 abcxyz.qweatherapi.com，不要带 https://"),
                     "abcxyz.qweatherapi.com",
                     function() return self:getConfig().qweather.api_host end,
                     function(value)
@@ -581,11 +733,11 @@ function Dashboard:genWeatherMenu()
             end,
         },
         {
-            text = _("填写 API Key"),
+            text = T("填写 API Key"),
             keep_menu_open = false,
             callback = function()
-                open_input(_("和风天气 API Key"),
-                    _("控制台「项目管理 - 凭据」里创建，需与上面的 API Host 属于同一项目"),
+                open_input(T("和风天气 API Key"),
+                    T("控制台「项目管理 - 凭据」里创建，需与上面的 API Host 属于同一项目"),
                     "",
                     function() return self:getConfig().qweather.api_key end,
                     function(value)
@@ -597,19 +749,19 @@ function Dashboard:genWeatherMenu()
             end,
         },
         {
-            text = _("测试连接"),
+            text = T("测试连接"),
             keep_menu_open = false,
             callback = function()
                 self:reloadConfig()
                 UIManager:show(InfoMessage:new{
-                    text = _("正在连接和风天气…"),
+                    text = T("正在连接和风天气…"),
                     timeout = 1,
                 })
                 self:fetchWeather(true)
             end,
         },
         {
-            text = _("清除设备内录入"),
+            text = T("清除设备内录入"),
             keep_menu_open = false,
             callback = function()
                 G_reader_settings:saveSetting("dashboard_qw_host", "")
@@ -618,7 +770,7 @@ function Dashboard:genWeatherMenu()
                 self:reloadConfig()
                 self:onConfigChanged()
                 UIManager:show(InfoMessage:new{
-                    text = _("已清除。凭据改由插件目录下的配置文件提供。"),
+                    text = T("已清除。凭据改由插件目录下的配置文件提供。"),
                     timeout = 2,
                 })
             end,
@@ -665,6 +817,81 @@ function Dashboard:onConfigChanged()
     if not self.shown then return end
     self:refreshLayout()
     self:fetchWeather()
+end
+
+-- ------------------------------------------------------------------ 分区配置
+--- 读分区配置。逐项校验：不存在的组件、未获准进该区的组件、旧版本残留的
+--- 非法值，一律回落到该区默认，保证任何一份脏设置都能出画面。
+function Dashboard:getZoneLayout()
+    local saved = G_reader_settings:readSetting("dashboard_components")
+    local out = {}
+    for _, orient in ipairs({ "portrait", "landscape" }) do
+        out[orient] = {}
+        for _, key in ipairs(ZONE_KEYS) do
+            local id = type(saved) == "table" and type(saved[orient]) == "table"
+                and saved[orient][key] or nil
+            local comp = id and COMPONENTS[id] or nil
+            local allowed = false
+            if comp then
+                for _, z in ipairs(comp.zones[orient] or {}) do
+                    if z == key then allowed = true break end
+                end
+            end
+            out[orient][key] = allowed and id or ZONE_DEFAULT[orient][key]
+        end
+    end
+    return out
+end
+
+--- 写某一区的组件，立即重排（与「选择城市」走同一条链路，已上机验证过）
+function Dashboard:setZoneComponent(orient, key, id)
+    if not (COMPONENTS[id]) then return end
+    local layout = self:getZoneLayout()
+    layout[orient][key] = id
+    G_reader_settings:saveSetting("dashboard_components", layout)
+    if G_reader_settings.flush then G_reader_settings:flush() end
+    self:onConfigChanged()
+end
+
+--- 某方向某区可选的组件 id 列表：默认项排最前，其余按 id 排序（pairs 顺序不定）
+function Dashboard:componentIdsFor(orient, key)
+    local ids = {}
+    for id, comp in pairs(COMPONENTS) do
+        for _, z in ipairs(comp.zones[orient] or {}) do
+            if z == key then ids[#ids + 1] = id break end
+        end
+    end
+    local def = ZONE_DEFAULT[orient][key]
+    table.sort(ids, function(a, b)
+        if a == def then return true end
+        if b == def then return false end
+        return a < b
+    end)
+    return ids
+end
+
+--- 把竖屏三区整套抄给横屏（同名组件在横屏不允许的区会自动回落默认）
+function Dashboard:copyPortraitLayoutToLandscape()
+    local layout = self:getZoneLayout()
+    for _, key in ipairs(ZONE_KEYS) do
+        local id = layout.portrait[key]
+        local comp = COMPONENTS[id]
+        local allowed = false
+        for _, z in ipairs(comp and comp.zones.landscape or {}) do
+            if z == key then allowed = true break end
+        end
+        layout.landscape[key] = allowed and id or ZONE_DEFAULT.landscape[key]
+    end
+    G_reader_settings:saveSetting("dashboard_components", layout)
+    if G_reader_settings.flush then G_reader_settings:flush() end
+    self:onConfigChanged()
+end
+
+--- 恢复默认：直接删键，比写一份默认值更干净（以后改默认值能跟着变）
+function Dashboard:resetZoneLayout()
+    pcall(function() G_reader_settings:delSetting("dashboard_components") end)
+    if G_reader_settings.flush then G_reader_settings:flush() end
+    self:onConfigChanged()
 end
 
 -- 当前时区下的时间分解（不依赖设备时区设置）
@@ -737,13 +964,20 @@ function Dashboard:maybeShowSetupHint()
     if not UIManager or not InfoMessage then return end
     pcall(function()
         UIManager:show(InfoMessage:new{
-            text = _("还没有配置和风天气凭据。\n\n"
+            text = TL("还没有配置和风天气凭据。\n\n"
                 .. "当前天气走 Open-Meteo 降级源：温度、现象、湿度、风力、日出日落都正常，"
                 .. "但空气质量是由 PM2.5/PM10 浓度换算出的估算值，不是国标 AQI。\n\n"
                 .. "要改用和风天气：\n"
                 .. "设置 → 屏幕 → 屏保 → 桌面看板 → 天气服务，"
                 .. "填入 API Host 与 API Key（两者需属于同一个和风项目）。\n\n"
-                .. "此提示只出现一次。"),
+                .. "此提示只出现一次。",
+                "No QWeather credentials configured.\n\n"
+                .. "Weather is currently taken from the Open-Meteo fallback: temperature,\n"
+                .. "condition, humidity, wind and sunrise/sunset are fine, but air quality\n"
+                .. "is estimated from PM2.5/PM10 instead of the official CN AQI.\n\n"
+                .. "To use QWeather: Settings → Screen → Sleep screen → Desk dashboard\n"
+                .. "→ Weather service, and fill in API Host and API Key (same project).\n\n"
+                .. "This hint appears only once."),
             timeout = 15,
         })
     end)
@@ -1044,9 +1278,9 @@ end
 function Dashboard:sourceLabel()
     local src = self.weather and self.weather.source
     if src == "open-meteo" then
-        return _("天气 Open-Meteo（降级）")
+        return T("天气 Open-Meteo（降级）")
     elseif src == "qweather" then
-        return _("天气数据 和风天气")
+        return T("天气数据 和风天气")
     end
     return nil
 end
@@ -1062,7 +1296,7 @@ function Dashboard:weatherDisplay()
     local w = self.weather
     local d = {
         icon = "partly",
-        cond = _("暂无数据"),
+        cond = T("暂无数据"),
         temp = "--°",
         range = nil,
         hum = nil,
@@ -1076,7 +1310,7 @@ function Dashboard:weatherDisplay()
     local meta = QWeather.condition(w.code)
     d.icon = meta[2]
     -- 服务端给的中文现象更准（如“晴间多云”），缓存里没有时才用本地表
-    d.cond = w.cond or _(meta[1])
+    d.cond = w.cond or T(meta[1])
 
     if w.temp then
         d.temp = string.format("%d°", math.floor(w.temp + 0.5))
@@ -1086,7 +1320,7 @@ function Dashboard:weatherDisplay()
             math.floor(w.tmin + 0.5), math.floor(w.tmax + 0.5))
     end
     if w.feels then
-        d.feels = string.format("%s %d°", _("体感"), math.floor(w.feels + 0.5))
+        d.feels = string.format("%s %d°", T("体感"), math.floor(w.feels + 0.5))
     end
     if w.hum then
         d.hum = string.format("%d%%", math.floor(w.hum + 0.5))
@@ -1105,23 +1339,23 @@ end
 function Dashboard:airDisplay()
     local a = self.air
     if not a then
-        return { text = "--", level = _("暂无数据") }
+        return { text = "--", level = T("暂无数据") }
     end
     -- 国标 AQI 优先；境外城市没有 cn-mee 时按 PM2.5/PM10 回退估算
     local aqi = a.aqi or self:calcAQI(a.pm25, a.pm10)
     if not aqi then
-        return { text = "--", level = _("暂无数据") }
+        return { text = "--", level = T("暂无数据") }
     end
     aqi = math.floor(aqi + 0.5)
     local level = a.level
     if not level then
         -- 境外城市没有国标 AQI 时，才按 HJ 633-2012 分档
-        if aqi <= 50 then level = _("优")
-        elseif aqi <= 100 then level = _("良")
-        elseif aqi <= 150 then level = _("轻度污染")
-        elseif aqi <= 200 then level = _("中度污染")
-        elseif aqi <= 300 then level = _("重度污染")
-        else level = _("严重污染") end
+        if aqi <= 50 then level = T("优")
+        elseif aqi <= 100 then level = T("良")
+        elseif aqi <= 150 then level = T("轻度污染")
+        elseif aqi <= 200 then level = T("中度污染")
+        elseif aqi <= 300 then level = T("重度污染")
+        else level = T("严重污染") end
     end
     return { text = tostring(aqi), level = level }
 end
@@ -1140,10 +1374,10 @@ end
 function Dashboard:updateLabel(ctx)
     local w = self.weather
     if w and w.ts then
-        return string.format("%s %s", _("更新于"),
+        return string.format("%s %s", T("更新于"),
             os.date("!%H:%M", w.ts + ctx.tz.offset * 60))
     end
-    return _("尚未获取天气")
+    return T("尚未获取天气")
 end
 
 -- ------------------------------------------------------------------ 界面构建
@@ -1216,7 +1450,7 @@ function Dashboard:setOrientation(mode)
         G_reader_settings:saveSetting("dashboard_orientation", mode)
         if G_reader_settings.flush then G_reader_settings:flush() end
         UIManager:show(InfoMessage:new{
-            text = _("已记住，下次打开看板时按这个方向显示"),
+            text = T("已记住，下次打开看板时按这个方向显示"),
             timeout = 2,
         })
         return false
@@ -1265,10 +1499,10 @@ function Dashboard:relayoutFromGesture()
     local rotated = self:setOrientation(to_landscape and "landscape" or "portrait")
     local text
     if to_landscape then
-        text = rotated and _("已转为横屏，请把设备横着拿（再左右滑一下可转回竖屏）")
-            or _("已切换为横屏版式（本机不支持转屏）")
+        text = rotated and T("已转为横屏，请把设备横着拿（再左右滑一下可转回竖屏）")
+            or T("已切换为横屏版式（本机不支持转屏）")
     else
-        text = _("已转回竖屏")
+        text = T("已转回竖屏")
     end
     UIManager:show(InfoMessage:new{ text = text, timeout = 2 })
 end
@@ -1447,9 +1681,14 @@ end
 --- 菜单弹不出来时的兜底提示，告诉用户从哪还能进设置
 function Dashboard:menuFallback()
     UIManager:show(InfoMessage:new{
-        text = _("这个 KOReader 版本无法在看板内弹出菜单。\n"
+        text = TL("这个 KOReader 版本无法在看板内弹出菜单。\n"
             .. "请先上划退出看板，再从阅读界面上缘下拉 → 设置 → 屏幕 → 屏保 → 桌面看板。\n\n"
-            .. "看板内可直接用的手势：点按刷新、上划退出、左右滑动重新布局。"),
+            .. "看板内可直接用的手势：点按刷新、上划退出、左右滑动重新布局。",
+            "This KOReader build cannot open the menu inside the dashboard.\n"
+            .. "Swipe up to exit, then pull down from the top edge → Settings → Screen\n"
+            .. "→ Sleep screen → Desk dashboard.\n\n"
+            .. "Gestures available inside: tap to refresh, swipe up to exit,\n"
+            .. "swipe sideways to switch layout."),
         timeout = 5,
     })
 end
@@ -1848,221 +2087,278 @@ function Dashboard:buildStatCells(ctx, cell_w, items)
     return HorizontalGroup:new{ align = "center", unpack(cells) }
 end
 
--- ---------------------------------------------------------------- 竖屏：仪表盘
+-- ---------------------------------------------------------------- 分区装配
+--- 建一个区：按当前配置取组件 → 在固定盒子里从 k=1 起逐档收紧字号，直到装得下。
+--- 盒子宽高固定，组件内容在盒内居中（Stack 默认居中对齐），所以换组件不会
+--- 牵动别的区；装不下也绝不裁切，只记日志交给 createRoot 的全局缩放兜底。
+function Dashboard:buildZone(ctx, orient, key, box_w, content_w, box_h)
+    local id = self:getZoneLayout()[orient][key]
+    local comp = COMPONENTS[id] or COMPONENTS[ZONE_DEFAULT[orient][key]]
+    local method = comp.build
+    local child
+    for i = 1, #K_LADDER do
+        child = self[method](self, ctx, content_w, box_h, K_LADDER[i])
+        if child:getSize().h <= box_h then break end
+        if i == #K_LADDER then
+            logger.warn(string.format(
+                "dashboard: 组件 %s 在 %s 区（高 %d）收到最小档仍占 %d，交给全局缩放",
+                id, key, box_h, child:getSize().h))
+        end
+    end
+    return mkBox(box_w, box_h, child)
+end
+
+--- 一条横向分隔线（宽度取版心宽，与四边留白对齐）
+local function sepLine(w, px)
+    return Solid:new{
+        dimen = Geom:new{ w = w, h = math.max(2, math.floor(px)) },
+        color = COLOR_BLACK,
+    }
+end
+
+-- ---------------------------------------------------------------- 竖屏：三区
 function Dashboard:buildPortrait(ctx)
     local W, S = ctx.body_w or ctx.W, ctx.S
-    local pad_lr = math.floor(28 * S)
-    local content_w = W - pad_lr * 2
+    local spec = ZONE_SPEC.portrait
+    local pad = math.floor(spec.pad * S)
+    local content_w = W - pad * 2
+    local gap = math.floor(spec.gap * S)
     local rows = {}
-    local function push(widget) rows[#rows + 1] = widget end
+    local function push(x) rows[#rows + 1] = x end
 
-    -- 顶部城市条
-    push(self:buildHeader(ctx, pad_lr))
-    push(mkPad(W, math.floor(6 * S)))
-    push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(4 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(18 * S)))
+    push(self:buildHeader(ctx, pad))
+    push(mkPad(W, gap))
+    push(sepLine(W, spec.sep * S))
+    push(mkPad(W, gap))
 
-    -- 时钟与天气左右并列
-    self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text, 112)
-    local date_line = self:makeText(ctx, string.format("%d月%d日 星期%s",
-        ctx.now.month, ctx.now.day, Lunar.WEEKDAY_NAMES[ctx.now.wday] or ""), 32)
-    local clock_block = VerticalGroup:new{
-        align = "left",
-        self.clock_widget,
-        mkPad(1, math.floor(6 * S)),
-        date_line,
-    }
-    local min_gap = math.floor(14 * S)
-    local weather_block = self:buildWeatherBlock(ctx, 76, 50,
-        content_w - clock_block:getSize().w - min_gap)
-    local clock_fill = math.max(min_gap,
-        content_w - clock_block:getSize().w - weather_block:getSize().w)
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        clock_block,
-        mkPad(clock_fill, 1),
-        weather_block,
-        mkPad(pad_lr, 1),
-    })
-
-    push(mkPad(W, math.floor(16 * S)))
-    push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(3 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(14 * S)))
-
-    -- 农历
-    push(CenterContainer:new{
-        dimen = Geom:new{ w = W, h = math.floor(20 * S * 1.4) },
-        self:makeText(ctx, _("农历"), 20, { gray = true }),
-    })
-    push(mkPad(W, math.floor(2 * S)))
-    local lunar_side = VerticalGroup:new{
-        align = "left",
-        self:makeText(ctx, Lunar.ganzhi_year(ctx.lunar), 30),
-        mkPad(1, math.floor(4 * S)),
-        self:makeText(ctx, string.format("%s年", Lunar.zodiac(ctx.lunar)), 22, { gray = true }),
-    }
-    local lunar_big = self:makeText(ctx, Lunar.month_day_text(ctx.lunar), 54)
-    local lunar_fill = math.max(math.floor(20 * S),
-        content_w - lunar_big:getSize().w - lunar_side:getSize().w)
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        lunar_big,
-        mkPad(lunar_fill, 1),
-        lunar_side,
-        mkPad(pad_lr, 1),
-    })
-    push(mkPad(W, math.floor(14 * S)))
-
-    -- 节气：文字 + 进度条 + 两端刻度
-    local ratio, elapsed, remain = self:solarTermRatio(ctx)
-    local term_text
-    if ctx.cur_term.is_today then
-        term_text = string.format("%s · 今日交节", ctx.cur_term.name)
-    elseif ctx.next_term then
-        term_text = string.format("%s 第%d天 · 距%s%d天", ctx.cur_term.name,
-            elapsed, ctx.next_term.name, remain)
-    else
-        term_text = string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1)
+    -- 时钟控件只由 clock_weather 组件产生；清空必须放在循环**外**，
+    -- 否则建完 A 再建 B/C 时会把刚设好的引用清掉（桩件有断言专门抓这个）
+    self.clock_widget = nil
+    for i, key in ipairs(ZONE_KEYS) do
+        push(self:buildZone(ctx, "portrait", key, W, content_w, math.floor(spec[key] * S)))
+        if i < #ZONE_KEYS then
+            push(mkPad(W, gap))
+            push(sepLine(W, spec.sep2 * S))
+            push(mkPad(W, gap))
+        end
     end
-    local term_label = self:makeText(ctx, term_text, 26)
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        term_label,
-        mkPad(math.max(0, content_w - term_label:getSize().w), 1),
-        mkPad(pad_lr, 1),
-    })
-    push(mkPad(W, math.floor(10 * S)))
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        ProgressBar:new{
-            dimen = Geom:new{ w = content_w, h = math.max(8, math.floor(10 * S)) },
-            ratio = ratio,
-            border = math.max(1, math.floor(2 * S)),
-        },
-    })
-    push(mkPad(W, math.floor(8 * S)))
 
-    local left_label = self:makeText(ctx, ctx.cur_term.name, 20, { gray = true })
-    local right_label = ctx.next_term
-        and self:makeText(ctx, ctx.next_term.name, 20, { gray = true })
-        or self:makeText(ctx, "", 20)
-    local lw, rw = left_label:getSize().w, right_label:getSize().w
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        left_label,
-        mkPad(math.max(0, content_w - lw - rw), 1),
-        right_label,
-    })
-
-    push(mkPad(W, math.floor(16 * S)))
-    push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(3 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(16 * S)))
-
-    -- 底部三格：湿度 / 风力 / 空气质量
-    local d = self:weatherDisplay()
-    local air = self:airDisplay()
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        self:buildStatCells(ctx, math.floor(content_w / 3), {
-            { _("湿度"), d.hum or "--" },
-            { _("风力"), d.wind or "--", d.wind_dir },
-            { "AQI", air.text, air.level },
-        }),
-    })
-
-    push(mkPad(W, math.floor(14 * S)))
-    push(self:buildHintRow(ctx, content_w, pad_lr, 17))
-
+    push(mkPad(W, gap))
+    push(self:buildHintRow(ctx, content_w, pad, 17))
     return VerticalGroup:new{ align = "left", unpack(rows) }
 end
 
--- ---------------------------------------------------------------- 横屏：上下分区
+-- ---------------------------------------------------------------- 横屏：A + 下半
 function Dashboard:buildLandscape(ctx)
     local W, S = ctx.body_w or ctx.W, ctx.S
-    local pad_lr = math.floor(34 * S)
+    local spec = ZONE_SPEC.landscape
+    local pad = math.floor(spec.pad * S)
+    local avail = W - pad * 2
+    local gap = math.floor(spec.gap * S)
     local rows = {}
-    local function push(widget) rows[#rows + 1] = widget end
+    local function push(x) rows[#rows + 1] = x end
 
-    push(self:buildHeader(ctx, pad_lr))
-    push(mkPad(W, math.floor(3 * S)))
-    push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(4 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(4 * S)))
+    push(self:buildHeader(ctx, pad))
+    push(mkPad(W, gap))
+    push(sepLine(W, spec.sep * S))
+    push(mkPad(W, gap))
 
-    -- 时钟与日期（左） / 天气（右），中间空白撑开
-    self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text, 82)
-    local date_line = self:makeText(ctx, string.format("%d年%d月%d日 星期%s",
-        ctx.now.year, ctx.now.month, ctx.now.day, Lunar.WEEKDAY_NAMES[ctx.now.wday] or ""), 28)
-    local clock_block = VerticalGroup:new{
-        align = "left",
-        self.clock_widget,
-        mkPad(1, math.floor(3 * S)),
-        date_line,
-    }
-    local weather = self:buildWeatherBlock(ctx, 78, 60,
-        W - pad_lr * 2 - clock_block:getSize().w)
-    local fill = math.max(0, W - pad_lr * 2 - clock_block:getSize().w - weather:getSize().w)
-    push(HorizontalGroup:new{
-        align = "center",
-        mkPad(pad_lr, 1),
-        clock_block,
-        mkPad(fill, 1),
-        weather,
-        mkPad(pad_lr, 1),
-    })
+    self.clock_widget = nil
+    push(self:buildZone(ctx, "landscape", "A", W, avail, math.floor(spec.A * S)))
 
-    push(mkPad(W, math.floor(4 * S)))
-    push(Solid:new{ dimen = Geom:new{ w = W, h = math.max(2, math.floor(3 * S)) }, color = COLOR_BLACK })
-    push(mkPad(W, math.floor(4 * S)))
+    push(mkPad(W, gap))
+    push(sepLine(W, spec.sep2 * S))
+    push(mkPad(W, gap))
 
-    -- 下半区：左整月日历 / 右农历节气。
-    -- 宽度必须由可用空间反推：固定 52*S 的列宽在 300ppi 的 1448px 屏上，
-    -- 日历 + 右栏会超出屏幕 40px，右栏被裁掉。
-    local avail = W - pad_lr * 2
-    local gap = math.floor(24 * S)
+    -- 下半区：左 B / 竖线 / 右 C。宽度由可用空间反推——固定列宽在 300ppi 的
+    -- 1448px 屏上会让右栏被挤出屏幕，所以 B 的列宽先算，C 吃掉剩下的。
     local vline_w = math.max(2, math.floor(3 * S))
     local right_min = math.floor(330 * S)
     local cell_w = math.min(math.floor(52 * S),
         math.floor((avail - right_min - gap * 2 - vline_w) / 7))
     cell_w = math.max(math.floor(34 * S), cell_w)
-    local cal_w = cell_w * 7
-    local right_w = math.max(math.floor(260 * S), avail - cal_w - gap * 2 - vline_w)
+    local bw = cell_w * 7
+    local cw = math.max(math.floor(260 * S), avail - bw - gap * 2 - vline_w)
+    local lower_h = math.floor(spec.lower * S)
 
-    local calendar = self:buildCalendar(ctx, cell_w)
-    local panel = self:buildSidePanel(ctx, right_w)
-    local vline_h = math.max(calendar:getSize().h, panel:getSize().h)
-
+    local left = self:buildZone(ctx, "landscape", "B", bw, bw, lower_h)
+    local right = self:buildZone(ctx, "landscape", "C", cw, cw, lower_h)
     push(HorizontalGroup:new{
         align = "top",
-        mkPad(pad_lr, 1),
-        calendar,
+        mkPad(pad, 1),
+        left,
         mkPad(gap, 1),
-        Solid:new{ dimen = Geom:new{ w = vline_w, h = vline_h }, color = COLOR_BLACK },
+        Solid:new{ dimen = Geom:new{ w = vline_w, h = lower_h }, color = COLOR_BLACK },
         mkPad(gap, 1),
-        panel,
-        mkPad(pad_lr, 1),
+        right,
+        mkPad(pad, 1),
     })
 
-    -- 底部操作提示：横屏宽，固定一行，正好抵掉从右栏挪走的来源声明
-    push(mkPad(W, math.floor(6 * S)))
-    push(self:buildHintRow(ctx, avail, pad_lr, 20))
-
+    push(mkPad(W, gap))
+    push(self:buildHintRow(ctx, avail, pad, 20))
     return VerticalGroup:new{ align = "left", unpack(rows) }
 end
 
+-- ---------------------------------------------------------------- 组件实现
+-- 统一签名：(ctx, w, h, k) → widget。w 是内容列宽，h 是盒子高，k 是密度系数。
+-- 约定：只缩字号与间距，**不改宽度**（左右只有 6.4mm 留白，撑宽必然破版）。
+
+--- 节气文案：中英两套句法，别用拼接硬套
+function Dashboard:termText(ctx, with_next)
+    local ratio, elapsed, remain = self:solarTermRatio(ctx)
+    local cur = I18n.term(ctx.cur_term.name)
+    if I18n.lang() == "en" then
+        if ctx.cur_term.is_today then
+            return string.format("%s · starts today", cur), ratio, elapsed, remain
+        end
+        if with_next and ctx.next_term then
+            return string.format("%s · day %d · %d days to %s", cur, elapsed or 1,
+                remain or 0, I18n.term(ctx.next_term.name)), ratio, elapsed, remain
+        end
+        return string.format("%s · day %d", cur, elapsed or 1), ratio, elapsed, remain
+    end
+    local text
+    if ctx.cur_term.is_today then
+        text = string.format("%s · 今日交节", cur)
+    elseif with_next and ctx.next_term then
+        text = string.format("%s 第%d天 · 距%s%d天", cur, elapsed, ctx.next_term.name, remain)
+    else
+        text = string.format("%s 第%d天", cur, elapsed or 1)
+    end
+    return text, ratio, elapsed, remain
+end
+
+--- 时钟与天气：左时钟+日期，右图标+温度+现象+体感
+function Dashboard:compClockWeather(ctx, w, h, k)
+    local S = ctx.S
+    local land = ctx.landscape
+    self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
+    self.clock_widget = self:makeText(ctx, self.clock_text,
+        math.floor((land and 82 or 112) * k))
+    local clock_block = VerticalGroup:new{
+        align = "left",
+        self.clock_widget,
+        mkPad(1, math.floor(6 * S * k)),
+        self:makeText(ctx, I18n.dateLine(ctx.now, not land),
+            math.floor((land and 28 or 32) * k)),
+    }
+    local min_gap = math.floor(14 * S)
+    local weather = self:buildWeatherBlock(ctx,
+        math.floor((land and 78 or 76) * k),
+        math.floor((land and 60 or 50) * k),
+        math.max(math.floor(w * 0.42), w - clock_block:getSize().w - min_gap))
+    local fill = math.max(min_gap, w - clock_block:getSize().w - weather:getSize().w)
+    return HorizontalGroup:new{
+        align = "center",
+        clock_block,
+        mkPad(fill, 1),
+        weather,
+    }
+end
+
+--- 农历与节气：标签 + 农历大字（右干支生肖）+ 节气文案 + 进度条 + 两端刻度
+function Dashboard:compLunar(ctx, w, h, k)
+    local S = ctx.S
+    local rows = {}
+    local function push(x) rows[#rows + 1] = x end
+
+    push(CenterContainer:new{
+        dimen = Geom:new{ w = w, h = math.floor(28 * S * k) },
+        self:makeText(ctx, T("农历"), math.floor(20 * k), { gray = true }),
+    })
+    push(mkPad(w, math.floor(2 * S * k)))
+
+    local zod = I18n.zodiac(Lunar.zodiac(ctx.lunar))
+    local side = VerticalGroup:new{
+        align = "left",
+        self:makeText(ctx, Lunar.ganzhi_year(ctx.lunar), math.floor(30 * k)),
+        mkPad(1, math.floor(4 * S * k)),
+        self:makeText(ctx, (I18n.lang() == "en") and zod or string.format("%s年", zod),
+            math.floor(22 * k), { gray = true }),
+    }
+    local big = self:makeText(ctx, Lunar.month_day_text(ctx.lunar), math.floor(54 * k))
+    local fill = math.max(math.floor(20 * S), w - big:getSize().w - side:getSize().w)
+    push(HorizontalGroup:new{
+        align = "center",
+        big,
+        mkPad(fill, 1),
+        side,
+    })
+    push(mkPad(w, math.floor(14 * S * k)))
+
+    local term_text, ratio = self:termText(ctx, true)
+    push(HorizontalGroup:new{
+        align = "center",
+        self:makeText(ctx, term_text, math.floor(26 * k)),
+    })
+    push(mkPad(w, math.floor(10 * S * k)))
+    push(HorizontalGroup:new{
+        align = "center",
+        ProgressBar:new{
+            dimen = Geom:new{ w = w, h = math.max(8, math.floor(10 * S * k)) },
+            ratio = ratio,
+            border = math.max(1, math.floor(2 * S)),
+        },
+    })
+    push(mkPad(w, math.floor(8 * S * k)))
+
+    local cur = I18n.term(ctx.cur_term.name)
+    local nxt = ctx.next_term and I18n.term(ctx.next_term.name) or ""
+    local left_label = self:makeText(ctx, cur, math.floor(20 * k), { gray = true })
+    local right_label = self:makeText(ctx, nxt, math.floor(20 * k), { gray = true })
+    push(HorizontalGroup:new{
+        align = "center",
+        left_label,
+        mkPad(math.max(0, w - left_label:getSize().w - right_label:getSize().w), 1),
+        right_label,
+    })
+    return VerticalGroup:new{ align = "left", unpack(rows) }
+end
+
+--- 三格状态：湿度 / 风力 / 空气质量
+function Dashboard:compStats(ctx, w, h, k)
+    local d = self:weatherDisplay()
+    local air = self:airDisplay()
+    return self:buildStatCells(ctx, math.floor(w / 3), {
+        { T("湿度"), d.hum or "--" },
+        { T("风力"), d.wind or "--", d.wind_dir },
+        { "AQI", air.text, air.level },
+    })
+end
+
+--- 月历：格子边长受盒宽与盒高双重约束，宁可居中留白也不把格子拉扁
+function Dashboard:compCalendar(ctx, w, h, k)
+    local S = ctx.S
+    local cell_w = math.min(math.floor(52 * S * k), math.floor(w / 7))
+    cell_w = math.max(math.floor(34 * S * k), cell_w)
+    local cal = self:buildCalendar(ctx, cell_w, k)
+    -- 行高是 6 行固定量：装不下时按比例压格子，公式与 buildCalendar 内部一致
+    local need = cal:getSize().h
+    if need > h and need > 0 then
+        local ratio = h / need
+        cell_w = math.max(math.floor(20 * S), math.floor(cell_w * math.sqrt(ratio)))
+        cal = self:buildCalendar(ctx, cell_w, k)
+    end
+    return cal
+end
+
+--- 侧栏三合一：农历 / 节气 / 天文与空气
+function Dashboard:compSidePanel(ctx, w, h, k)
+    return self:buildSidePanel(ctx, w, k, h)
+end
+
 --- 整月日历：周一起始、跨月补位、今天反白、节气日带点
-function Dashboard:buildCalendar(ctx, cell_w)
+function Dashboard:buildCalendar(ctx, cell_w, kf)
+    -- kf 是密度系数：盒子装不下时整体收紧字号与行高，格子宽度由调用方先给
+    kf = kf or 1
+    local S = ctx.S * kf
+    local function mt(str, px, opts)
+        return self:makeText(ctx, str, math.floor(px * kf), opts)
+    end
     local now = ctx.now
     -- 单元格内容为「日号 + 圆点」，约 36 设计单位高，设定值低于此不起作用
-    local row_h = math.floor(36 * ctx.S)
-    local head_h = math.floor(24 * ctx.S)
+    local row_h = math.floor(36 * S)
+    local head_h = math.floor(24 * S)
 
     local first = Lunar.days_from_civil(now.year, now.month, 1)
     local ny = (now.month == 12) and (now.year + 1) or now.year
@@ -2084,9 +2380,9 @@ function Dashboard:buildCalendar(ctx, cell_w)
     local lines = {}
     lines[#lines + 1] = HorizontalGroup:new{
         align = "center",
-        self:makeText(ctx, string.format("%d 年 %d 月", now.year, now.month), 22, { gray = true }),
+        mt(string.format("%d 年 %d 月", now.year, now.month), 22, { gray = true }),
     }
-    lines[#lines + 1] = mkPad(1, math.floor(4 * ctx.S))
+    lines[#lines + 1] = mkPad(1, math.floor(4 * S))
 
     -- 表头：一 二 三 四 五 六 日
     local head = { align = "center" }
@@ -2109,14 +2405,14 @@ function Dashboard:buildCalendar(ctx, cell_w)
                 local y2, m2, d2 = Lunar.civil_from_days(daynum)
                 row[#row + 1] = mkBox(cell_w, row_h, VerticalGroup:new{
                     align = "center",
-                    self:makeText(ctx, tostring(d2), 19, { gray = true }),
+                    mt(tostring(d2), 19, { gray = true }),
                     mkPad(1, 1),
                 }, { auto_h = true })
             else
                 local y2, m2, d2 = Lunar.civil_from_days(daynum)
                 local is_today = (daynum == today_num)
                 local term = terms[d2]
-                local num_text = self:makeText(ctx, tostring(d2), is_today and 21 or 19,
+                local num_text = mt(tostring(d2), is_today and 21 or 19,
                     { fg = nil })
                 if is_today then
                     num_text.fgcolor = COLOR_WHITE
@@ -2124,10 +2420,10 @@ function Dashboard:buildCalendar(ctx, cell_w)
                 local stack = VerticalGroup:new{
                     align = "center",
                     num_text,
-                    mkPad(1, math.floor(1 * ctx.S)),
+                    mkPad(1, math.floor(1 * S)),
                     term
-                        and Solid:new{ dimen = Geom:new{ w = math.floor(6 * ctx.S), h = math.floor(6 * ctx.S) }, color = COLOR_BLACK }
-                        or mkPad(math.floor(6 * ctx.S), math.floor(6 * ctx.S)),
+                        and Solid:new{ dimen = Geom:new{ w = math.floor(6 * S), h = math.floor(6 * S) }, color = COLOR_BLACK }
+                        or mkPad(math.floor(6 * S), math.floor(6 * S)),
                 }
                 row[#row + 1] = mkBox(cell_w, row_h, stack, {
                     bg = is_today and COLOR_BLACK or nil,
@@ -2139,16 +2435,16 @@ function Dashboard:buildCalendar(ctx, cell_w)
         lines[#lines + 1] = HorizontalGroup:new(row)
     end
 
-    lines[#lines + 1] = mkPad(1, math.floor(4 * ctx.S))
+    lines[#lines + 1] = mkPad(1, math.floor(4 * S))
     lines[#lines + 1] = HorizontalGroup:new{
         align = "center",
-        Solid:new{ dimen = Geom:new{ w = math.floor(10 * ctx.S), h = math.floor(10 * ctx.S) }, color = COLOR_BLACK },
-        mkPad(math.floor(6 * ctx.S), 1),
-        self:makeText(ctx, _("今天"), 17, { gray = true }),
-        mkPad(math.floor(16 * ctx.S), 1),
-        Solid:new{ dimen = Geom:new{ w = math.floor(6 * ctx.S), h = math.floor(6 * ctx.S) }, color = COLOR_BLACK },
-        mkPad(math.floor(6 * ctx.S), 1),
-        self:makeText(ctx, _("节气"), 17, { gray = true }),
+        Solid:new{ dimen = Geom:new{ w = math.floor(10 * S), h = math.floor(10 * S) }, color = COLOR_BLACK },
+        mkPad(math.floor(6 * S), 1),
+        mt(T("今天"), 17, { gray = true }),
+        mkPad(math.floor(16 * S), 1),
+        Solid:new{ dimen = Geom:new{ w = math.floor(6 * S), h = math.floor(6 * S) }, color = COLOR_BLACK },
+        mkPad(math.floor(6 * S), 1),
+        mt(T("节气"), 17, { gray = true }),
     }
 
     return VerticalGroup:new{ align = "left", unpack(lines) }
@@ -2157,7 +2453,12 @@ end
 --- 横屏右栏：农历 / 节气进度 / 天文与空气
 -- 横屏纵向只有「短边」那么多（PW3 为 1072px，折合 600 设计单位），
 -- 右栏又是下半区里最高的一列，所以这里的字号与间距比竖屏更克制。
-function Dashboard:buildSidePanel(ctx, width)
+function Dashboard:buildSidePanel(ctx, width, kf, max_h)
+    kf = kf or 1
+    local S = ctx.S * kf
+    local function mt(str, px, opts)
+        return self:makeText(ctx, str, math.floor(px * kf), opts)
+    end
     local S = ctx.S
     local ratio, elapsed, remain = self:solarTermRatio(ctx)
     local d = self:weatherDisplay()
@@ -2165,18 +2466,18 @@ function Dashboard:buildSidePanel(ctx, width)
 
     local items = {
         align = "left",
-        self:makeText(ctx, _("农历"), 18, { gray = true }),
+        mt(T("农历"), 18, { gray = true }),
         mkPad(1, math.floor(2 * S)),
-        self:makeText(ctx, Lunar.month_day_text(ctx.lunar), 32),
+        mt(Lunar.month_day_text(ctx.lunar), 32),
         mkPad(1, math.floor(4 * S)),
-        self:makeText(ctx, string.format("%s · %s年", Lunar.ganzhi_year(ctx.lunar),
+        mt(string.format("%s · %s年", Lunar.ganzhi_year(ctx.lunar),
             Lunar.zodiac(ctx.lunar)), 20, { gray = true }),
         mkPad(1, math.floor(8 * S)),
         Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
         mkPad(1, math.floor(8 * S)),
-        self:makeText(ctx, _("节气"), 18, { gray = true }),
+        mt(T("节气"), 18, { gray = true }),
         mkPad(1, math.floor(2 * S)),
-        self:makeText(ctx, string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1), 26),
+        mt(string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1), 26),
         mkPad(1, math.floor(6 * S)),
         ProgressBar:new{
             dimen = Geom:new{ w = math.floor(width * 0.82), h = math.max(8, math.floor(10 * S)) },
@@ -2184,19 +2485,19 @@ function Dashboard:buildSidePanel(ctx, width)
             border = math.max(1, math.floor(2 * S)),
         },
         mkPad(1, math.floor(4 * S)),
-        self:makeText(ctx, ctx.next_term
-            and string.format("%s%s %d 天", _("距"), ctx.next_term.name, remain)
+        mt(ctx.next_term
+            and string.format("%s%s %d 天", T("距"), ctx.next_term.name, remain)
             or "", 18, { gray = true }),
         mkPad(1, math.floor(8 * S)),
         Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
         mkPad(1, math.floor(8 * S)),
-        self:makeText(ctx, _("天文与空气"), 18, { gray = true }),
+        mt(T("天文与空气"), 18, { gray = true }),
         mkPad(1, math.floor(3 * S)),
-        self:makeText(ctx, string.format("%s %s   %s %s",
-            _("日出"), d.sunrise or "--:--", _("日落"), d.sunset or "--:--"), 19),
+        mt(string.format("%s %s   %s %s",
+            T("日出"), d.sunrise or "--:--", T("日落"), d.sunset or "--:--"), 19),
         mkPad(1, math.floor(4 * S)),
-        self:makeText(ctx, string.format("%s   %s AQI %s",
-            d.feels or "--", _("空气"), air.text), 19),
+        mt(string.format("%s   %s AQI %s",
+            d.feels or "--", T("空气"), air.text), 19),
     }
 
     return VerticalGroup:new(items)
@@ -2233,14 +2534,14 @@ end
 --- 页脚用的短来源标注：底部只有一行，长的会把字号压小
 function Dashboard:sourceShort()
     local src = self.weather and self.weather.source
-    if src == "open-meteo" then return _("Open-Meteo 降级") end
-    if src == "qweather" then return _("和风天气") end
+    if src == "open-meteo" then return T("Open-Meteo 降级") end
+    if src == "qweather" then return T("和风天气") end
     return nil
 end
 
 --- 单行操作提示文案（竖屏横屏共用，只有一个版本）
 function Dashboard:hintLine()
-    local line = _("点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
+    local line = T("点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
     if self:getConfig().show_attribution then
         local src = self:sourceShort()
         if src then line = line .. " · " .. src end
@@ -2291,7 +2592,7 @@ function Dashboard:fetchWeather(manual)
             self.fetching = false
             if manual then
                 UIManager:show(InfoMessage:new{
-                    text = _("当前未连接网络。接入 WiFi 后会自动重试。"),
+                    text = T("当前未连接网络。接入 WiFi 后会自动重试。"),
                     timeout = 3,
                 })
             end
@@ -2328,7 +2629,7 @@ function Dashboard:fetchWeather(manual)
                 weather, air = w2, a2 or air
                 err = nil
             else
-                err = (err and (err .. "；") or "") .. tostring(e2 or _("降级同样失败"))
+                err = (err and (err .. "；") or "") .. tostring(e2 or T("降级同样失败"))
             end
         end
 
@@ -2345,7 +2646,7 @@ function Dashboard:fetchWeather(manual)
         self.fetching = false
         if manual and not weather and not air then
             UIManager:show(InfoMessage:new{
-                text = string.format(_("天气更新失败：%s"), err or _("未知原因")),
+                text = string.format(T("天气更新失败：%s"), err or T("未知原因")),
                 timeout = 5,
             })
         end

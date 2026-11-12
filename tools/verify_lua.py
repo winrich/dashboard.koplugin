@@ -22,7 +22,7 @@ PLUGIN = os.path.join(ROOT, "dashboard.koplugin")
 # 必须随仓库分发的文件，缺一个就是错误
 LUA_FILES = ["main.lua", "_meta.lua", "dashboard_lunar.lua", "dashboard_cities.lua",
              "dashboard_qweather.lua", "dashboard_openmeteo.lua",
-             "dashboard_config.lua"]
+             "dashboard_i18n.lua", "dashboard_config.lua"]
 
 # 内含真实凭据，被 .gitignore 排除。git clone 下来没有它是**正常状态**——插件会
 # 自动降级到 Open-Meteo。所以这里只在文件存在时才检查，缺失只提示、不算失败，
