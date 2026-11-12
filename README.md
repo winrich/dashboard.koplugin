@@ -13,6 +13,17 @@
 > 图由 `preview/board.html` 按设备像素尺寸渲染（不是照片），数据为演示值；真机是 300 ppi
 > 电子墨水屏，实际观感更接近印刷品，没有背光、对比度随环境光变化。
 
+同一套数据换组件组合就是另一块看板，菜单里随时切。上面两张是「经典」版式，下面这些是
+其余组合（每张都是真机可用的完整版面，15 个组件可按方向自由排进 A/B/C 三区）：
+
+| 竖屏 · 今日与农历 | 竖屏 · 空气与日月 | 竖屏 · 阅读 | 竖屏 · 倒数日与待办 |
+|---|---|---|---|
+| <img src="preview/portrait-2.png" width="150" alt="竖屏：今日+三日天气 / 农历节气 / 电量网络"> | <img src="preview/portrait-3.png" width="150" alt="竖屏：纯天气 / 空气明细 / 日月"> | <img src="preview/portrait-4.png" width="150" alt="竖屏：大字时钟 / 在读卡（含封面）/ 电量网络"> | <img src="preview/portrait-5.png" width="150" alt="竖屏：时钟天气 / 倒数日 / 待办"> |
+
+| 横屏 · 今日与空气 | 横屏 · 一周与日月 | 横屏 · 大钟与数据 | 横屏 · 大钟与待办 |
+|---|---|---|---|
+| <img src="preview/landscape-2.png" width="240" alt="横屏：今日+三日天气 / 农历节气 / 空气明细"> | <img src="preview/landscape-3.png" width="240" alt="横屏：一周预报 / 日月 / 在读卡"> | <img src="preview/landscape-4.png" width="240" alt="横屏：大字时钟 / 日月 / 空气明细"> | <img src="preview/landscape-5.png" width="240" alt="横屏：大字时钟 / 倒数日 / 待办"> |
+
 ## 两种版式
 
 | 方向 | 版式 | 构成 |
