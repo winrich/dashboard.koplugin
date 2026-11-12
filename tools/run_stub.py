@@ -11,7 +11,10 @@
 import gzip
 import json
 import os
+import shutil
 import sys
+import tempfile
+import uuid
 
 from lupa import LuaRuntime
 
@@ -28,6 +31,7 @@ SYNTAX_FILES = [
     f"{PLUGIN_DIR}/dashboard_openmeteo.lua",
     f"{PLUGIN_DIR}/dashboard_i18n.lua",
     f"{PLUGIN_DIR}/dashboard_moon.lua",
+    f"{PLUGIN_DIR}/dashboard_cover.lua",
     f"{PLUGIN_DIR}/dashboard_config.lua",
 ]
 
@@ -137,7 +141,13 @@ def check_syntax():
 def run_direction(label, w, h, force=None, no_rotation=False, start_rotation=0):
     print(f"\n{'=' * 62}\n== {label} {w}x{h}\n{'=' * 62}")
     lua = LuaRuntime(unpack_returned_tuples=True)
+    # 封面缓存要真的写到磁盘上（断言里会 io.open 去验），所以给一个每轮全新的临时目录：
+    # 用固定目录的话，上一轮留下的 PNG 会让「首次取封面打开了几次书」这条断言失效。
+    settings_dir = tempfile.mkdtemp(prefix="dashboard_stub_")
+    os.makedirs(os.path.join(settings_dir, "dashboard_covers"), exist_ok=True)
     lua.execute(f"STUB_W = {w}; STUB_H = {h}; STUB_START_ROTATION = {start_rotation}")
+    lua.execute("STUB_SETTINGS_DIR = [[" + settings_dir.replace(os.sep, "/") + "]]")
+    lua.execute(f'STUB_RUN_ID = "{uuid.uuid4().hex[:8]}"')
     lua.execute(f"STUB_VERBOSE = {str(os.environ.get('STUB_VERBOSE') == '1').lower()}")
     if force:
         lua.execute(f'STUB_FORCE_LAYOUT = "{force}"')
@@ -152,6 +162,8 @@ def run_direction(label, w, h, force=None, no_rotation=False, start_rotation=0):
     except Exception as exc:  # noqa: BLE001 - 需要把 Lua 报错原样呈现
         print(f"[FAIL] {label} 执行异常: {exc}")
         return False
+    finally:
+        shutil.rmtree(settings_dir, ignore_errors=True)
     return True
 
 

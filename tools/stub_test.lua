@@ -615,6 +615,99 @@ package.preload["gettext"] = function()
     return function(s) return s end
 end
 
+-- ============ 封面桩（dashboard_cover 会 require 这四个模块）============
+-- 目标是让「取位图 -> 缩放 -> 写 PNG -> 下次读缓存」这条链路真的跑一遍，
+-- 而不是把 resolve() 整个替换掉（那样测不到缓存键、缓存命中、写盘失败这些分支）。
+do
+    local settings_dir = _G.STUB_SETTINGS_DIR
+    if settings_dir then
+        DataStorage.getSettingsDir = function() return settings_dir end
+    end
+
+    package.preload["ffi/sha2"] = function()
+        return {
+            md5 = function(str)
+                -- 只要「同输入同输出、不同键不同输出」，桩件不验证密码学强度
+                local h1, h2 = 5381, 52711
+                for i = 1, #str do
+                    local b = str:byte(i)
+                    h1 = (h1 * 33 + b) % 4294967296
+                    h2 = (h2 * 31 + b * (i % 7 + 1)) % 4294967296
+                end
+                return string.format("%08x%08x", h1, h2)
+            end,
+        }
+    end
+
+    local lfs = {}
+    function lfs.attributes(path, what)
+        local f = io.open(path, "rb")
+        if not f then return nil end
+        f:close()
+        if what == "mode" then return "file" end
+        if what == "modification" then
+            -- 书的 mtime 必须稳定（缓存键里有它），缓存文件用当前时间（淘汰按它排序）
+            if tostring(path):match("%.epub$") or tostring(path):match("%.txt$") then
+                return 1762900000
+            end
+            return os.time()
+        end
+        return nil
+    end
+    -- 目录由 Python 侧建好（run_stub / render_board 都会 mkdir），这里只当成功
+    function lfs.mkdir() return true end
+    function lfs.dir() return function() return nil end end
+    package.preload["libs/libkoreader-lfs"] = function() return lfs end
+
+    local RenderImage = {}
+    function RenderImage:scaleBlitBuffer(bb) return bb end
+    package.preload["ui/renderimage"] = function() return RenderImage end
+
+    local function copy_file(src, dst)
+        local fi = io.open(src, "rb")
+        if not fi then return false end
+        local data = fi:read("*a")
+        fi:close()
+        local fo = io.open(dst, "wb")
+        if not fo then return false end
+        fo:write(data)
+        fo:close()
+        return true
+    end
+
+    -- 600x900 的「封面位图」：写 PNG 时把 tools/fixtures/cover_demo.png 拷过去，
+    -- 这样落盘的是真 PNG，预览图也能把它画出来。
+    local function make_cover_bb()
+        return {
+            getWidth = function() return 600 end,
+            getHeight = function() return 900 end,
+            writePNG = function(_, path)
+                return copy_file("tools/fixtures/cover_demo.png", path)
+            end,
+            free = function() end,
+        }
+    end
+
+    package.preload["document/documentregistry"] = function()
+        return {
+            openDocument = function(_, path)
+                _G.COVER_OPENS = (_G.COVER_OPENS or 0) + 1
+                _G.COVER_LAST_PATH = path
+                if _G.STUB_COVER_MODE == "none" then
+                    -- 模拟「这本书没有封面」：拿得到文档对象，但取不出位图
+                    return { getCoverPageImage = function() return nil end,
+                             close = function() end }
+                end
+                if _G.STUB_COVER_MODE == "unopenable" then
+                    return nil
+                end
+                return { getCoverPageImage = make_cover_bb,
+                         close = function() end }
+            end,
+        }
+    end
+end
+
 _G.G_reader_settings = G_settings
 
 -- 目视检查用（只在 dump 帧时生效，dump 完立刻撤销，不参与任何断言）：
@@ -1780,6 +1873,109 @@ end
 EVENTS[#EVENTS + 1] = string.format(
     "== 在读卡 31 字书名装进 %dx%d 盒子（单行省略），排版 %dx%d ==",
     content_w_r, box_h_r, cs_r.w, cs_r.h)
+
+-- ============ 在读卡封面：取位图 -> 写 PNG -> 下次读缓存 ============
+-- 这条链路有三个容易出错的地方，逐个断言：
+--   1. 封面是不是真的出现了（控件树里有 ImageWidget，且在盒子内）
+--   2. PNG 是不是真的落盘了（拿控件里的路径去 io.open）
+--   3. 第二次构建还要不要再打开一遍书（缓存命中就该 0 次 —— 屏保刷新不能每次都开书）
+local function find_image(widget)
+    if type(widget) ~= "table" then return nil end
+    if widget.file and widget.width and widget.height then return widget end
+    for _, ch in ipairs(widget) do
+        local got = find_image(ch)
+        if got then return got end
+    end
+    return nil
+end
+
+if _G.STUB_SETTINGS_DIR then
+    -- 书名带本次运行的 id：出图时同一个进程会连着跑多张，缓存目录是共用的，
+    -- 用固定书名的话第二次就是「缓存命中」，这条断言会假失败/假通过。
+    local run_id = tostring(_G.STUB_RUN_ID or "run")
+    G_reader_settings:saveSetting("lastfile", "/mnt/us/documents/有封面的书" .. run_id .. ".epub")
+    instance.ui.document, instance.ui.doc_settings = nil, nil
+    _G.COVER_OPENS = 0
+    _G.STUB_COVER_MODE = "demo"
+
+    local card_c = instance:compReading(ctx_m, content_w_r, box_h_r, 1)
+    local img = find_image(card_c)
+    if not img then
+        print("[FAIL] 在读卡没有画出封面（控件树里找不到 ImageWidget）")
+        os.exit(1)
+    end
+    local sc = card_c:getSize()
+    if sc.h > box_h_r or sc.w > content_w_r + 1 then
+        print(string.format("[FAIL] 带封面的在读卡超出盒子：%dx%d > %dx%d",
+            sc.w, sc.h, content_w_r, box_h_r))
+        os.exit(1)
+    end
+    local fh = io.open(img.file, "rb")
+    local exists = fh ~= nil
+    if fh then fh:close() end
+    if not exists then
+        print("[FAIL] 封面 PNG 没有落盘：" .. tostring(img.file))
+        os.exit(1)
+    end
+    local opens_first = _G.COVER_OPENS or 0
+    if opens_first ~= 1 then
+        print(string.format("[FAIL] 首次取封面应该只打开 1 次书，实际 %d 次", opens_first))
+        os.exit(1)
+    end
+
+    -- 第二次：缓存命中，不该再打开书
+    local card_c2 = instance:compReading(ctx_m, content_w_r, box_h_r, 1)
+    local img2 = find_image(card_c2)
+    local opens_second = _G.COVER_OPENS or 0
+    if not img2 or img2.file ~= img.file then
+        print("[FAIL] 第二次构建封面路径变了，缓存没命中")
+        os.exit(1)
+    end
+    if opens_second ~= opens_first then
+        print(string.format("[FAIL] 缓存命中又打开了一次书：%d -> %d", opens_first, opens_second))
+        os.exit(1)
+    end
+
+    -- 换一本没有封面的书：不该画封面，也不该把卡片搞崩
+    G_reader_settings:saveSetting("lastfile", "/mnt/us/documents/没有封面的书" .. run_id .. ".epub")
+    _G.STUB_COVER_MODE = "none"
+    local card_n = instance:compReading(ctx_m, content_w_r, box_h_r, 1)
+    if find_image(card_n) then
+        print("[FAIL] 书上没有封面，卡片却画出了封面位")
+        os.exit(1)
+    end
+    local saw_title_n = false
+    local function scan_n(widget)
+        if type(widget) ~= "table" then return end
+        if widget.text and tostring(widget.text):find("没有封面的书", 1, true) then saw_title_n = true end
+        for _, ch in ipairs(widget) do scan_n(ch) end
+    end
+    scan_n(card_n)
+    if not saw_title_n then
+        print("[FAIL] 没封面时在读卡的纯文字版也丢了书名")
+        os.exit(1)
+    end
+
+    -- 打不开书（损坏 / 权限）：同样退回文字版，不许抛
+    G_reader_settings:saveSetting("lastfile", "/mnt/us/documents/打不开的书" .. run_id .. ".epub")
+    _G.STUB_COVER_MODE = "unopenable"
+    local ok_u, card_u = pcall(function()
+        return instance:compReading(ctx_m, content_w_r, box_h_r, 1)
+    end)
+    if not ok_u or not card_u then
+        print("[FAIL] 打不开书时在读卡直接报错了：" .. tostring(card_u))
+        os.exit(1)
+    end
+    if find_image(card_u) then
+        print("[FAIL] 打不开书却画出了封面")
+        os.exit(1)
+    end
+
+    _G.STUB_COVER_MODE = "demo"
+    EVENTS[#EVENTS + 1] = string.format(
+        "== 在读卡封面：%dx%d 装在 %dx%d 盒子里，首次打开书 %d 次、缓存命中不再打开、无封面与打不开都退回文字版 ==",
+        img.width, img.height, content_w_r, box_h_r, opens_first)
+end
 
 -- 收尾：把活文档摘掉，后面的用例回到「没有在读文档」的状态
 instance.ui.document, instance.ui.doc_settings = saved_document, saved_doc_settings

@@ -9,6 +9,7 @@
   时钟与天气 / 农历与节气 / 三格状态 / 月历 / 侧栏（v2.44 及以前）
   大字时钟 / 纯天气 / 今日+三日 / 一周预报 / 在读卡 / 日月 / 空气明细 / 电量网络（v2.45 新增）
 月相优先用和风的 astro.moonphase，降级时由 dashboard_moon.lua 现算（日月黄经差）。
+在读卡的封面由 dashboard_cover.lua 取（渲染引擎位图 → 缩到卡片尺寸存 PNG 缓存）。
 
 数据源：和风天气开发服务（QWeather），需要在 dashboard_config.lua 或
 dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host 与 API Key。
@@ -47,6 +48,10 @@ dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host �
 local Blitbuffer = require("ffi/blitbuffer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local DataStorage = require("datastorage")
+-- 封面模块单独一个文件：它要 require 渲染引擎与 lfs，失败面比别处大，
+-- 这里用 pcall 兜住——模块缺失时在读卡只是没有封面，不该让整个看板起不来。
+local ok_cover, Cover = pcall(require, "dashboard_cover")
+if not ok_cover then Cover = nil end
 local Device = require("device")
 local Font = require("ui/font")
 local Geom = require("ui/geometry")
@@ -114,7 +119,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.45"
+local DASHBOARD_VERSION = "2.46"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -1551,6 +1556,9 @@ function Dashboard:readingInfo()
             end
             if info.title then
                 info.source = "live"
+                -- 封面要用书在磁盘上的路径（活文档优先直接取内存位图，见 dashboard_cover）
+                local ok_file, file = pcall(function() return doc.file end)
+                if ok_file and type(file) == "string" then info.path = file end
                 return info
             end
         end
@@ -1569,6 +1577,7 @@ function Dashboard:readingInfo()
             info.title = path:match("([^/\\]+)%.[^%.]+$") or path
         end
         info.source = "last"
+        info.path = path
         return info
     end
 
@@ -2864,7 +2873,18 @@ function Dashboard:compWeek(ctx, w, h, k)
     return VerticalGroup:new(rows)
 end
 
---- 在读卡：书名 / 作者 / 进度条 / 百分比。
+--- 取封面 PNG 路径（拿不到就 nil）。整段 pcall：封面是「加分项」，
+--- 任何一步（模块缺失 / 打不开书 / 缓存目录不可写）都不该影响文字版。
+function Dashboard:coverFile(book_path, target_h)
+    if not Cover or type(book_path) ~= "string" or book_path == "" then return nil end
+    local ok, path = pcall(function()
+        return Cover.resolve{ ui = self.ui, book_path = book_path, target_h = target_h }
+    end)
+    if ok and type(path) == "string" then return path end
+    return nil
+end
+
+--- 在读卡：封面 + 书名 / 作者 / 进度条 / 百分比。
 --- 书名只画一行并带省略号——真机书名动辄二三十字，折行会把盒子顶破。
 function Dashboard:compReading(ctx, w, h, k)
     local S = ctx.S
@@ -2875,22 +2895,40 @@ function Dashboard:compReading(ctx, w, h, k)
             self:makeText(ctx, T("暂无在读"), math.floor(26 * k), { gray = true }),
         }
     end
+
+    -- 封面色块：高取盒高 9 成、按 2:3 定宽；最宽只到盒宽 42%——
+    -- 再宽书名就只剩几个字，宁可封面小一点。盒子太矮（C 区那种）干脆不放。
+    local gap = math.floor(18 * S * k)
+    local cover_h = math.floor(h * 0.9)
+    local cover_w = math.floor(cover_h * 2 / 3)
+    local max_w = math.floor(w * 0.42)
+    if cover_w > max_w then
+        cover_w = max_w
+        cover_h = math.floor(cover_w * 3 / 2)
+    end
+    local cover_file
+    if cover_h >= math.floor(110 * S * k) then
+        cover_file = self:coverFile(info.path, cover_h)
+    end
+    -- 文字列的实际宽度：有封面就扣掉封面和间距，否则占满
+    local text_w = cover_file and math.max(math.floor(120 * S), w - cover_w - gap) or w
+
     local rows = {
         align = "left",
         self:makeText(ctx, T("在读"), math.floor(18 * k), { gray = true }),
         mkPad(1, math.floor(4 * S * k)),
-        self:makeText(ctx, info.title, math.floor(30 * k), { max_width = w, ellipsis = true }),
+        self:makeText(ctx, info.title, math.floor(30 * k), { max_width = text_w, ellipsis = true }),
     }
     if info.authors then
         rows[#rows + 1] = self:makeText(ctx,
-            T("作者") .. " " .. info.authors, math.floor(18 * k), { gray = true })
+            T("作者") .. " " .. info.authors, math.floor(18 * k), { gray = true, max_width = text_w })
     end
     local pct = info.percent or 0
     rows[#rows + 1] = mkPad(1, math.floor(10 * S * k))
     -- 进度条铺满整宽：它是这一块的「最宽元素」，宽度决定整块被盒子居中后
     -- 的左边界。取 0.72w 时整块只有 662 宽，居中后文字比下面的一周预报内缩了 130 px。
     rows[#rows + 1] = ProgressBar:new{
-        dimen = Geom:new{ w = math.floor(w), h = math.max(8, math.floor(10 * S * k)) },
+        dimen = Geom:new{ w = math.floor(text_w), h = math.max(8, math.floor(10 * S * k)) },
         ratio = pct,
         border = math.max(1, math.floor(2 * S)),
     }
@@ -2900,7 +2938,20 @@ function Dashboard:compReading(ctx, w, h, k)
     end
     rows[#rows + 1] = mkPad(1, math.floor(4 * S * k))
     rows[#rows + 1] = self:makeText(ctx, pct_text, math.floor(20 * k), { gray = true })
-    return VerticalGroup:new(rows)
+    local text_col = VerticalGroup:new(rows)
+
+    if not cover_file then return text_col end
+    -- 整块仍然铺满盒宽（封面 + 间距 + 文字），这样它在盒子里居中后
+    -- 左边缘和别的区对齐，不会因为加封面而整体往里缩。
+    return HorizontalGroup:new{
+        align = "center",
+        ImageWidget:new{
+            file = cover_file, width = cover_w, height = cover_h,
+            scale_factor = 0,
+        },
+        mkPad(gap, 1),
+        text_col,
+    }
 end
 
 --- 日月（B/C 区）：日出 / 日落 / 月相三列；高度富余时补白昼与月升月落。

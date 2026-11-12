@@ -18,9 +18,13 @@
     python tools/render_board.py 2              # 只出第 2 套（两向都出）
 """
 
+import atexit
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -124,11 +128,28 @@ def ellipsize(draw, text, f, limit):
     return "…"
 
 
+# ------------------------------------------------------------------- 设置目录
+# 封面缓存要真的落盘（在读卡靠 dashboard_cover 写 PNG 再交给 ImageWidget 画），
+# 整个出图过程共用一个临时目录，进程退出时删掉——不往真机设置目录里写东西。
+_SETTINGS_DIR = None
+
+
+def settings_dir():
+    global _SETTINGS_DIR
+    if _SETTINGS_DIR is None:
+        _SETTINGS_DIR = tempfile.mkdtemp(prefix="dashboard_preview_")
+        os.makedirs(os.path.join(_SETTINGS_DIR, "dashboard_covers"), exist_ok=True)
+        atexit.register(shutil.rmtree, _SETTINGS_DIR, True)
+    return _SETTINGS_DIR.replace(os.sep, "/")
+
+
 # --------------------------------------------------------------------- 取帧
 def grab(w, h, rot, zones, lang, power, wifi, reading):
     lua = (
         "STUB_FRAME = true\n"
         f"STUB_W = {w}\nSTUB_H = {h}\nSTUB_START_ROTATION = {rot}\n"
+        f"STUB_SETTINGS_DIR = [[{settings_dir()}]]\n"
+        f'STUB_RUN_ID = "{uuid.uuid4().hex[:8]}"\n'
         f'arg = {{ [1] = [[{PLUGIN}]] }}\n'
         f'package.path = [[{PLUGIN}/?.lua;]] .. package.path\n'
         f'dofile([[{HERE}/stub_test.lua]])\n'
@@ -183,10 +204,21 @@ def draw_items(items, dw, dh):
             path = text if os.path.isabs(text) else os.path.join(ROOT, text)
             if not (os.path.exists(path) and iw > 0 and ih > 0):
                 continue
-            icon = Image.open(path).convert("RGBA").resize(
-                (max(1, iw * S), max(1, ih * S)), Image.LANCZOS)
-            mask = icon.split()[3]
-            img.paste(Image.new("L", icon.size, BLACK), (x * S, y * S), mask)
+            size = (max(1, iw * S), max(1, ih * S))
+            try:
+                src = Image.open(path)
+            except Exception:  # noqa: BLE001 - 打不开就当没有这张图，不中断出图
+                continue
+            # 图标是「黑墨 + alpha 遮罩」，封面是整张照片：两者不能同一套画法。
+            # 统一做法是先把源图取灰度（真机就是灰阶），有 alpha 才当遮罩用；
+            # 一律拿 alpha 当遮罩、颜色固定涂黑，封面就会变成一块黑。
+            has_alpha = src.mode in ("RGBA", "LA") or (
+                src.mode == "P" and "transparency" in src.info)
+            if has_alpha:
+                rgba = src.convert("RGBA").resize(size, Image.LANCZOS)
+                img.paste(rgba.convert("L"), (x * S, y * S), rgba.split()[3])
+            else:
+                img.paste(src.convert("L").resize(size, Image.LANCZOS), (x * S, y * S))
         elif tag == "T":
             draw_text(d, img, x, y, iw, ih, text, color, S)
 
