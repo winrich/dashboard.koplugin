@@ -273,9 +273,12 @@ PRESETS = [
     dict(id="portrait-1", orient="portrait", title="经典 · 时钟天气 / 月历 / 三格",
          zones=["clock_weather", "calendar", "stats_cells",
                 "clock_weather", "calendar", "side_panel"]),
-    dict(id="portrait-2", orient="portrait", title="天气总览 · 今日+三日 / 一周预报 / 电量网络",
-         zones=["weather_today_3d", "forecast_week", "battery_net",
-                "weather_today_3d", "forecast_week", "battery_net"]),
+    # 一条排布约定：同一张图里不并存「今日+三日」和「一周预报」（都是预报，读了重复）。
+    # 有今日+三日的那张，中段改放农历节气；不选空气明细是因为竖屏-3 的中段就是它，
+    # 两张竖屏的中段会一模一样。
+    dict(id="portrait-2", orient="portrait", title="今日与农历 · 今日+三日 / 农历节气 / 电量网络",
+         zones=["weather_today_3d", "lunar_term", "battery_net",
+                "weather_today_3d", "lunar_term", "battery_net"]),
     dict(id="portrait-3", orient="portrait", title="空气与日月 · 纯天气 / 空气明细 / 日月",
          zones=["weather_big", "air_detail", "sun_moon",
                 "weather_big", "air_detail", "sun_moon"]),
@@ -286,9 +289,10 @@ PRESETS = [
     dict(id="landscape-1", orient="landscape", title="经典 · 时钟天气 / 月历 / 侧栏",
          zones=["clock_weather", "calendar", "side_panel",
                 "clock_weather", "calendar", "side_panel"]),
-    dict(id="landscape-2", orient="landscape", title="天气 · 今日+三日 / 一周预报 / 空气明细",
-         zones=["weather_today_3d", "forecast_week", "air_detail",
-                "weather_today_3d", "forecast_week", "air_detail"]),
+    # 同理：A 区已有今日+三日，左下就不再排一周预报，改放农历节气。
+    dict(id="landscape-2", orient="landscape", title="今日与空气 · 今日+三日 / 农历节气 / 空气明细",
+         zones=["weather_today_3d", "lunar_term", "air_detail",
+                "weather_today_3d", "lunar_term", "air_detail"]),
     dict(id="landscape-3", orient="landscape", title="一周与日月 · 一周预报 / 日月 / 在读卡",
          zones=["forecast_week", "sun_moon", "reading_now",
                 "forecast_week", "sun_moon", "reading_now"]),
