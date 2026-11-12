@@ -306,8 +306,8 @@ end
 --   竖屏 版心 1020×1389、内容列 920 → A 414 / B 518 / C 239 px
 --   横屏 版心 1396×1018、内容列 1276 → A 295 / 下半 565（B 630 + 分隔 53 + C 593）
 local ZONE_SPEC = {
-    portrait  = { A = 228, B = 283, C = 130, gap = 9, sep = 4, sep2 = 3, pad = 28 },
-    landscape = { A = 165, lower = 310,          gap = 4, sep = 4, sep2 = 3, pad = 34 },
+    portrait  = { A = 224, B = 279, C = 128, gap = 9, sep = 4, sep2 = 3, pad = 28 },
+    landscape = { A = 162, lower = 304,          gap = 4, sep = 4, sep2 = 3, pad = 34 },
 }
 
 -- 组装骨架时必须按这个顺序取区，与配置表的键一致
