@@ -76,6 +76,8 @@ local CityData = require("dashboard_cities")
 local QWeather = require("dashboard_qweather")
 local OpenMeteo = require("dashboard_openmeteo")
 local Moon = require("dashboard_moon")
+-- 倒数日 / 待办的数据层（存盘、日期运算、输入解析都在里面，本文件只管画）
+local Agenda = require("dashboard_agenda")
 
 -- 多语言：T() 查表，未收录时原样返回中文（缺词条不会崩，只会退回中文）
 local T = I18n.T
@@ -119,7 +121,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.46"
+local DASHBOARD_VERSION = "2.47"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -232,6 +234,11 @@ function Stack:paintTo(bb, x, y)
         end
         local oy = math.max(0, math.floor((self.dimen.h - cs.h) / 2))
         child:paintTo(bb, x + ox, y + oy)
+    end
+    -- 空心边框：封面占位框用。边框必须在子控件之后画，否则会被文字盖住。
+    if self.border and self.dimen.w > 2 and self.dimen.h > 2 then
+        bb:paintBorder(x, y, self.dimen.w, self.dimen.h, self.border,
+            self.border_color or COLOR_BLACK, nil, false)
     end
 end
 
@@ -394,6 +401,20 @@ local COMPONENTS = {
         label = "电量网络", zones = { portrait = { "C" }, landscape = { "C" } },
         build = "compBatteryNet",
     },
+    -- ---- v2.47 新增 2 个 ----
+    -- 这两个组件都有「点一下展开列表」，expandable 标记供 buildZone 记录盒子坐标。
+    -- 横屏 A 区只有 294 高、1276 宽，是最扁的一条：倒数日的大数字位塞进去会挤掉
+    -- 列表，所以这两个只放 B/C（543 高），竖屏三区都够。
+    countdown = {
+        label = "倒数日", zones = { portrait = { "A", "B", "C" }, landscape = { "B", "C" } },
+        expandable = "countdown",
+        build = "compCountdown",
+    },
+    todo = {
+        label = "待办", zones = { portrait = { "A", "B", "C" }, landscape = { "B", "C" } },
+        expandable = "todo",
+        build = "compTodo",
+    },
 }
 
 -- 收紧档位：只降字号，不换布局、不裁内容
@@ -467,6 +488,11 @@ function Dashboard:init()
     -- 关闭时还原，避免插件加载就把整个 KOReader 转了向
     -- 凭据每次启动重新读取，改完配置重启 KOReader 即生效
     self.config = QWeather.loadConfig(self.path or PLUGIN_DIR, G_reader_settings)
+    -- 倒数日 / 待办：读盘一次，之后都走内存；顺手清掉 30 天前已完成的待办
+    pcall(function()
+        Agenda.load(true)
+        Agenda.maintenance(self:localNow())
+    end)
     -- 休眠时把看板当屏保：钩子必须在插件加载时就装上，
     -- 这样即使看板没打开（在看书 / 书架），休眠也会显示看板
     self:installScreenSaverHook()
@@ -628,6 +654,10 @@ function Dashboard:genMenuItemTable()
 
     items[#items + 1] = { text = T("布局组件"), sub_item_table = self:genLayoutMenu() }
 
+    -- 倒数日 / 待办的增删改都在这里；看板上点击组件只做「看 + 勾选」
+    items[#items + 1] = { text = T("倒数日"), sub_item_table = self:genCountdownMenu() }
+    items[#items + 1] = { text = T("待办事项"), sub_item_table = self:genTodoMenu() }
+
     items[#items + 1] = { text = T("语言 / Language"), sub_item_table = self:genLangMenu() }
 
     items[#items + 1] = { text = T("天气服务"), sub_item_table = self:genWeatherMenu() }
@@ -642,6 +672,11 @@ function Dashboard:genMenuItemTable()
                     .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 版式 / 天气服务）\n"
                     .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
                     .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
+                    .. "点「倒数日」「待办」这两块卡片 → 弹出列表（可切换置顶、勾选完成）；\n"
+                    .. "增删改在菜单「倒数日」「待办事项」里，录入是一行输入：\n"
+                    .. "  倒数日：圣诞节 2026-12-25（名称与日期前后均可）\n"
+                    .. "  待办：买牛奶（记今天）· 明天 交周报 · 12-25 取快递\n"
+                    .. "数据存在 KOReader 设置目录的 dashboard_agenda.lua，可直接备份。\n\n"
                     .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
                     .. "所以横屏要靠左右滑动（或菜单「版式」）手动切，切完请把设备横着拿。\n"
                     .. "菜单「版式」里选中一项后会立即关菜单并按新方向重排，不用手动关菜单。\n"
@@ -658,6 +693,11 @@ function Dashboard:genMenuItemTable()
                     .. "Kindles have no accelerometer, so landscape must be triggered manually\n"
                     .. "by swiping sideways or via the Layout menu; then hold the device sideways.\n"
                     .. "If the landscape text appears upside down, pick the other rotation.\n\n"
+                    .. "Tap the Countdown / To-do card to open its list (pin, tick off);\n"
+                    .. "add and remove them under Countdown / To-dos in the menu, one line each:\n"
+                    .. "  Countdown: Christmas 2026-12-25 (name and date in any order)\n"
+                    .. "  To-do: Buy milk (today) · tomorrow Email report · 12-25 Parcel\n"
+                    .. "Data lives in dashboard_agenda.lua in the KOReader settings folder.\n\n"
                     .. "Top right: battery percentage and icon (inverted while charging).\n"
                     .. "Weather comes from QWeather; if unavailable it falls back to Open-Meteo,\n"
                     .. "and the footer shows the current source.\n"
@@ -1876,6 +1916,406 @@ function Dashboard:closeOrphanMenu()
     return false
 end
 
+-- ---------------------------------------------------------------- 组件列表（点按展开）
+--- 点到了哪个「可展开」的区？返回 zone key（"A"/"B"/"C"）或 nil。
+--- 坐标是屏幕绝对坐标，与 registerTouchZones 给的 ges.pos 同一坐标系。
+function Dashboard:zoneHitAt(x, y)
+    local hits = self.zone_hits
+    if type(hits) ~= "table" then return nil end
+    for key, rec in pairs(hits) do
+        if rec.x and rec.y
+            and x >= rec.x and x < rec.x + rec.w
+            and y >= rec.y and y < rec.y + rec.h then
+            return key
+        end
+    end
+    return nil
+end
+
+--- 开一个「看板自己的」TouchMenu：复用 self.menu / menu_open 这套状态，
+--- 关菜单时走同一个 onMenuClosed，所以 tick 暂停、关后重排这些行为全部继承。
+--- 和 openMenu 的区别只是菜单项不同，所以没有并到那里去（那条路径是验证过的，
+--- 不动它最省事）。
+function Dashboard:openTouchMenu(items)
+    local loaded, TouchMenu = pcall(require, "ui/widget/touchmenu")
+    if not loaded or type(TouchMenu) ~= "table" then
+        logger.warn("dashboard: TouchMenu 不可用，无法展开列表")
+        return false
+    end
+    local tab = { icon = "appbar.settings", callback = function() end }
+    for i, it in ipairs(items) do tab[i] = it end
+
+    local menu
+    self.menu_open = true
+    local ok, err = pcall(function()
+        menu = TouchMenu:new{
+            width = math.floor(Screen:getWidth() * 0.94),
+            tab_item_table = { tab },
+            close_callback = function() self:onMenuClosed(menu) end,
+        }
+        menu._dashboard_menu = true
+        self.menu = menu
+        UIManager:show(menu)
+    end)
+    if not ok then
+        self.menu = menu
+        self.menu_open = (menu ~= nil)
+        logger.warn("dashboard: 列表菜单构造失败", tostring(err))
+        return false
+    end
+    return true
+end
+
+--- 点组件 → 按当前版式找到该区的组件，弹出对应列表
+function Dashboard:openZoneList(key)
+    if not self.shown then return end
+    local orient = self.layout_landscape and "landscape" or "portrait"
+    local id = self:getZoneLayout()[orient][key]
+    local comp = COMPONENTS[id]
+    if not comp or not comp.expandable then return end
+    local items
+    if comp.expandable == "countdown" then
+        items = self:countdownListItems()
+    else
+        items = self:todoListItems()
+    end
+    return self:openTouchMenu(items)
+end
+
+local function menu_header(text)
+    -- TouchMenu 的条目必须有 callback；给个空函数就是「只显示、点了不动」
+    return { text = text, keep_menu_open = true, callback = function() end }
+end
+
+--- 倒数日列表：每条可切换置顶，最后一条去添加。
+function Dashboard:countdownListItems()
+    local now = self:localNow()
+    local v = Agenda.eventsView(now)
+    local items = { menu_header(T("倒数日")) }
+    if v.total == 0 then
+        items[#items + 1] = menu_header(T("暂无倒数日"))
+    else
+        -- 顺序与组件一致：先大字位那条，再列表
+        local ordered = {}
+        if v.focus then ordered[#ordered + 1] = v.focus end
+        for _, e in ipairs(v.list) do ordered[#ordered + 1] = e end
+        for _, e in ipairs(ordered) do
+            local label = string.format("%s%s · %s · %s",
+                e.pinned and "★ " or "", e.name, e.date, I18n.relDays(e.days))
+            items[#items + 1] = {
+                text = label,
+                keep_menu_open = true,
+                checked_func = function() return e.pinned end,
+                callback = function()
+                    Agenda.pinEvent(e.id)
+                    self:afterAgendaChange()
+                end,
+            }
+        end
+    end
+    items[#items + 1] = {
+        text = T("添加倒数日"),
+        keep_menu_open = false,
+        callback = function() self:promptAddEvent() end,
+    }
+    return items
+end
+
+--- 待办列表：今日 → 未来 → 已过期，点一条就勾选/取消。
+function Dashboard:todoListItems()
+    local now = self:localNow()
+    local v = Agenda.todosView(now)
+    local items = { menu_header(T("待办事项")) }
+
+    local function toggler(it, label)
+        return {
+            text = label,
+            keep_menu_open = true,
+            checked_func = function() return it.done end,
+            callback = function()
+                Agenda.toggleTodo(it.id)
+                self:afterAgendaChange()
+            end,
+        }
+    end
+
+    if #v.today > 0 then
+        items[#items + 1] = menu_header(T("今天"))
+        for _, it in ipairs(v.today) do
+            items[#items + 1] = toggler(it,
+                string.format("%s %s", it.done and "[x]" or "[ ]", it.text))
+        end
+    end
+    if #v.future > 0 then
+        items[#items + 1] = menu_header(T("未来"))
+        for _, it in ipairs(v.future) do
+            items[#items + 1] = toggler(it, string.format("[ ] %s · %s", it.text,
+                I18n.monthDay(it.month, it.day)))
+        end
+    end
+    if #v.past > 0 then
+        items[#items + 1] = menu_header(T("已过期"))
+        for _, it in ipairs(v.past) do
+            items[#items + 1] = toggler(it, string.format("[ ] %s · %s", it.text,
+                I18n.monthDay(it.month, it.day)))
+        end
+    end
+    if #v.today + #v.future + #v.past == 0 then
+        items[#items + 1] = menu_header(T("今日无待办"))
+    end
+    items[#items + 1] = {
+        text = T("添加待办"),
+        keep_menu_open = false,
+        callback = function() self:promptAddTodo() end,
+    }
+    return items
+end
+
+--- 数据改完之后统一收尾：菜单开着就等关菜单时重排（onMenuClosed 会做），
+--- 没开菜单就直接重排。
+function Dashboard:afterAgendaChange()
+    if not self.shown then return end
+    if self.menu_open then
+        self.relayout_pending = true
+        return
+    end
+    self:refreshLayout()
+end
+
+-- ---------------------------------------------------------------- 倒数日 / 待办：菜单与录入
+--- 删除确认。ConfirmBox 不可用（老版本）时直接删，不能让功能卡在这里。
+function Dashboard:confirmRemove(text, on_ok)
+    local ok, ConfirmBox = pcall(require, "ui/widget/confirmbox")
+    if not ok or type(ConfirmBox) ~= "table" then
+        return on_ok()
+    end
+    local dialog
+    dialog = ConfirmBox:new{
+        text = text,
+        ok_text = T("删除"),
+        cancel_text = T("取消"),
+        ok_callback = function()
+            UIManager:close(dialog)
+            on_ok()
+        end,
+    }
+    UIManager:show(dialog)
+end
+
+--- 单行录入的公共壳子：一个输入框 + 取消/保存。
+function Dashboard:promptOneLine(opts)
+    local dialog
+    dialog = InputDialog:new{
+        title = opts.title,
+        description = opts.description,
+        input = opts.input or "",
+        input_hint = opts.hint,
+        buttons = {
+            {
+                {
+                    text = T("取消"),
+                    id = "cancel",
+                    callback = function() UIManager:close(dialog) end,
+                },
+                {
+                    text = T("保存"),
+                    callback = function()
+                        local raw = dialog:getInputText() or ""
+                        UIManager:close(dialog)
+                        opts.onSave(raw)
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(dialog)
+    if dialog.onShowKeyboard then dialog:onShowKeyboard() end
+end
+
+function Dashboard:promptAddEvent()
+    local now = self:localNow()
+    self:promptOneLine{
+        title = T("添加倒数日"),
+        description = TL(
+            "一行写完：名称 + 日期，前后顺序随意。\n"
+            .. "日期支持 2026-12-25、2026年12月25日、12-25（今年）、12月25日。\n"
+            .. "例：圣诞节 2026-12-25 · 结婚纪念日 2027-05-01",
+            "One line: name + date, in any order.\n"
+            .. "Dates: 2026-12-25, 2026/12/25, 12-25 (this year).\n"
+            .. "E.g. Christmas 2026-12-25"),
+        hint = "圣诞节 2026-12-25",
+        onSave = function(raw)
+            local name, date = Agenda.parseEvent(raw, now)
+            if not name then
+                UIManager:show(InfoMessage:new{
+                    text = T("没认出日期。请写成「圣诞节 2026-12-25」这样。"),
+                    timeout = 3,
+                })
+                return
+            end
+            -- 第一条自动置顶：否则大字位会空着，看起来像没生效
+            Agenda.addEvent(name, date, #Agenda.allEvents() == 0)
+            self:afterAgendaChange()
+        end,
+    }
+end
+
+function Dashboard:promptAddTodo()
+    local now = self:localNow()
+    self:promptOneLine{
+        title = T("添加待办"),
+        description = TL(
+            "直接写内容 → 记到今天。\n"
+            .. "前面加日期或「明天 / 后天」→ 记到那一天。\n"
+            .. "例：买牛奶 · 明天 交周报 · 12-25 取快递",
+            "Type just the text for today.\n"
+            .. "Prefix a date or tomorrow to schedule it.\n"
+            .. "E.g. Buy milk · tomorrow Email report · 12-25 Pick up parcel"),
+        hint = "买牛奶",
+        onSave = function(raw)
+            local text, date = Agenda.parseTodo(raw, now)
+            if not text then
+                UIManager:show(InfoMessage:new{ text = T("内容不能为空。"), timeout = 3 })
+                return
+            end
+            Agenda.addTodo(text, date)
+            self:afterAgendaChange()
+        end,
+    }
+end
+
+--- 「倒数日」设置子菜单：添加 + 逐条（置顶 / 删除）
+function Dashboard:genCountdownMenu()
+    local now = self:localNow()
+    local items = {
+        {
+            text = T("添加倒数日"),
+            keep_menu_open = false,
+            callback = function() self:promptAddEvent() end,
+        },
+    }
+    local list, events = {}, Agenda.allEvents()
+    for _, e in ipairs(events) do list[#list + 1] = e end
+    table.sort(list, function(a, b)
+        local da = Agenda.daysBetween(Agenda.today(now), a.date) or 0
+        local db = Agenda.daysBetween(Agenda.today(now), b.date) or 0
+        if da ~= db then return da < db end
+        return a.id < b.id
+    end)
+    for _, e in ipairs(list) do
+        local days = Agenda.daysBetween(Agenda.today(now), e.date) or 0
+        local sub = {
+            {
+                text = T("置顶这条"),
+                checked_func = function() return e.pinned end,
+                callback = function()
+                    Agenda.pinEvent(e.id)
+                    self:afterAgendaChange()
+                end,
+            },
+            {
+                text = T("删除"),
+                keep_menu_open = false,
+                callback = function()
+                    self:confirmRemove(string.format("%s「%s」？", T("删除"), e.name), function()
+                        Agenda.removeEvent(e.id)
+                        self:afterAgendaChange()
+                    end)
+                end,
+            },
+        }
+        -- 已经置顶的那条，「置顶这条」点了没变化，干脆给一条取消
+        if e.pinned then
+            sub[1] = {
+                text = T("取消置顶"),
+                callback = function()
+                    Agenda.unpinAll()
+                    self:afterAgendaChange()
+                end,
+            }
+        end
+        items[#items + 1] = {
+            text = string.format("%s · %s · %s", e.name, e.date, I18n.relDays(days)),
+            sub_item_table = sub,
+        }
+    end
+    return items
+end
+
+--- 「待办事项」设置子菜单：添加 + 分组列表（完成 / 删除）+ 清除已完成
+function Dashboard:genTodoMenu()
+    local now = self:localNow()
+    local v = Agenda.todosView(now)
+    local items = {
+        {
+            text = T("添加待办"),
+            keep_menu_open = false,
+            callback = function() self:promptAddTodo() end,
+        },
+    }
+    local function entry(it, label)
+        return {
+            text = label,
+            sub_item_table = {
+                {
+                    -- checked_func 让 TouchMenu 走「只刷新、不关菜单」那条分支，
+                    -- 勾完还能接着勾下一条
+                    text = T("已完成"),
+                    checked_func = function() return it.done end,
+                    callback = function()
+                        Agenda.toggleTodo(it.id)
+                        self:afterAgendaChange()
+                    end,
+                },
+                {
+                    text = T("删除"),
+                    keep_menu_open = false,
+                    callback = function()
+                        self:confirmRemove(string.format("%s「%s」？", T("删除"), it.text),
+                            function()
+                                Agenda.removeTodo(it.id)
+                                self:afterAgendaChange()
+                            end)
+                    end,
+                },
+            },
+        }
+    end
+    if #v.today > 0 then
+        items[#items + 1] = menu_header(T("今天"))
+        for _, it in ipairs(v.today) do
+            items[#items + 1] = entry(it, string.format("%s %s", it.done and "[x]" or "[ ]", it.text))
+        end
+    end
+    if #v.future > 0 then
+        items[#items + 1] = menu_header(T("未来"))
+        for _, it in ipairs(v.future) do
+            items[#items + 1] = entry(it, string.format("%s · %s", it.text,
+                I18n.monthDay(it.month, it.day)))
+        end
+    end
+    if #v.past > 0 then
+        items[#items + 1] = menu_header(T("已过期"))
+        for _, it in ipairs(v.past) do
+            items[#items + 1] = entry(it, string.format("%s · %s", it.text,
+                I18n.monthDay(it.month, it.day)))
+        end
+    end
+    items[#items + 1] = {
+        text = T("清除已完成"),
+        keep_menu_open = false,
+        callback = function()
+            local n = Agenda.clearDone()
+            UIManager:show(InfoMessage:new{
+                text = string.format("%s %d %s", T("清除已完成"), n, T("项")),
+                timeout = 2,
+            })
+            self:afterAgendaChange()
+        end,
+    }
+    return items
+end
+
 --- 菜单里选了屏幕方向。
 ---
 --- 真机上踩过两次，结论是**不能指望 TouchMenu 帮我们关菜单**：
@@ -2080,6 +2520,9 @@ function Dashboard:createRoot()
     -- vk 是「分块之间空白」的纵向放大系数：只动上下空白，不动文字也不动宽度
     local function build(vk)
         ctx.S = S
+        -- 每次试排都清空命中表：只有最后一版（真正显示的那棵）的坐标有效，
+        -- 留着上一版会让点按打到已经不存在的盒子上。
+        self.zone_hits = {}
         local b = landscape and self:buildLandscape(ctx) or self:buildPortrait(ctx)
         -- 拉伸只是锦上添花。这里必须兜住：一旦抛出，整个看板会连带崩掉（真机上
         -- 表现为 KOReader 直接重启），而不拉伸只是上下紧一点。
@@ -2164,6 +2607,23 @@ function Dashboard:createRoot()
     -- 多个触摸区重叠时框架按注册顺序依次问，handler 返回 false 就继续问下一个，
     -- 所以「顶部下滑」区可以安全地和全屏的上划区共存。
     root:registerTouchZones({
+        {
+            -- 必须排在最前：命中可展开组件时吃掉这一下，没命中返回 false，
+            -- 后面的「点按刷新」照常接管（框架按注册顺序问，false 就继续问下一个）。
+            id = "dashboard_zone_tap",
+            ges = "tap",
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+            handler = function(ges)
+                if not self.shown then return false end
+                local pos = ges and ges.pos
+                if not pos or not pos.x or not pos.y then return false end
+                local key = self:zoneHitAt(pos.x, pos.y)
+                if not key then return false end
+                -- 直接在这里弹菜单会重入事件分发，推迟一拍
+                UIManager:nextTick(function() self:openZoneList(key) end)
+                return true
+            end,
+        },
         {
             id = "dashboard_tap",
             ges = "tap",
@@ -2353,7 +2813,22 @@ function Dashboard:buildZone(ctx, orient, key, box_w, content_w, box_h)
                 id, key, box_h, child:getSize().h))
         end
     end
-    return mkBox(box_w, box_h, child)
+    local box = mkBox(box_w, box_h, child)
+
+    -- 可展开组件（倒数日 / 待办）要记录盒子在**屏幕上的绝对坐标**，点按时按坐标
+    -- 判断点到的是哪个区。坐标只有绘制时才确定（版心居中 → 四边留白 → 拉伸间距
+    -- 都会影响），所以在 paintTo 里顺手存一份；点按一定发生在绘制之后，读到的是
+    -- 当前这一帧的值。盒子在每次重排时重建，记录自然跟着换。
+    if comp.expandable then
+        local rec = { kind = comp.expandable, id = id, w = box_w, h = box_h }
+        self.zone_hits[key] = rec
+        local base_paint = box.paintTo
+        box.paintTo = function(this, bb, x, y)
+            rec.x, rec.y = x, y
+            return base_paint(this, bb, x, y)
+        end
+    end
+    return box
 end
 
 --- 一条横向分隔线（宽度取版心宽，与四边留白对齐）
@@ -2906,12 +3381,15 @@ function Dashboard:compReading(ctx, w, h, k)
         cover_w = max_w
         cover_h = math.floor(cover_w * 3 / 2)
     end
+    -- 盒子够高才留封面位。注意「留位」和「取到图」必须分开判断：
+    -- 取不到封面（TXT/PDF 没首页图、缓存目录不可写）时也占同样的位置，
+    -- 否则同一个盒子会在「有封面 / 无封面」两种宽度之间跳，书名忽长忽短。
+    local cover_shown = cover_h >= math.floor(110 * S * k)
     local cover_file
-    if cover_h >= math.floor(110 * S * k) then
+    if cover_shown then
         cover_file = self:coverFile(info.path, cover_h)
     end
-    -- 文字列的实际宽度：有封面就扣掉封面和间距，否则占满
-    local text_w = cover_file and math.max(math.floor(120 * S), w - cover_w - gap) or w
+    local text_w = cover_shown and math.max(math.floor(120 * S), w - cover_w - gap) or w
 
     local rows = {
         align = "left",
@@ -2940,17 +3418,42 @@ function Dashboard:compReading(ctx, w, h, k)
     rows[#rows + 1] = self:makeText(ctx, pct_text, math.floor(20 * k), { gray = true })
     local text_col = VerticalGroup:new(rows)
 
-    if not cover_file then return text_col end
+    if not cover_shown then return text_col end
     -- 整块仍然铺满盒宽（封面 + 间距 + 文字），这样它在盒子里居中后
     -- 左边缘和别的区对齐，不会因为加封面而整体往里缩。
-    return HorizontalGroup:new{
-        align = "center",
-        ImageWidget:new{
+    local visual
+    if cover_file then
+        visual = ImageWidget:new{
             file = cover_file, width = cover_w, height = cover_h,
             scale_factor = 0,
-        },
+        }
+    else
+        visual = self:coverPlaceholder(ctx, info.title, cover_w, cover_h, k)
+    end
+    return HorizontalGroup:new{
+        align = "center",
+        visual,
         mkPad(gap, 1),
         text_col,
+    }
+end
+
+--- 取不到封面时的占位书脊：同尺寸的空心框 + 书名首字。
+--- 为什么不直接不画：封面位一旦消失，整张卡的宽度会变，书名长度跟着跳；
+--- 而且 e-ink 上「一块空白」比「一个框」更像渲染失败。框里放首字，
+--- 至少能看出这是哪本书的封面位。
+function Dashboard:coverPlaceholder(ctx, title, w, h, k)
+    local S = ctx.S
+    -- 取第一个字符（UTF-8 安全）：中文一个字三字节，英文一个字节
+    local first = tostring(title or ""):match("^([%z\1-\127\194-\244][\128-\191]*)") or "?"
+    local label = self:makeText(ctx, first, math.floor(44 * k), { gray = true })
+    return Stack:new{
+        dimen = Geom:new{ w = w, h = h },
+        border = math.max(1, math.floor(2 * S)),
+        CenterContainer:new{
+            dimen = Geom:new{ w = w, h = h },
+            label,
+        },
     }
 end
 
@@ -3136,6 +3639,167 @@ function Dashboard:compBatteryNet(ctx, w, h, k)
         { T("网络"), wifi_text, nil },
     }
     return self:buildStatCells(ctx, w, items)
+end
+
+-- ---------------------------------------------------------------- 倒数日 / 待办
+-- 这两个组件的共同点：条数不确定，画几行由盒高决定。做法统一为
+-- 「先建头部和大字位 → 量出实际高度 → 把剩余高度换算成行数」，
+-- 而不是「按 k 档预估能放几行」：字体度量在真机与桩件之间差 1%，
+-- 预估多一行就会顶出盒子（v2.45 的周预报就是这么错的）。
+
+--- 文本行高。与 TextWidget 的 1.363 同一条公式，桩件与真机一致。
+local function textLineH(px, S, k)
+    return math.floor(px * S * k * 1.363)
+end
+
+--- 标题行：左标题，右侧可选小标签（置顶 / 2/5）。整行铺满盒宽。
+function Dashboard:compHeadRow(ctx, w, k, left_text, right_text)
+    local left = self:makeText(ctx, left_text, math.floor(20 * k), { gray = true })
+    local row = { align = "center", left }
+    if right_text then
+        local right = self:makeText(ctx, right_text, math.floor(17 * k), { gray = true })
+        row[#row + 1] = mkPad(math.max(0, w - left:getSize().w - right:getSize().w), 1)
+        row[#row + 1] = right
+    end
+    return HorizontalGroup:new(row)
+end
+
+--- 一行「名称 …… 右侧倒数值」。名称用定宽盒子左对齐，右侧数值才贴得齐右边缘；
+--- 直接给名称 max_width 不行——短名字会让整行变窄，右侧数值参差不齐。
+function Dashboard:countdownRow(ctx, w, k, name, right_text)
+    local px = 22
+    local right = self:makeText(ctx, right_text, math.floor(px * k), { gray = true })
+    local gap = math.floor(16 * ctx.S * k)
+    local name_w = math.max(math.floor(80 * ctx.S), w - right:getSize().w - gap)
+    local name_box = mkBox(name_w, textLineH(px, ctx.S, k), self:makeText(ctx, name,
+        math.floor(px * k), { ellipsis = true, max_width = name_w }), { align = "left" })
+    return HorizontalGroup:new{
+        align = "center",
+        name_box,
+        mkPad(gap, 1),
+        right,
+    }
+end
+
+--- 倒数日：大字位显示置顶（或最近一条）事件，下面最多三条。
+function Dashboard:compCountdown(ctx, w, h, k)
+    local S = ctx.S
+    local v = Agenda.eventsView(ctx.now)
+    local head = self:compHeadRow(ctx, w, k, T("倒数日"), v.focus_pinned and T("置顶") or nil)
+
+    if v.total == 0 then
+        return CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(h) },
+            VerticalGroup:new{
+                align = "center",
+                self:makeText(ctx, T("暂无倒数日"), math.floor(22 * k), { gray = true }),
+                mkPad(1, math.floor(8 * S * k)),
+                self:makeText(ctx, TL("菜单 → 倒数日 → 添加", "Menu → Countdown → Add"),
+                    math.floor(16 * k), { gray = true }),
+            },
+        }
+    end
+
+    local f = v.focus
+    local big_px = 44
+    local block = VerticalGroup:new{ align = "left" }
+    if f.days == 0 then
+        -- 今天不用「还有 0 天」，直接说「就是今天」
+        block[#block + 1] = self:makeText(ctx, T("就是今天"), math.floor(big_px * 0.78 * k))
+    else
+        local line = { align = "center" }
+        local pre = I18n.preDays(f.days)
+        if pre then
+            line[#line + 1] = self:makeText(ctx, pre, math.floor(20 * k), { gray = true })
+            line[#line + 1] = mkPad(math.floor(10 * S * k), 1)
+        end
+        line[#line + 1] = self:makeText(ctx, tostring(math.abs(f.days)), math.floor(big_px * k))
+        line[#line + 1] = mkPad(math.floor(6 * S * k), 1)
+        line[#line + 1] = self:makeText(ctx, I18n.daysUnit(f.days), math.floor(18 * k),
+            { gray = true })
+        block[#block + 1] = HorizontalGroup:new(line)
+    end
+    block[#block + 1] = self:makeText(ctx, f.name, math.floor(26 * k),
+        { ellipsis = true, max_width = w })
+    block[#block + 1] = self:makeText(ctx, f.date, math.floor(16 * k), { gray = true })
+
+    local gap1 = math.floor(10 * S * k)
+    local gap2 = math.floor(8 * S * k)
+    local avail = h - head:getSize().h - gap1 - block:getSize().h - gap2
+    local row_px = 22
+    local row_h = textLineH(row_px, S, k) + math.floor(5 * S * k)
+    local n = math.max(0, math.min(#v.list, math.floor(avail / row_h)))
+
+    if n == 0 then
+        -- 盒子只够画大字位（竖屏 C 区最小档就是这种）
+        return VerticalGroup:new{ align = "left", head, mkPad(1, gap1), block }
+    end
+    local rows = { align = "left", head, mkPad(1, gap1), block, mkPad(1, gap2) }
+    for i = 1, n do
+        local e = v.list[i]
+        if i > 1 then rows[#rows + 1] = mkPad(1, math.floor(5 * S * k)) end
+        rows[#rows + 1] = self:countdownRow(ctx, w, k, e.name, I18n.relDays(e.days))
+    end
+    return VerticalGroup:new(rows)
+end
+
+--- 待办：只显示今天，行数按盒高定。
+function Dashboard:compTodo(ctx, w, h, k)
+    local S = ctx.S
+    local v = Agenda.todosView(ctx.now)
+    local counter = v.total_today > 0
+        and string.format("%d/%d", v.done_today, v.total_today) or nil
+    local head = self:compHeadRow(ctx, w, k, T("待办"), counter)
+
+    if v.total_today == 0 then
+        local sub
+        if v.pending_future > 0 then
+            -- 「今日无待办 · 未来 3 项」：让人知道不是数据丢了，只是今天没事
+            sub = string.format("%s · %s %d %s", T("今日无待办"), T("未来"),
+                v.pending_future, T("项"))
+        else
+            sub = TL("菜单 → 待办事项 → 添加", "Menu → To-dos → Add")
+        end
+        return CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(h) },
+            VerticalGroup:new{
+                align = "center",
+                self:makeText(ctx, T("今日无待办"), math.floor(22 * k), { gray = true }),
+                mkPad(1, math.floor(8 * S * k)),
+                self:makeText(ctx, sub, math.floor(16 * k), { gray = true, max_width = w }),
+            },
+        }
+    end
+
+    local gap1 = math.floor(8 * S * k)
+    local row_px = 20
+    local row_h = textLineH(row_px, S, k) + math.floor(4 * S * k)
+    local cap = math.max(0, math.floor((h - head:getSize().h - gap1) / row_h))
+    local n = math.min(#v.today, cap)
+    local rows = { align = "left", head, mkPad(1, gap1) }
+    for i = 1, n do
+        local it = v.today[i]
+        -- 勾选框用 [ ] / [x]：e-ink 的中文字体不一定有 ☐ ✓ 这些符号，
+        -- 缺字会画成豆腐块；ASCII 方括号在任何字体里都在。
+        local text = string.format("%s %s", it.done and "[x]" or "[ ]", it.text)
+        if i > 1 then rows[#rows + 1] = mkPad(1, math.floor(4 * S * k)) end
+        rows[#rows + 1] = self:makeText(ctx, text, math.floor(row_px * k), {
+            gray = it.done, ellipsis = true, max_width = w,
+        })
+    end
+
+    -- 还有空位就补一行「未来 N 项」，不占行数预算时才有
+    if n == #v.today and v.pending_future > 0 then
+        local foot_h = textLineH(16, S, k)
+        local used = head:getSize().h + gap1 + n * row_h
+        if used + foot_h + math.floor(6 * S * k) <= h then
+            rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
+            rows[#rows + 1] = self:makeText(ctx,
+                string.format("%s %d %s", T("未来"), v.pending_future, T("项")),
+                math.floor(16 * k), { gray = true })
+        end
+    end
+    return VerticalGroup:new(rows)
 end
 
 --- 整月日历：周一起始、跨月补位、今天反白、节气日带点
@@ -3335,7 +3999,7 @@ end
 
 --- 单行操作提示文案（竖屏横屏共用，只有一个版本）
 function Dashboard:hintLine()
-    local line = T("点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
+    local line = T("点按刷新 · 点卡片展开 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
     if self:getConfig().show_attribution then
         local src = self:sourceShort()
         if src then line = line .. " · " .. src end

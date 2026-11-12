@@ -170,8 +170,8 @@ local EN = {
     -- 英文比中文长得多（中文 26 个字，同义英文按字符算是两倍多），而页脚是
     -- 「必须单行、绝不折行」的一行，所以这里刻意用短句：Swipe 只出现一次，
     -- 后面直接跟去向/动作，否则字号会被压到 11 还放不下。
-    ["点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式"] =
-        "Tap: refresh · Swipe up: exit · Swipe down: menu · Swipe: layout",
+    ["点按刷新 · 点卡片展开 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式"] =
+        "Tap: refresh · Tap card: list · Swipe up: exit · Swipe down: menu · Swipe: layout",
 
     -- 组件
     ["时钟与天气"] = "Clock & weather",
@@ -208,6 +208,34 @@ local EN = {
     ["暂无在读"] = "No book open",
     ["作者"] = "by",
     ["页"] = "p",
+
+    -- 倒数日 / 待办（v2.47）
+    -- 「还有」「已过」只用在中文侧拼「还有 23 天」；英文的语序不同（in 23 days /
+    -- 23 days ago），由下面的 relDays()/preDays() 直接出整句，不靠这两条拼。
+    ["倒数日"] = "Countdown",
+    ["待办"] = "To-do",
+    ["待办事项"] = "To-dos",
+    ["置顶"] = "Pinned",
+    ["还有"] = "in",
+    ["已过"] = "ago",
+    ["就是今天"] = "Today",
+    ["天"] = "days",
+    ["暂无倒数日"] = "No countdown yet",
+    ["今日无待办"] = "Nothing due today",
+    ["未来"] = "Upcoming",
+    ["已过期"] = "Overdue",
+    ["已完成"] = "Done",
+    ["删除"] = "Delete",
+    ["清除已完成"] = "Clear done",
+    ["添加倒数日"] = "Add countdown",
+    ["添加待办"] = "Add a to-do",
+    ["置顶这条"] = "Pin this",
+    ["取消置顶"] = "Unpin",
+    ["项"] = "items",
+    -- 录入失败时的提示。英文要把「怎么写」一起说清楚，否则用户不知道错在哪
+    ["内容不能为空。"] = "The text cannot be empty.",
+    ["没认出日期。请写成「圣诞节 2026-12-25」这样。"] =
+        "No date recognised. Write it like: Christmas 2026-12-25",
 
     -- 布局组件菜单
     ["布局组件"] = "Layout components",
@@ -551,6 +579,36 @@ end
 function M.monthDay(m, d)
     if not m or not d then return "" end
     return string.format("%d/%d", m, d)
+end
+
+-- ---------------------------------------------------------------- 倒数日
+--- 「还有 23 天 / 就是今天 / 已过 3 天」。
+--- 英文不能照字面拼：中文是「还有 + 数字 + 天」，英文是 "in + 数字 + days"，
+--- 负数还得说 "3 days ago"（数字在前）。两种语序都写死在这儿，别在组件里拼。
+function M.relDays(n)
+    n = tonumber(n) or 0
+    if n == 0 then return M.T("就是今天") end
+    if M.lang() == "en" then
+        return n > 0 and string.format("in %d days", n) or string.format("%d days ago", -n)
+    end
+    return n > 0 and string.format("还有 %d 天", n) or string.format("已过 %d 天", -n)
+end
+
+--- 大字位「数字」左边的前缀词。今天没有前缀（整句换成「就是今天」）。
+function M.preDays(n)
+    n = tonumber(n) or 0
+    if n == 0 then return nil end
+    if M.lang() == "en" then return n > 0 and "in" or nil end
+    return n > 0 and M.T("还有") or M.T("已过")
+end
+
+--- 大字位「数字」右边的量词。英文过去时整段是 "days ago"，所以要吃 n。
+function M.daysUnit(n)
+    n = tonumber(n) or 0
+    if M.lang() == "en" then
+        return n < 0 and "days ago" or "days"
+    end
+    return M.T("天")
 end
 
 --- 温差（最高-最低）：「10°」，取不到就 nil
