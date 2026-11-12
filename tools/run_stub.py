@@ -19,6 +19,7 @@ PLUGIN_DIR = "dashboard.koplugin"
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+# 必须随仓库分发、缺一个就算失败
 SYNTAX_FILES = [
     f"{PLUGIN_DIR}/main.lua",
     f"{PLUGIN_DIR}/dashboard_lunar.lua",
@@ -26,8 +27,22 @@ SYNTAX_FILES = [
     f"{PLUGIN_DIR}/dashboard_qweather.lua",
     f"{PLUGIN_DIR}/dashboard_openmeteo.lua",
     f"{PLUGIN_DIR}/dashboard_config.lua",
+]
+
+# 含真实凭据、被 .gitignore 排除。git clone 下来没有它是正常状态，
+# 桩件会自己注入假凭据继续验证和风主路径，所以这里存在才检查。
+OPTIONAL_SYNTAX_FILES = [
     f"{PLUGIN_DIR}/dashboard_config.local.lua",
 ]
+
+
+def syntax_files():
+    """实际要检查的文件：必选的全在，可选的仅在存在时加入。"""
+    paths = list(SYNTAX_FILES)
+    for path in OPTIONAL_SYNTAX_FILES:
+        if os.path.exists(os.path.join(ROOT, path)):
+            paths.append(path)
+    return paths
 
 
 DIRECTIONS = [
@@ -100,7 +115,8 @@ def check_syntax():
         "local f, e = lf(s, n); if f then return true, '' end; return false, tostring(e) end"
     )
     ok_all = True
-    for path in SYNTAX_FILES:
+    paths = syntax_files()
+    for path in paths:
         full = os.path.join(ROOT, path)
         with open(full, encoding="utf-8") as fh:
             src = fh.read()
@@ -110,6 +126,9 @@ def check_syntax():
         else:
             ok_all = False
             print(f"[FAIL] 语法 {path}\n       {err}")
+    for path in OPTIONAL_SYNTAX_FILES:
+        if path not in paths:
+            print(f"[SKIP] 语法 {path}（未配置凭据，属正常状态）")
     return ok_all
 
 

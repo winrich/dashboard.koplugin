@@ -634,15 +634,34 @@ EVENTS[#EVENTS + 1] = string.format(
     #weather_menu.sub_item_table)
 
 -- 凭据来源与脱敏显示
+--
+-- git clone 下来没有 dashboard_config.local.lua（它被 .gitignore 排除），凭据为空是
+-- 正常状态。这里注入一对**假凭据**：桩件把 socket.http 整个换成了固定样本，请求根本
+-- 不会出网，所以不需要真实 key。不注入的话 QWeather.fetch 会在凭据检查那一步直接
+-- 返回，和风主路径（字段比对、gzip、AQI）就完全测不到了。
 local cfg = instance:getConfig()
+local INJECTED = false
+if cfg.qweather.api_host == "" or cfg.qweather.api_key == "" then
+    G_reader_settings:saveSetting("dashboard_qw_host", "stub.qweatherapi.com")
+    G_reader_settings:saveSetting("dashboard_qw_key", "stub-key-0001")
+    instance.config = nil
+    instance:reloadConfig()
+    cfg = instance:getConfig()
+    INJECTED = true
+    EVENTS[#EVENTS + 1] = "== 未配置真实凭据，已注入桩件假凭据（和风主路径照常验证）=="
+end
 EVENTS[#EVENTS + 1] = string.format("== 凭据：host=%s key=%s 来源=%s ==",
     cfg.qweather.api_host, QW.mask(cfg.qweather.api_key), tostring(cfg._key_source))
 if cfg.qweather.api_host == "" or cfg.qweather.api_key == "" then
-    print("[FAIL] 没有读到凭据，检查 dashboard_config.local.lua 是否就位")
+    print("[FAIL] 注入假凭据后仍读不到 host/key，loadConfig 的覆盖顺序有问题")
     os.exit(1)
 end
 if QW.mask(cfg.qweather.api_key):find(cfg.qweather.api_key, 1, true) then
     print("[FAIL] 脱敏函数泄露了完整 key")
+    os.exit(1)
+end
+if INJECTED and cfg._key_source ~= "settings" then
+    print("[FAIL] 设备内录入的凭据没有最高优先级，来源 = " .. tostring(cfg._key_source))
     os.exit(1)
 end
 
@@ -1292,6 +1311,63 @@ if #stack ~= stack_closed then
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = "== 休眠（看板未打开）：现建看板作屏保；唤醒后栈已恢复 =="
+
+-- ------------------------------------------------------------------ 首次配置提示
+-- 前面的用例靠注入假凭据跑和风主路径，所以这里必须临时把凭据清掉，才能验证
+-- 「缺凭据 -> 提示一次、配好后不再提示」这条真实分支。
+local function has_setup_hint()
+    for i = #stack, 1, -1 do
+        local w = stack[i]
+        if type(w) == "table" and type(w.text) == "string"
+            and w.text:find("还没有配置和风天气凭据", 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+-- 有凭据时不该弹（open() 里已经跑过一次 maybeShowSetupHint）
+if has_setup_hint() then
+    print("[FAIL] 已经配好凭据还弹「未配置」提示")
+    os.exit(1)
+end
+
+-- 注意：开发机上 dashboard_config.local.lua 是存在的，清 G_reader_settings 里的凭据
+-- 也会被文件层重新补上，所以这里直接打桩 getConfig 来构造"确实没有凭据"的状态。
+local real_get_config = instance.getConfig
+local function use_config(host, key)
+    instance.getConfig = function()
+        return { qweather = { api_host = host, api_key = key } }
+    end
+end
+
+-- 模拟 git clone 后的首次打开：没有凭据、没有"已提示"标记
+use_config("", "")
+G_reader_settings:saveSetting("dashboard_qw_hint_shown", nil)
+instance:maybeShowSetupHint()
+if not has_setup_hint() then
+    print("[FAIL] 缺凭据时没有提示走了降级源（用户不会知道空气质量是估算值）")
+    os.exit(1)
+end
+local stack_after_hint = #stack
+
+-- 第二次调用必须被"已提示"标记挡住
+instance:maybeShowSetupHint()
+if #stack ~= stack_after_hint then
+    print("[FAIL] 未配置提示会重复弹出，用户会被反复打扰")
+    os.exit(1)
+end
+
+-- 配好凭据后，即使把标记清掉也不该再弹
+use_config("stub.qweatherapi.com", "stub-key-0001")
+G_reader_settings:saveSetting("dashboard_qw_hint_shown", nil)
+instance:maybeShowSetupHint()
+if #stack ~= stack_after_hint then
+    print("[FAIL] 配好凭据后仍在提示未配置")
+    os.exit(1)
+end
+instance.getConfig = real_get_config
+EVENTS[#EVENTS + 1] = "== 未配置提示：缺凭据弹一次，配好后不再弹 =="
 
 print("---------- 事件序列 ----------")
 for _, e in ipairs(EVENTS) do print(e) end

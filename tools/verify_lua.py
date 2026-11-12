@@ -19,9 +19,24 @@ import lunar_check as ref
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLUGIN = os.path.join(ROOT, "dashboard.koplugin")
 
+# 必须随仓库分发的文件，缺一个就是错误
 LUA_FILES = ["main.lua", "_meta.lua", "dashboard_lunar.lua", "dashboard_cities.lua",
              "dashboard_qweather.lua", "dashboard_openmeteo.lua",
-             "dashboard_config.lua", "dashboard_config.local.lua"]
+             "dashboard_config.lua"]
+
+# 内含真实凭据，被 .gitignore 排除。git clone 下来没有它是**正常状态**——插件会
+# 自动降级到 Open-Meteo。所以这里只在文件存在时才检查，缺失只提示、不算失败，
+# 否则别人照 README 跑第一条命令就撞 FileNotFoundError。
+OPTIONAL_LUA_FILES = ["dashboard_config.local.lua"]
+
+
+def lua_files():
+    """实际要检查的文件名：必选的全在，可选的仅在存在时加入。"""
+    names = list(LUA_FILES)
+    for name in OPTIONAL_LUA_FILES:
+        if os.path.exists(os.path.join(PLUGIN, name)):
+            names.append(name)
+    return names
 
 
 # 这些字段在真机上可能是 ffi cdata：Blitbuffer 的 COLOR_* 都是 Color8/ColorRGB16 等
@@ -38,7 +53,7 @@ NIL_CMP = re.compile(r"\.(%s)\s*[=~]=\s*nil" % "|".join(CDATA_FIELDS))
 def lint_cdata_compare():
     print("=========== 0) 颜色字段判空写法 ===========")
     bad = []
-    for name in LUA_FILES:
+    for name in lua_files():
         path = os.path.join(PLUGIN, name)
         with open(path, encoding="utf-8") as f:
             for no, line in enumerate(f, 1):
@@ -58,7 +73,8 @@ def lint_cdata_compare():
 def syntax_check(lua):
     print("=========== 1) 语法检查 ===========")
     ok_all = True
-    for name in LUA_FILES:
+    files = lua_files()
+    for name in files:
         path = os.path.join(PLUGIN, name).replace("\\", "/")
         code = lua.execute(
             'local f, err = loadfile([==[%s]==]); if f then return "OK", "" else return "FAIL", err end' % path
@@ -67,6 +83,9 @@ def syntax_check(lua):
         print(f"[{status}] {name}" + (f"  -> {err}" if err else ""))
         if status != "OK":
             ok_all = False
+    for name in OPTIONAL_LUA_FILES:
+        if name not in files:
+            print(f"[SKIP] {name}（未配置凭据，属正常状态；插件会降级到 Open-Meteo）")
     return ok_all
 
 

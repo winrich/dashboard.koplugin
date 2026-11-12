@@ -33,7 +33,8 @@ kindle-dashboard/
 │  ├─ dashboard_qweather.lua    和风天气请求/解析、gzip 解压、现象代码映射
 │  ├─ dashboard_openmeteo.lua   降级数据源（和风不可用时兜底，免凭据）
 │  ├─ dashboard_config.lua      配置骨架（可入库，凭据留空）
-│  ├─ dashboard_config.local.lua 本机凭据（含 API Key，已被 .gitignore 排除）
+│  ├─ dashboard_config.local.lua 本机凭据（含 API Key，已被 .gitignore 排除，clone 后没有是正常的）
+│  ├─ dashboard_config.local.lua.example  上面那个文件的模板（可入库，值留空）
 │  ├─ dashboard_lunar.lua       农历换算 + 二十四节气 + 节气日期导出
 │  ├─ dashboard_cities.lua      34 个城市坐标 + 10 个时区
 │  ├─ _meta.lua                 插件元信息
@@ -47,24 +48,40 @@ kindle-dashboard/
    └─ gen_icons.py              天气图标生成器
 ```
 
-## 凭据配置（和风天气）
+## 凭据配置（和风天气，**可选**）
 
-数据来自和风天气开发服务，必须有 **API Host** 与 **API Key**（控制台 <https://console.qweather.com>：
-API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。两者的优先级从低到高：
+天气默认就能用：**不填任何凭据**时插件自动走 Open-Meteo 免凭据数据源，温度、现象、
+湿度、风力、日出日落、最高最低温都正常，只是空气质量由 PM2.5/PM10 浓度按 HJ 633-2012
+换算（估算值，非国标 AQI），页脚会标注「天气 Open-Meteo（降级）」。
+
+想要国标 AQI 与更贴合本地实况的数据，就配和风天气开发服务（控制台
+<https://console.qweather.com>：API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。
+凭据优先级从低到高：
 
 | 顺序 | 位置 | 适用场景 |
 |---|---|---|
 | 1 | `dashboard_config.lua` 的 `qweather` 字段 | 只作结构示例，默认留空 |
-| 2 | `dashboard_config.local.lua` | **真实凭据放这里**，不进版本库 |
+| 2 | `dashboard_config.local.lua` | **真实凭据放这里**，已被 `.gitignore` 排除 |
 | 3 | 设备菜单「天气服务 → 填写 API Host / 填写 API Key」 | 写入 KOReader 设置，改 key 不用插 USB |
 
-改完后重启 KOReader 生效；菜单里的「查看当前凭据」会显示 host、打码后的 key 以及 key 的实际来源，
-「测试连接」可立即验证凭据是否可用。
+`dashboard_config.local.lua` **不在版本库里**（它含 API Key），所以 `git clone` 下来
+是没有这个文件的，这是正常状态、不是缺文件。两种补法任选：
+
+- 复制 `dashboard_config.local.lua.example` 为 `dashboard_config.local.lua` 再填值；
+- 或直接在设备上填：设置 → 屏幕 → 屏保 → 桌面看板 → 天气服务（推荐，不用插 USB）。
+
+改完后重启 KOReader 生效；菜单里的「查看当前凭据」会显示 host、打码后的 key 以及 key
+的实际来源，「测试连接」可立即验证凭据是否可用。首次打开看板时若检测到没配凭据，
+会弹一次提示说明当前在用降级源，**只提示一次**。
+
+用 `tools/package.py` 打包成 zip 时，`dashboard_config.local.lua` 会被自动跳过，
+所以产物可以直接分享给别人，不会把你的 API Key 带出去（模板 `.example` 照常打包）。
 
 ## 部署（前提：设备已越狱并装好 KOReader）
 
-1. 确认 `dashboard_config.local.lua` 里已填好 API Host 与 API Key。
-2. USB 连接 Kindle，打开其存储根目录（本次实测为 `F:`）。
+1. （可选）填好和风凭据。跳过也能用，见上一节。
+2. USB 连接 Kindle，打开其存储根目录。盘符由电脑分配、每次插可能不一样：Windows 在
+   「此电脑」里看新出现的那个盘（可能是 `F:`、`G:` 或其他），macOS 是 `/Volumes/Kindle`。
 3. 把 `dashboard.koplugin` **整个目录**拷到 `koreader/plugins/` 下。
 4. 安全弹出，在设备上打开 KOReader。
 5. 菜单 -> 设置 -> 屏幕 -> 屏保 -> 桌面看板 -> 先选「选择城市」「选择时区」，再点「打开看板」。
@@ -272,7 +289,7 @@ MobileRead 上做 Kindle 屏保工具的开发者的原话：
 - **月历**：用纯整数日期运算（Howard Hinnant 的公历纪元算法）推当月首日星期与天数，不经过 `os.time()`，因此不受设备时区设置影响。
 - **时钟与时区**：本地时间由 `os.time() + 时区偏移` 推算，不依赖设备系统时区设置，因此改时区立即生效、不受固件时区库限制。
 - **额度**：免费订阅 5 万次/月；本插件每天约 48 次刷新 × 3 个接口 ≈ 4300 次/月，余量充足。
-- **降级**：和风拿不到数据（凭据失效、超时、解压失败）时自动改走 Open-Meteo
+- **降级**：和风拿不到数据（**根本没配凭据**、凭据失效、超时、解压失败）时自动改走 Open-Meteo
   （`api.open-meteo.com` 与 `air-quality-api.open-meteo.com`，免凭据、明文 JSON）。
   其 WMO 现象代码会映射成和风编号以复用同一套图标；空气质量只有 PM2.5/PM10 浓度，
   按 HJ 633-2012 换算。此时页脚显示「天气 Open-Meteo（降级）」，不会冒充和风的数据。
@@ -358,7 +375,7 @@ MobileRead 上做 Kindle 屏保工具的开发者的原话：
 | 休眠后屏幕停在「菜单」上 | 旧版本行为，本版会在进入休眠前先撤菜单；若仍出现，看 `crash.log` 里 `屏保接管失败` |
 | 内容超出屏幕 | 降低 `buildPortrait`/`buildLandscape` 里的间距值或字号 |
 | 温度一直是 `--°` | 菜单「天气服务 → 测试连接」看具体报错；`401` 多为 Key/Host 不匹配 |
-| 页脚显示「Open-Meteo（降级）」 | 和风那一路失败了（凭据了解/超时/解压失败），界面靠降级源撑着，先按上一行排查 |
+| 页脚显示「Open-Meteo（降级）」 | 要么从没配置和风凭据（正常，按「凭据配置」一节填即可），要么和风那一路失败了（凭据过期/超时/解压失败）。先点菜单「天气服务 → 查看当前凭据」看来源是不是 `未配置` |
 | 上划退不出去 | 确认装的是本版（触摸区注册在 `createRoot` 里）；`crash.log` 里若有 `registerTouchZones` 报错说明 KOReader 版本过旧 |
 | 提示「天气数据解压失败」 | libz 绑定不可用，看 `crash.log` 里的 `zlib 自检未通过` |
 | 提示「该凭据没有开通…权限」 | 控制台里该项目未开通「天气预报」或「空气质量」数据 |

@@ -1,0 +1,27 @@
+--[[--
+本机凭据模板 —— 复制成 dashboard_config.local.lua 后填值。
+
+    cp dashboard_config.local.lua.example dashboard_config.local.lua
+
+dashboard_config.local.lua 已被 .gitignore 排除，不会进版本库，可以放心写真实 key。
+（本文件带 .example 后缀，故意保持可以提交，方便别人知道该填什么。）
+
+不想插 USB 也可以不建这个文件，直接在看板菜单里填：
+设置 → 屏幕 → 屏保 → 桌面看板 → 天气服务 → 填写 API Host / 填写 API Key
+菜单写入的值优先级更高，会覆盖本文件。
+
+两个值都必须属于同一个和风项目，且该项目已开通「天气预报」与「空气质量」数据。
+不填也能用：插件会降级到 Open-Meteo（免凭据），只是空气质量变成浓度估算值。
+--]]
+
+return {
+    qweather = {
+        -- 控制台「设置」页，形如 abcxyz.qweatherapi.com（不要带 https://）
+        api_host = "",
+        -- 控制台「项目管理 → 凭据」里创建
+        api_key = "",
+        -- 以下两项仅用于备忘，程序不读
+        credential_id = "",
+        project = "",
+    },
+}

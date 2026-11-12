@@ -714,6 +714,39 @@ function Dashboard:open()
     self:refreshLayout()
     self:fetchWeather()
     self:scheduleTick()
+    self:maybeShowSetupHint()
+end
+
+--- 首次打开且没有可用凭据时，提示一次「当前在用降级数据源」。
+---
+--- 为什么需要：凭据缺失时 QWeather.fetch 会返回 nil 并由 Open-Meteo 兜底，界面一切
+--- 正常、只是页脚多一行小字。刚部署的人（尤其是从 git clone 后没放
+--- dashboard_config.local.lua 的）不会意识到自己在用估算的空气质量，也不会想到去配 key。
+---
+--- 只在「确实缺 host 或 key」且「从没提示过」时弹一次，配置好之后永久不再打扰。
+--- 标记写在 KOReader 全局设置里，卸载插件时随之失效，不需要额外清理。
+function Dashboard:maybeShowSetupHint()
+    local cfg = self:getConfig()
+    local qw = cfg.qweather or {}
+    local has_host = qw.api_host and qw.api_host ~= ""
+    local has_key = qw.api_key and qw.api_key ~= ""
+    if has_host and has_key then return end
+    if G_reader_settings:readSetting("dashboard_qw_hint_shown") then return end
+    -- 先落标记再弹窗：弹窗本身失败也不该反复弹
+    G_reader_settings:saveSetting("dashboard_qw_hint_shown", true)
+    if not UIManager or not InfoMessage then return end
+    pcall(function()
+        UIManager:show(InfoMessage:new{
+            text = _("还没有配置和风天气凭据。\n\n"
+                .. "当前天气走 Open-Meteo 降级源：温度、现象、湿度、风力、日出日落都正常，"
+                .. "但空气质量是由 PM2.5/PM10 浓度换算出的估算值，不是国标 AQI。\n\n"
+                .. "要改用和风天气：\n"
+                .. "设置 → 屏幕 → 屏保 → 桌面看板 → 天气服务，"
+                .. "填入 API Host 与 API Key（两者需属于同一个和风项目）。\n\n"
+                .. "此提示只出现一次。"),
+            timeout = 15,
+        })
+    end)
 end
 
 function Dashboard:close()
