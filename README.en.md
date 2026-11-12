@@ -148,10 +148,11 @@ does not touch the Kindle framework, and modifies no system files.
 ## Supporting this project
 
 The dashboard is written in spare time: free, no ads, no data collection. If it saves you some
-trouble, you can buy me a cup of tea — **updates continue either way, and every feature is
-available to everyone**.
+trouble, a thank-you is plenty — **every feature is available to everyone, tip or no tip**.
 
-<img src="assets/wechat-reward.jpg" width="240" alt="WeChat reward QR code">
+> The reward QR code is not kept in the repository: such images carry a personal nickname and a
+> payment account, and once committed they stay in a public repository's history forever.
+> Say hello in the Issues tab if you'd like to support the project.
 
 ---
 

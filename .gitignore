@@ -15,6 +15,11 @@ dist/
 backup/
 bkp/
 
+# ── 个人收款 / 赞赏码图片：图上有昵称与收款账户，不随代码公开 ──────
+assets/*reward*
+assets/*qrcode*
+assets/*pay*
+
 # ── 设备日志 / 排查临时物 ────────────────────────────────────────
 crash.log
 *.log

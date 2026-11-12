@@ -36,8 +36,22 @@ kindle-dashboard/
    ├─ render_board.py           出预览图（加 `en` 出英文版；时间锚定见文末）
    ├─ make_grid.py              把预览图拼成宫格总览图
    ├─ package.py                打包 zip（自动跳过凭据文件）
+   ├─ secret_check.py           提交前体检：凭据 / 本机路径 / 个人收款码
    └─ gen_icons.py              天气图标生成器
 ```
+
+提交钩子（每个 clone 各做一次，不做也能提交，只是没有自动拦截）：
+
+```
+git config core.hooksPath .githooks
+python tools/secret_check.py            # 手查已跟踪文件
+python tools/secret_check.py --staged   # 手查暂存区（钩子用的就是这条）
+python tools/secret_check.py --history  # 审计全部历史（慢，改完历史跑一次）
+```
+
+仓库是公开的：**push 之后内容就永久留在 GitHub 上**，事后删文件删不掉旧 commit。
+所以真凭据只放 `dashboard_config.local.lua`（已被忽略），代码里留空字符串；
+赞赏码这类带昵称/收款账户的图片也不入库。误报可在行尾加 `# secret-check: allow`。
 
 ---
 
