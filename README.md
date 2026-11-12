@@ -4,6 +4,15 @@
 当日天气（含图标）、湿度、风向风力、空气质量 AQI、日出日落。
 按屏幕方向自动切换版式，支持自选时区与国内直辖市/省会和港澳台城市。
 
+## 预览
+
+| 竖屏 1072×1448 | 横屏 1448×1072 |
+|---|---|
+| <img src="preview/portrait.png" width="210" alt="竖屏版式：城市条、大时钟与天气、农历大字、节气进度条、底部湿度风力 AQI"> | <img src="preview/landscape.png" width="380" alt="横屏版式：上半区时钟与天气，下半区左侧整月日历、右侧农历与节气"> |
+
+> 图由 `preview/board.html` 按设备像素尺寸渲染（不是照片），数据为演示值；真机是 300 ppi
+> 电子墨水屏，实际观感更接近印刷品，没有背光、对比度随环境光变化。
+
 ## 两种版式
 
 | 方向 | 版式 | 构成 |
@@ -39,12 +48,14 @@ kindle-dashboard/
 │  ├─ dashboard_cities.lua      34 个城市坐标 + 10 个时区
 │  ├─ _meta.lua                 插件元信息
 │  └─ icons/                    12 个单色天气图标（320×320 PNG，屏上显示约 150px）
+├─ preview/                     README 里的预览图（board.html 渲染 + 竖屏/横屏 PNG）
 └─ tools/                       开发期校验工具（不需要拷到设备）
-   ├─ run_stub.py               一键跑 4 种屏幕尺寸的冒烟测试
+   ├─ run_stub.py               一键跑 7 种尺寸/方向的冒烟测试
    ├─ stub_test.lua             KOReader API 桩，跑完整生命周期
    ├─ qweather_check.py         用真实凭据体检接口（不装机也能查）
    ├─ verify_lua.py             Lua 语法检查 + 与 Python 参考实现逐日比对
    ├─ lunar_check.py            农历/节气算法的基准校验
+   ├─ package.py                打包成 zip（自动跳过本机凭据文件）
    └─ gen_icons.py              天气图标生成器
 ```
 
