@@ -31,12 +31,15 @@ def grab(w, h, rotation=0):
         f'package.path = [[{PLUGIN}/?.lua;]] .. package.path\n'
         f'dofile([[{HERE}/stub_test.lua]])\n'
     )
+    # errors="replace"：桩件的 stderr 里可能混入 GBK 字节（Windows 版 python 的告警），
+    # 严格 utf-8 解码会让 stderr 变成 None，随后打印诊断信息时反而崩掉。
     out = subprocess.run([sys.executable, "-c", RUNNER, lua], cwd=ROOT,
-                         capture_output=True, text=True, encoding="utf-8")
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace")
     if out.returncode != 0:
-        raise SystemExit(f"桩件执行失败：\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}")
+        raise SystemExit(f"桩件执行失败：\n{(out.stdout or '')[-2000:]}\n{(out.stderr or '')[-2000:]}")
     items = []
-    for line in out.stdout.splitlines():
+    for line in (out.stdout or "").splitlines():
         if line.startswith("FRAME|"):
             parts = line.split("|")
             if parts[1] == "END":

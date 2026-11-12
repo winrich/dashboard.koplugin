@@ -35,6 +35,7 @@ local EN = {
     ["风力"] = "Wind",
     ["体感"] = "Feels",
     ["今天"] = "Today",
+    -- 明天 / 后天：留给「今日+三日」「一周预报」两个未上线组件，暂未被引用
     ["明天"] = "Tomorrow",
     ["后天"] = "In 2 days",
     ["更新于"] = "Updated",
@@ -45,15 +46,75 @@ local EN = {
     ["未配置"] = "Not configured",
     ["来源"] = "Source",
     ["项目"] = "Project",
-    ["距"] = "in",
 
     -- 空气质量等级（HJ 633-2012）
-    ["优"] = "Good",
-    ["良"] = "Moderate",
-    ["轻度污染"] = "Light",
-    ["中度污染"] = "Medium",
-    ["重度污染"] = "Heavy",
-    ["严重污染"] = "Severe",
+    -- 不用 Good/Moderate 这类单字：英文里 "Moderate" 会被读成「中等、还凑合」，
+    -- 而国标的「良」是仅次于优的第二档，含义正好反了，所以写成完整短语。
+    ["优"] = "Excellent",
+    ["良"] = "Good",
+    ["轻度污染"] = "Lightly polluted",
+    ["中度污染"] = "Moderately polluted",
+    ["重度污染"] = "Heavily polluted",
+    ["严重污染"] = "Severely polluted",
+
+    -- 天气现象（键必须与 dashboard_qweather.CONDITIONS 的中文描述完全一致）
+    -- 英文模式按天气代码反查这张表，而不是翻译接口返回的中文原文，
+    -- 这样「晴间多云」「雷阵雨伴有冰雹」这类长句也有稳定的对应词。
+    ["晴"] = "Clear",
+    ["多云"] = "Cloudy",
+    ["少云"] = "Mostly clear",
+    ["晴间多云"] = "Partly cloudy",
+    ["阴"] = "Overcast",
+    ["阵雨"] = "Showers",
+    ["强阵雨"] = "Heavy showers",
+    ["雷阵雨"] = "Thunderstorm",
+    ["强雷阵雨"] = "Severe thunderstorm",
+    ["雷阵雨伴冰雹"] = "Thunderstorm with hail",
+    ["小雨"] = "Light rain",
+    ["中雨"] = "Moderate rain",
+    ["大雨"] = "Heavy rain",
+    ["极端降雨"] = "Extreme rain",
+    ["毛毛雨"] = "Drizzle",
+    ["暴雨"] = "Rainstorm",
+    ["大暴雨"] = "Heavy rainstorm",
+    ["特大暴雨"] = "Extreme rainstorm",
+    ["冻雨"] = "Freezing rain",
+    ["小到中雨"] = "Light to moderate rain",
+    ["中到大雨"] = "Moderate to heavy rain",
+    ["大到暴雨"] = "Heavy rain to rainstorm",
+    ["暴雨到大暴雨"] = "Rainstorm to heavy rainstorm",
+    ["大暴雨到特大暴雨"] = "Heavy to extreme rainstorm",
+    ["雨"] = "Rain",
+    ["小雪"] = "Light snow",
+    ["中雪"] = "Moderate snow",
+    ["大雪"] = "Heavy snow",
+    ["暴雪"] = "Snowstorm",
+    ["雨夹雪"] = "Sleet",
+    ["雨雪天气"] = "Rain and snow",
+    ["阵雨夹雪"] = "Rain and snow showers",
+    ["阵雪"] = "Snow showers",
+    ["小到中雪"] = "Light to moderate snow",
+    ["中到大雪"] = "Moderate to heavy snow",
+    ["大到暴雪"] = "Heavy snow to snowstorm",
+    ["雪"] = "Snow",
+    ["薄雾"] = "Mist",
+    ["雾"] = "Fog",
+    ["霾"] = "Haze",
+    ["扬沙"] = "Blowing sand",
+    ["浮尘"] = "Dust",
+    ["沙尘暴"] = "Sandstorm",
+    ["强沙尘暴"] = "Severe sandstorm",
+    ["浓雾"] = "Dense fog",
+    ["强浓雾"] = "Thick fog",
+    ["中度霾"] = "Moderate haze",
+    ["重度霾"] = "Heavy haze",
+    ["严重霾"] = "Severe haze",
+    ["大雾"] = "Heavy fog",
+    ["特强浓雾"] = "Very thick fog",
+    ["热"] = "Hot",
+    ["冷"] = "Cold",
+    ["未知"] = "Unknown",
+    ["未知天气"] = "Unknown weather",
 
     -- 天气来源
     ["和风天气"] = "QWeather",
@@ -106,8 +167,11 @@ local EN = {
     ["已转回竖屏"] = "Back to portrait.",
 
     -- 页脚与提示
+    -- 英文比中文长得多（中文 26 个字，同义英文按字符算是两倍多），而页脚是
+    -- 「必须单行、绝不折行」的一行，所以这里刻意用短句：Swipe 只出现一次，
+    -- 后面直接跟去向/动作，否则字号会被压到 11 还放不下。
     ["点按刷新 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式"] =
-        "Tap: refresh · Swipe up: exit · Swipe down: menu · Swipe sideways: layout",
+        "Tap: refresh · Swipe up: exit · Swipe down: menu · Swipe: layout",
 
     -- 组件
     ["时钟与天气"] = "Clock & weather",
@@ -115,6 +179,8 @@ local EN = {
     ["三格状态"] = "Humidity / wind / AQI",
     ["月历"] = "Month calendar",
     ["侧栏三合一"] = "Side panel",
+    -- 以下 8 条是尚未上线的组件名（先备好译文，组件落地即可直接用）。
+    -- 它们暂时不会出现在代码里，i18n_check.py 会报「表内未使用」——属预期，勿删。
     ["今日+三日"] = "Today + 3 days",
     ["纯天气"] = "Weather only",
     ["大字时钟"] = "Big clock",
@@ -137,23 +203,25 @@ local EN = {
         "Project host from the console Settings page, e.g. abcxyz.qweatherapi.com (no https://)",
     ["控制台「项目管理 - 凭据」里创建，需与上面的 API Host 属于同一项目"] =
         "Create it under Console → Project → Credentials, in the same project as the host",
-    ["B 区（中 / 左下）"] = "Zone B (middle / lower-left)",
-    ["C 区（下 / 右下）"] = "Zone C (bottom / lower-right)",
     ["复制竖屏布局到横屏"] = "Copy portrait layout to landscape",
-    ["布局已复制"] = "Layout copied",
     ["恢复默认布局"] = "Restore default layout",
     ["默认"] = "default",
     ["语言 / Language"] = "Language / 语言",
     ["跟随 KOReader"] = "Follow KOReader",
-    ["中文"] = "中文",
-    ["English"] = "English",
-    ["界面语言已切换，重开看板生效"] = "Language changed. Reopen the dashboard to apply.",
+    -- 「中文」「English」这两项不走 T()：语言名一律用自身文字显示（切到英文时
+    -- 仍要能一眼找到「中文」才切得回去），所以词表里不该有它们。
 }
 
 -- 星期（1=周日 … 7=周六，与 Lunar.WEEKDAY_NAMES 同序）
 local WEEKDAY_EN = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
 local MONTH_EN = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }
+-- 月历表头用两字母，既能区分 Tue/Thu，又不会把格子撑宽
+local WEEKDAY_HEAD_EN = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" }
+local MONTH_FULL_EN = { "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December" }
+-- 风向（8 方位，与 main.lua 的 WIND_DIRS 同序：北起顺时针）
+local WIND_DIRS_EN = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" }
 
 -- 二十四节气英文名（按 Lunar.TERM_NAMES 的顺序：小寒起）
 local TERM_EN = {
@@ -287,6 +355,106 @@ function M.dateLine(now, short)
         return string.format("%d月%d日 星期%s", now.month, now.day, wd)
     end
     return string.format("%d年%d月%d日 星期%s", now.year, now.month, now.day, wd)
+end
+
+--- 城市名。城市数据里同时存了中文名与英文名，中文名是配置里的键，不能改。
+function M.city(c)
+    if type(c) ~= "table" then return "" end
+    if M.lang() == "en" and c.en then return c.en end
+    return c.name or ""
+end
+
+--- 时区名（菜单里显示的那一项）
+function M.tzName(t)
+    if type(t) ~= "table" then return "" end
+    if M.lang() == "en" and t.en then return t.en end
+    return t.name or ""
+end
+
+--- 生肖所在的年份：「蛇年」/「Year of the Snake」
+function M.zodiacYear(name)
+    if M.lang() == "en" then
+        local z = M.zodiac(name)
+        -- 认不出来（不是十二生肖之一）就原样返回，别拼出 "Year of the 未知"
+        if z == name then return name end
+        return "Year of the " .. z
+    end
+    return name .. "年"
+end
+
+--- 顶栏的时区标注：中文用 IANA 名（与设备设置里看到的一致，便于核对）；
+--- 英文用 UTC±N——英文用户看偏移比看 "Asia/Shanghai" 直观，而且短得多，
+--- 顶栏放得下才不会折成两行（折行会把 header 顶高，挤掉下面的内容）。
+function M.headerTz(t)
+    if type(t) ~= "table" then return "" end
+    if M.lang() ~= "en" then return t.iana or "" end
+    local off = tonumber(t.offset) or 0
+    local sign = off < 0 and "-" or "+"
+    off = math.abs(off)
+    local hh, mm = math.floor(off / 60), off % 60
+    if mm == 0 then
+        return string.format("UTC%s%d", sign, hh)
+    end
+    return string.format("UTC%s%d:%02d", sign, hh, mm)
+end
+
+--- 月历标题：中文「2026 年 11 月」，英文「November 2026」
+function M.monthTitle(now)
+    if M.lang() == "en" then
+        return string.format("%s %d", MONTH_FULL_EN[now.month] or "", now.year)
+    end
+    return string.format("%d 年 %d 月", now.year, now.month)
+end
+
+--- 月历表头（1=周日）：中文「日」，英文「Su」
+function M.weekdayHead(i)
+    if M.lang() == "en" then
+        return WEEKDAY_HEAD_EN[i] or ""
+    end
+    return require("dashboard_lunar").WEEKDAY_NAMES[i] or ""
+end
+
+--- 蒲福风级：中文「2 级」，英文「2 Bft」
+--- 注：英文不用 "Force 2"，看板上三格并排，字数越少越好读
+function M.windScale(n)
+    if n == nil then return nil end
+    if M.lang() == "en" then
+        return string.format("%s Bft", tostring(n))
+    end
+    return string.format("%s 级", tostring(n))
+end
+
+--- 风向：中文「东南风」，英文「SE wind」。deg 为风的来向角度。
+function M.windDir(deg)
+    local d = tonumber(deg)
+    if not d then return nil end
+    local idx = math.floor(((d % 360) + 22.5) % 360 / 45) + 1
+    if M.lang() == "en" then
+        local dir = WIND_DIRS_EN[idx]
+        return dir and (dir .. " wind") or nil
+    end
+    -- 中文方位表放在这里而不是 main.lua：两侧顺序必须严格一致，
+    -- 分开维护迟早会错位（WIND_DIRS 已随本函数迁出 main.lua）
+    local dir = ({ "北", "东北", "东", "东南", "南", "西南", "西", "西北" })[idx]
+    return dir and (dir .. "风") or nil
+end
+
+--- 节气进度单行：「立冬 第 6 天」/「Start of Winter · day 6」
+function M.termProgress(name, day)
+    day = day or 1
+    if M.lang() == "en" then
+        return string.format("%s · day %d", name, day)
+    end
+    return string.format("%s 第%d天", name, day)
+end
+
+--- 距下一个节气：「距小雪 12 天」/「12 days to Minor Snow」
+function M.termCountdown(name, days)
+    days = days or 0
+    if M.lang() == "en" then
+        return string.format("%d days to %s", days, name)
+    end
+    return string.format("距%s%d天", name, days)
 end
 
 M.EN = EN

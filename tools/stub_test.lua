@@ -165,7 +165,10 @@ function TextWidget:getSize()
     local w, lines = nat, 1
     if mw and mw > 0 and nat > mw then
         w = mw
-        lines = math.ceil(nat / mw)
+        -- truncate_with_ellipsis 与真机一致：只占一行，超出部分画省略号
+        if not self.truncate_with_ellipsis then
+            lines = math.ceil(nat / mw)
+        end
     end
     return {
         w = math.floor(w),
@@ -545,6 +548,30 @@ package.preload["gettext"] = function()
 end
 
 _G.G_reader_settings = G_settings
+
+-- 目视检查用（只在 dump 帧时生效，dump 完立刻撤销，不参与任何断言）：
+--   STUB_ZONES="clock_weather,calendar,stats_cells,clock_weather,calendar,side_panel"
+--     依次指定 竖屏 A/B/C + 横屏 A/B/C 的组件；
+--   STUB_LANG=en / zh 指定界面语言。
+-- 配合 STUB_FRAME=1 与 tools/render_png.py，就能把任意组合/语言画出来看。
+local _env_zones = os.getenv("STUB_ZONES")
+local _env_lang = os.getenv("STUB_LANG")
+if _env_zones and _env_zones ~= "" then
+    local t = {}
+    for part in _env_zones:gmatch("[^,]+") do t[#t + 1] = part end
+    if #t == 6 then
+        store["dashboard_components"] = {
+            portrait = { A = t[1], B = t[2], C = t[3] },
+            landscape = { A = t[4], B = t[5], C = t[6] },
+        }
+    else
+        print("[WARN] STUB_ZONES 需要 6 个逗号分隔的组件 id，已忽略")
+    end
+end
+if _env_lang == "en" or _env_lang == "zh" then
+    store["dashboard_lang"] = _env_lang
+end
+
 _G.unpack = _G.unpack or table.unpack
 
 -- 记录 os.execute，避免真的去调 lipc
@@ -560,6 +587,11 @@ package.path = plugin_dir .. "/?.lua;" .. package.path
 
 local plugin = assert(loadfile(plugin_dir .. "/main.lua"))()
 EVENTS[#EVENTS + 1] = "== 插件加载成功 =="
+
+-- 与 main.lua 同名的短别名：桩件里不少断言要「按当前语言的文案」去控件树里找，
+-- 直接比对中文字面量的话，切到英文就全找不到（本轮踩过）
+local I18n = require("dashboard_i18n")
+local T = I18n.T
 
 -- 桩件环境没有 ffi，dashboard_qweather 的 libz 解压走不通：
 -- 1) 先验证非 gzip 数据原样返回（这条分支不碰 ffi）
@@ -616,9 +648,10 @@ if not desk.separator then
 end
 local city_menu, tz_menu, weather_menu = nil, nil, nil
 for _, item in ipairs(desk.sub_item_table) do
-    if item.text == "选择城市" then city_menu = item end
-    if item.text == "选择时区" then tz_menu = item end
-    if item.text == "天气服务" then weather_menu = item end
+    -- 用 T() 取当前语言下的文案：桩件既要能跑中文，也要能跑 STUB_LANG=en
+    if item.text == T("选择城市") then city_menu = item end
+    if item.text == T("选择时区") then tz_menu = item end
+    if item.text == T("天气服务") then weather_menu = item end
 end
 local city_count = 0
 for _, g in ipairs(city_menu.sub_item_table) do
@@ -866,7 +899,7 @@ for _, it in ipairs(menu3.tab or {}) do
     -- 只认「版式」：恰好 3 项且首项是竖屏。不能只判首项含"竖屏"——
     -- 新增的「布局组件」首项是"竖屏布局"，会把匹配抢走（本轮踩过）。
     if it.sub_item_table and #it.sub_item_table == 3 and it.sub_item_table[1]
-        and it.sub_item_table[1].text:find("竖屏", 1, true) then
+        and it.sub_item_table[1].text:find(T("竖屏"), 1, true) then
         orient_item = it
     end
 end
@@ -884,7 +917,7 @@ end
 -- 当前方向要用文字标出来，否则用户看不出现在是哪个
 local marked = 0
 for _, sub in ipairs(orient_item.sub_item_table) do
-    if sub.text:find("当前", 1, true) then marked = marked + 1 end
+    if sub.text:find(T("（当前）"), 1, true) then marked = marked + 1 end
 end
 if marked ~= 1 then
     print("[FAIL] 版式菜单没有（或重复）标出「当前」方向")
@@ -940,7 +973,7 @@ instance.menu = nil
 local orient_item5
 for _, it in ipairs(menu5.tab or {}) do
     if it.sub_item_table and #it.sub_item_table == 3 and it.sub_item_table[1]
-        and it.sub_item_table[1].text:find("竖屏", 1, true) then
+        and it.sub_item_table[1].text:find(T("竖屏"), 1, true) then
         orient_item5 = it
     end
 end
@@ -1074,7 +1107,8 @@ for _, r in ipairs(RECORD) do
     if r.kind == "text" then
         local t = tostring(r.text)
         if t:find("78%", 1, true) then has_pct = true; pct_text = t end
-        if t:find("上划退出", 1, true) then has_hint = true; hint_text = t end
+        -- 判据取两语都有的 "Swipe up" / "上划退出"，靠 hintLine() 的真值更稳
+        if t == instance:hintLine() then has_hint = true; hint_text = t end
     end
 end
 if not has_pct then
@@ -1277,8 +1311,8 @@ if not near(w.tmin, 0.56) then mismatches[#mismatches + 1] = "最低温" end
 if not (instance.air and instance.air.aqi == 65) then
     mismatches[#mismatches + 1] = "AQI（应取国标 cn-mee=65）"
 end
-if shown.wind_dir ~= "南风" then
-    mismatches[#mismatches + 1] = "风向（185° 应为南风）"
+if shown.wind_dir ~= I18n.windDir(185) then
+    mismatches[#mismatches + 1] = "风向（185° 应为 " .. tostring(I18n.windDir(185)) .. "）"
 end
 if mismatches[1] then
     print("[FAIL] 字段不符: " .. table.concat(mismatches, "，"))
@@ -1308,7 +1342,7 @@ if w2.wind ~= 1 then bad[#bad + 1] = "风级（4.5 km/h 应为 1 级）" end
 if instance:airDisplay().text ~= "142" then
     bad[#bad + 1] = "降级 AQI（PM2.5 108.7 / PM10 111.5 应换算为 142）"
 end
-if instance:sourceLabel() ~= "天气 Open-Meteo（降级）" then bad[#bad + 1] = "来源标签" end
+if instance:sourceLabel() ~= T("天气 Open-Meteo（降级）") then bad[#bad + 1] = "来源标签" end
 if bad[1] then
     print("[FAIL] 降级字段不符: " .. table.concat(bad, "，"))
     os.exit(1)
@@ -1319,6 +1353,13 @@ EVENTS[#EVENTS + 1] = string.format(
     instance:airDisplay().text, tostring(instance:sourceLabel()))
 
 if _G.STUB_FRAME then dump_frame() end
+-- 渲染开关只在上面那次 dump 时有效：撤掉它，否则后面的「无设置应回落默认」
+-- 与中文文案断言会全部失败（这两个断言正是用来防止配置被悄悄改坏的）
+if _env_zones or _env_lang then
+    store["dashboard_components"] = nil
+    store["dashboard_lang"] = nil
+    require("dashboard_i18n").setLang("zh")
+end
 
 -- 关闭，检查状态恢复
 ok, err = pcall(function() instance:close() end)
@@ -1374,7 +1415,8 @@ local function has_setup_hint()
     for i = #stack, 1, -1 do
         local w = stack[i]
         if type(w) == "table" and type(w.text) == "string"
-            and w.text:find("还没有配置和风天气凭据", 1, true) then
+            -- 两种语言都提到 Open-Meteo，用它做判据，不绑死中文
+            and w.text:find("Open-Meteo", 1, true) then
             return true
         end
     end
@@ -1425,7 +1467,6 @@ instance.getConfig = real_get_config
 EVENTS[#EVENTS + 1] = "== 未配置提示：缺凭据弹一次，配好后不再弹 =="
 
 -- ================= 分区组件与多语言（v2.44）
-local I18n = require("dashboard_i18n")
 
 -- 1) 没有设置时，三区必须回落到默认组件（升级后视觉不变）
 local lay = instance:getZoneLayout()
@@ -1485,8 +1526,8 @@ EVENTS[#EVENTS + 1] = string.format("== 组件矩阵：%d 种组合逐一渲染�
 local menu_items = instance:genMenuItemTable()
 local layout_item, lang_item
 for _, it in ipairs(menu_items) do
-    if it.text and it.text:find("布局组件", 1, true) then layout_item = it end
-    if it.text and it.text:find("语言", 1, true) then lang_item = it end
+    if it.text and it.text:find(T("布局组件"), 1, true) then layout_item = it end
+    if it.text and it.text:find("Language", 1, true) then lang_item = it end
 end
 if not layout_item or #layout_item.sub_item_table ~= 4 then
     print("[FAIL] 布局组件菜单缺失或项数不对")
@@ -1523,12 +1564,97 @@ if I18n.dateLine({ year = 2026, month = 11, day = 12, wday = 4 }, true):find("No
     print("[FAIL] 英文日期行没有走本地化格式")
     os.exit(1)
 end
+-- 5b) 数据层的文案也必须跟着语言走（雾/霾、风力级、风向、AQI 等级、城市名）
+--     这些字符串来自接口或数据文件，不经 T() 就会在英文界面里留中文。
+instance.weather = {
+    code = 501, cond = "雾", temp = 10, tmin = 5, tmax = 12, hum = 60,
+    wind = 3, winddir = 135, feels = 8, sunrise = "06:50", sunset = "16:59",
+}
+instance.air = { aqi = 65, level = "良" }
+local wd_en = instance:weatherDisplay()
+local air_en = instance:airDisplay()
+local bad_en = {}
+if wd_en.cond ~= "Fog" then bad_en[#bad_en + 1] = "现象 " .. tostring(wd_en.cond) end
+if wd_en.wind ~= "3 Bft" then bad_en[#bad_en + 1] = "风级 " .. tostring(wd_en.wind) end
+if wd_en.wind_dir ~= "SE wind" then bad_en[#bad_en + 1] = "风向 " .. tostring(wd_en.wind_dir) end
+if air_en.level ~= "Good" then bad_en[#bad_en + 1] = "空气质量等级 " .. tostring(air_en.level) end
+if I18n.city(instance:getCity()) ~= "Beijing" then
+    bad_en[#bad_en + 1] = "城市 " .. tostring(I18n.city(instance:getCity()))
+end
+if I18n.tzName(instance:getTz()):find("Beijing Time") == nil then
+    bad_en[#bad_en + 1] = "时区 " .. tostring(I18n.tzName(instance:getTz()))
+end
+if I18n.monthTitle({ year = 2026, month = 11, day = 12, wday = 4 }) ~= "November 2026" then
+    bad_en[#bad_en + 1] = "月历标题 " .. I18n.monthTitle({ year = 2026, month = 11, day = 12, wday = 4 })
+end
+if I18n.weekdayHead(2) ~= "Mo" then bad_en[#bad_en + 1] = "月历表头" end
+if I18n.zodiacYear("马") ~= "Year of the Horse" then
+    bad_en[#bad_en + 1] = "生肖年份 " .. tostring(I18n.zodiacYear("马"))
+end
+if I18n.termProgress(I18n.term("立冬"), 5) ~= "Start of Winter · day 5" then
+    bad_en[#bad_en + 1] = "节气进度 " .. I18n.termProgress(I18n.term("立冬"), 5)
+end
+if I18n.termCountdown(I18n.term("小雪"), 11) ~= "11 days to Minor Snow" then
+    bad_en[#bad_en + 1] = "节气倒计时 " .. I18n.termCountdown(I18n.term("小雪"), 11)
+end
+if #bad_en > 0 then
+    print("[FAIL] 英文模式仍有中文残留：" .. table.concat(bad_en, "，"))
+    os.exit(1)
+end
+
 I18n.setLang("zh")
 if I18n.T("湿度") ~= "湿度" then
     print("[FAIL] 切回中文失败")
     os.exit(1)
 end
-EVENTS[#EVENTS + 1] = "== 多语言：英文本地化、未收录回落、切回中文 =="
+local wd_zh = instance:weatherDisplay()
+if wd_zh.cond ~= "雾" or wd_zh.wind ~= "3 级" or wd_zh.wind_dir ~= "东南风"
+    or instance:airDisplay().level ~= "良" then
+    print(string.format("[FAIL] 中文模式文案被改坏：%s / %s / %s / %s",
+        tostring(wd_zh.cond), tostring(wd_zh.wind), tostring(wd_zh.wind_dir),
+        tostring(instance:airDisplay().level)))
+    os.exit(1)
+end
+if I18n.city(instance:getCity()) ~= "北京" or I18n.weekdayHead(2) ~= "一" then
+    print("[FAIL] 中文模式的城市名或月历表头不对")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = "== 多语言：英文本地化、数据层文案、未收录回落、切回中文 =="
+
+-- 6) 月历列距：通用不变量是「任何宽度都不溢出」；PW3 上再验两条具体尺寸
+local S_cal = instance.scale or (SW / 600)
+for w = 400, 1500, 50 do
+    local cw, gp = instance:calendarMetrics(w, S_cal, 1)
+    if 7 * cw + 6 * gp > w then
+        print(string.format("[FAIL] 月历在宽 %d 下溢出：格宽 %d 列距 %d 总宽 %d",
+            w, cw, gp, 7 * cw + 6 * gp))
+        os.exit(1)
+    end
+end
+if SW == 1072 and SH == 1448 then
+    -- PW3 竖屏内容列 920：改之前是 644（两侧各空 138），现在应铺到 900 以上
+    local cw_p, gap_p = instance:calendarMetrics(920, S_cal, 1)
+    local p_total = 7 * cw_p + 6 * gap_p
+    if p_total < math.floor(920 * 0.94) then
+        print(string.format("[FAIL] 竖屏月历没铺开：格宽 %d 列距 %d 总宽 %d / 可用 920",
+            cw_p, gap_p, p_total))
+        os.exit(1)
+    end
+    if gap_p < math.floor(cw_p * 0.25) then
+        print(string.format("[FAIL] 竖屏月历列距太小：格宽 %d 列距 %d", cw_p, gap_p))
+        os.exit(1)
+    end
+    -- PW3 横屏 B 是 7×92=644，刚好铺满，此时不该再塞列距
+    local cw_l, gap_l = instance:calendarMetrics(644, S_cal, 1)
+    if gap_l ~= 0 or 7 * cw_l > 644 then
+        print(string.format("[FAIL] 横屏月历应维持铺满且无列距：格宽 %d 列距 %d",
+            cw_l, gap_l))
+        os.exit(1)
+    end
+    EVENTS[#EVENTS + 1] = string.format(
+        "== 月历列距：竖屏 格宽 %d + 列距 %d = %d/920，横屏 格宽 %d 铺满 644 ==",
+        cw_p, gap_p, p_total, cw_l)
+end
 
 print("---------- 事件序列 ----------")
 for _, e in ipairs(EVENTS) do print(e) end

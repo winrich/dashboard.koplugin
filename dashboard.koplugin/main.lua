@@ -111,7 +111,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.43"
+local DASHBOARD_VERSION = "2.44"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -169,9 +169,6 @@ end
 -- 按 (屏幕 - 2*边距) 排版，长横线跟着缩进，四边都有稳定白边。
 local EDGE_UNITS = 15
 local EDGE_MIN_PX = 15
-
--- 风向（8 方位）。和风返回角度，这里换算成中文方位；风级直接用接口给的 scale
-local WIND_DIRS = { "北", "东北", "东", "东南", "南", "西南", "西", "西北" }
 
 -- 空气质量回退用：HJ 633-2012 浓度限值 { 浓度下限, 浓度上限, IAQI 下限, IAQI 上限 }
 -- 服务端返回国标 AQI（cn-mee）时优先用服务端值，只有境外城市缺该项才走这张表
@@ -349,13 +346,16 @@ local COMPONENTS = {
 -- 收紧档位：只降字号，不换布局、不裁内容
 local K_LADDER = { 1, 0.94, 0.88, 0.82, 0.76 }
 
+-- 月历的横向铺排参数：
+--   列距 = 格宽 × CAL_GAP_RATIO（看起来是列与列之间透气，而不是把格子拉扁）
+--   格宽上限 = 行高 × CAL_ASPECT_MAX（再宽日号就在格子里浮起来了）
+local CAL_GAP_RATIO = 0.32
+local CAL_ASPECT_MAX = 1.62
+
 local Dashboard = WidgetContainer:extend{
     name = "dashboard",
     is_doc_only = false,
 }
-
--- 前置声明（实现在文件末尾的数据换算区，避免污染全局命名空间）
-local windDirName
 
 -- ------------------------------------------------------------------ 生命周期
 function Dashboard:init()
@@ -481,7 +481,8 @@ function Dashboard:genMenuItemTable()
         for _, c in ipairs(CityData.cities) do
             if c.group == g.key then
                 sub[#sub + 1] = {
-                    text = c.name,
+                    -- 只译显示名：checked/callback 仍用中文名做键，设置里存的也是它
+                    text = I18n.city(c),
                     checked_func = function() return self:getCityName() == c.name end,
                     callback = function() self:setCity(c.name) end,
                 }
@@ -494,7 +495,7 @@ function Dashboard:genMenuItemTable()
     local tz_items = {}
     for _, t in ipairs(CityData.timezones) do
         tz_items[#tz_items + 1] = {
-            text = t.name,
+            text = I18n.tzName(t),
             checked_func = function() return self:getTzIana() == t.iana end,
             callback = function() self:setTz(t.iana) end,
         }
@@ -1309,8 +1310,14 @@ function Dashboard:weatherDisplay()
 
     local meta = QWeather.condition(w.code)
     d.icon = meta[2]
-    -- 服务端给的中文现象更准（如“晴间多云”），缓存里没有时才用本地表
-    d.cond = w.cond or T(meta[1])
+    -- 中文模式优先用服务端给的现象（比本地表细，如“晴间多云有零星小雨”）；
+    -- 英文模式改用代码表反查：接口固定按 lang=zh 取数，中文原文无法逐条对译，
+    -- 而代码表覆盖全部现象，翻出来的是统一的标准说法。
+    if I18n.lang() == "en" then
+        d.cond = T(meta[1])
+    else
+        d.cond = w.cond or meta[1]
+    end
 
     if w.temp then
         d.temp = string.format("%d°", math.floor(w.temp + 0.5))
@@ -1328,8 +1335,8 @@ function Dashboard:weatherDisplay()
     -- 风向与风级分开返回：三格布局里数值只放“2 级”，风向作为小注，
     -- 否则“东南风 2 级”会超过单格宽度，跨过分隔线串到相邻格。
     -- 风级直接用和风返回的蒲福风级，不再由风速换算。
-    d.wind_dir = windDirName(w.winddir)
-    d.wind = w.wind and string.format("%d 级", w.wind) or nil
+    d.wind_dir = I18n.windDir(w.winddir)
+    d.wind = I18n.windScale(w.wind)
     d.sunrise = w.sunrise
     d.sunset = w.sunset
     return d
@@ -1347,7 +1354,9 @@ function Dashboard:airDisplay()
         return { text = "--", level = T("暂无数据") }
     end
     aqi = math.floor(aqi + 0.5)
-    local level = a.level
+    -- 服务端返回的等级是中文（优/良/轻度污染……），展示前过一遍词表；
+    -- 词表里没有的原样显示，不会变成 nil
+    local level = a.level and T(a.level) or nil
     if not level then
         -- 境外城市没有国标 AQI 时，才按 HJ 633-2012 分档
         if aqi <= 50 then level = T("优")
@@ -1772,6 +1781,9 @@ function Dashboard:makeText(ctx, str, px, opts)
         fgcolor = opts.gray and COLOR_GRAY or COLOR_BLACK,
         padding = 0,
         max_width = opts.max_width,
+        -- 顶栏这类「高度固定的一行」不能折行：折了就把 header 顶高，
+        -- 下面的三区预算全部跟着缩水。传 ellipsis 时改成像真机那样截断加省略号。
+        truncate_with_ellipsis = opts.ellipsis or nil,
     }
 end
 
@@ -2026,8 +2038,9 @@ function Dashboard:buildHeader(ctx, pad_lr)
     local min_fill = math.floor(16 * S)
     local left_w = math.floor(avail - right:getSize().w - min_fill)
     left_w = math.max(math.floor(avail * 0.35), left_w)
-    local left = self:makeText(ctx, string.format("%s · %s", self:getCityName(), ctx.tz.iana),
-        26, { max_width = left_w })
+    local left = self:makeText(ctx, string.format("%s · %s",
+        I18n.city(self:getCity()), I18n.headerTz(ctx.tz)), 26,
+        { max_width = left_w, ellipsis = true })
     local fill = math.max(min_fill, avail - left:getSize().w - right:getSize().w)
     return HorizontalGroup:new{
         align = "center",
@@ -2212,8 +2225,11 @@ function Dashboard:termText(ctx, with_next)
             return string.format("%s · starts today", cur), ratio, elapsed, remain
         end
         if with_next and ctx.next_term then
-            return string.format("%s · day %d · %d days to %s", cur, elapsed or 1,
-                remain or 0, I18n.term(ctx.next_term.name)), ratio, elapsed, remain
+            -- 不能写成 "%d days to %s"：中文这行只有 14 个字，英文同义句要 46 个
+            -- 字符，26 号字下会超出内容列宽（实测 1214 > 920）而被迫折行。
+            -- 下一个节气的名字在进度条右端已经标出，这里只说还剩几天。
+            return string.format("%s · day %d · %dd left", cur, elapsed or 1,
+                remain or 0), ratio, elapsed, remain
         end
         return string.format("%s · day %d", cur, elapsed or 1), ratio, elapsed, remain
     end
@@ -2268,12 +2284,11 @@ function Dashboard:compLunar(ctx, w, h, k)
     })
     push(mkPad(w, math.floor(2 * S * k)))
 
-    local zod = I18n.zodiac(Lunar.zodiac(ctx.lunar))
     local side = VerticalGroup:new{
         align = "left",
         self:makeText(ctx, Lunar.ganzhi_year(ctx.lunar), math.floor(30 * k)),
         mkPad(1, math.floor(4 * S * k)),
-        self:makeText(ctx, (I18n.lang() == "en") and zod or string.format("%s年", zod),
+        self:makeText(ctx, I18n.zodiacYear(Lunar.zodiac(ctx.lunar)),
             math.floor(22 * k), { gray = true }),
     }
     local big = self:makeText(ctx, Lunar.month_day_text(ctx.lunar), math.floor(54 * k))
@@ -2289,7 +2304,11 @@ function Dashboard:compLunar(ctx, w, h, k)
     local term_text, ratio = self:termText(ctx, true)
     push(HorizontalGroup:new{
         align = "center",
-        self:makeText(ctx, term_text, math.floor(26 * k)),
+        -- 两处都为了英文：同一句英文的字符数是中文的三倍左右。
+        -- ① 字号 26→23：实测 26 号时该行占 878/920，真机 ASCII 略宽就会折行；
+        -- ② max_width 兜底：不给上限时它连 1214 都敢画出去（溢出屏幕）。
+        self:makeText(ctx, term_text,
+            math.floor((I18n.lang() == "en" and 23 or 26) * k), { max_width = w }),
     })
     push(mkPad(w, math.floor(10 * S * k)))
     push(HorizontalGroup:new{
@@ -2326,18 +2345,47 @@ function Dashboard:compStats(ctx, w, h, k)
     })
 end
 
---- 月历：格子边长受盒宽与盒高双重约束，宁可居中留白也不把格子拉扁
+--- 月历的格宽与列距。抽成独立方法是为了让桩件能直接断言排布，
+--- 不必通过「渲染一遍再猜树里的宽度」来验证。
+--- 返回：格宽、列距、行高（三者都是像素）
+function Dashboard:calendarMetrics(w, S, k)
+    k = k or 1
+    local row_h = math.floor(36 * S * k)
+    -- 基准格宽：先按字号给（52 设计单位），再被盒宽压住，最后兜一个下限
+    local base = math.min(math.floor(52 * S * k), math.floor(w / 7))
+    base = math.max(math.floor(34 * S * k), base)
+    -- 铺满目标：7·cw + 6·(ratio·cw) = w  →  cw = w / (7 + 6·ratio)
+    -- 竖屏内容列 920 时算出 103（原来固定 92，两侧各空 138）：现在列距 32、总宽 913
+    -- 横屏内容列 630 时算出 70 < base 90，于是仍按 90 铺满、列距为 0（维持原样）
+    local by_fill = math.floor(w / (7 + 6 * CAL_GAP_RATIO))
+    local cell_w = math.max(base, math.min(by_fill, math.floor(row_h * CAL_ASPECT_MAX)))
+    -- 兜底：盒子窄到放不下 7×最小格宽时，宁可压缩格子也不许溢出（白名单里
+    -- 月历只允许进宽区，这条分支实际走不到，但不该留一个会破版的漏洞）
+    cell_w = math.min(cell_w, math.max(1, math.floor(w / 7)))
+    local col_gap = self:calendarGap(w, cell_w)
+    return cell_w, col_gap, row_h
+end
+
+--- 给定盒宽与格宽，算出还能给多少列距（不会把总宽撑出盒子）
+function Dashboard:calendarGap(w, cell_w)
+    local slack = (w - 7 * cell_w) / 6
+    local gap = math.min(cell_w * CAL_GAP_RATIO, slack)
+    if gap <= 0 then return 0 end
+    return math.floor(gap)
+end
+
+--- 月历：格子边长受字号与盒宽双重约束；富余的横向空间优先给列距，
+--- 这样 7 列会铺开到接近内容列宽，而不是挤在中间、两侧各空一大片。
 function Dashboard:compCalendar(ctx, w, h, k)
-    local S = ctx.S
-    local cell_w = math.min(math.floor(52 * S * k), math.floor(w / 7))
-    cell_w = math.max(math.floor(34 * S * k), cell_w)
-    local cal = self:buildCalendar(ctx, cell_w, k)
-    -- 行高是 6 行固定量：装不下时按比例压格子，公式与 buildCalendar 内部一致
+    local cell_w, col_gap = self:calendarMetrics(w, ctx.S, k)
+    local cal = self:buildCalendar(ctx, cell_w, k, col_gap)
+    -- 行高是 6 行固定量：装不下时按比例压格子，列距同步重算
     local need = cal:getSize().h
     if need > h and need > 0 then
         local ratio = h / need
-        cell_w = math.max(math.floor(20 * S), math.floor(cell_w * math.sqrt(ratio)))
-        cal = self:buildCalendar(ctx, cell_w, k)
+        cell_w = math.max(math.floor(20 * ctx.S), math.floor(cell_w * math.sqrt(ratio)))
+        col_gap = self:calendarGap(w, cell_w)
+        cal = self:buildCalendar(ctx, cell_w, k, col_gap)
     end
     return cal
 end
@@ -2348,9 +2396,11 @@ function Dashboard:compSidePanel(ctx, w, h, k)
 end
 
 --- 整月日历：周一起始、跨月补位、今天反白、节气日带点
-function Dashboard:buildCalendar(ctx, cell_w, kf)
+function Dashboard:buildCalendar(ctx, cell_w, kf, col_gap)
     -- kf 是密度系数：盒子装不下时整体收紧字号与行高，格子宽度由调用方先给
+    -- col_gap 是列与列之间的空隙（像素），由 compCalendar 按盒宽算好后传进来
     kf = kf or 1
+    col_gap = col_gap or 0
     local S = ctx.S * kf
     local function mt(str, px, opts)
         return self:makeText(ctx, str, math.floor(px * kf), opts)
@@ -2380,17 +2430,18 @@ function Dashboard:buildCalendar(ctx, cell_w, kf)
     local lines = {}
     lines[#lines + 1] = HorizontalGroup:new{
         align = "center",
-        mt(string.format("%d 年 %d 月", now.year, now.month), 22, { gray = true }),
+        mt(I18n.monthTitle(now), 22, { gray = true }),
     }
     lines[#lines + 1] = mkPad(1, math.floor(4 * S))
 
-    -- 表头：一 二 三 四 五 六 日
+    -- 表头：一 二 三 四 五 六 日（英文为 Su Mo Tu We Th Fr Sa）
     local head = { align = "center" }
     for i = 0, 6 do
         local wd = (2 + i - 1) % 7 + 1
         local is_weekend = (wd == 1 or wd == 7)
+        if i > 0 and col_gap > 0 then head[#head + 1] = mkPad(col_gap, 1) end
         head[#head + 1] = mkBox(cell_w, head_h, self:makeText(ctx,
-            Lunar.WEEKDAY_NAMES[wd] or "", 18, { gray = is_weekend }))
+            I18n.weekdayHead(wd), 18, { gray = is_weekend }))
     end
     lines[#lines + 1] = HorizontalGroup:new(head)
 
@@ -2398,6 +2449,7 @@ function Dashboard:buildCalendar(ctx, cell_w, kf)
     for r = 0, 5 do
         local row = { align = "center" }
         for c = 0, 6 do
+            if c > 0 and col_gap > 0 then row[#row + 1] = mkPad(col_gap, 1) end
             local idx = r * 7 + c
             local daynum = first + idx - lead
             if idx < lead or daynum >= first + month_len then
@@ -2459,7 +2511,6 @@ function Dashboard:buildSidePanel(ctx, width, kf, max_h)
     local function mt(str, px, opts)
         return self:makeText(ctx, str, math.floor(px * kf), opts)
     end
-    local S = ctx.S
     local ratio, elapsed, remain = self:solarTermRatio(ctx)
     local d = self:weatherDisplay()
     local air = self:airDisplay()
@@ -2470,14 +2521,14 @@ function Dashboard:buildSidePanel(ctx, width, kf, max_h)
         mkPad(1, math.floor(2 * S)),
         mt(Lunar.month_day_text(ctx.lunar), 32),
         mkPad(1, math.floor(4 * S)),
-        mt(string.format("%s · %s年", Lunar.ganzhi_year(ctx.lunar),
-            Lunar.zodiac(ctx.lunar)), 20, { gray = true }),
+        mt(string.format("%s · %s", Lunar.ganzhi_year(ctx.lunar),
+            I18n.zodiacYear(Lunar.zodiac(ctx.lunar))), 20, { gray = true }),
         mkPad(1, math.floor(8 * S)),
         Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
         mkPad(1, math.floor(8 * S)),
         mt(T("节气"), 18, { gray = true }),
         mkPad(1, math.floor(2 * S)),
-        mt(string.format("%s 第%d天", ctx.cur_term.name, elapsed or 1), 26),
+        mt(I18n.termProgress(I18n.term(ctx.cur_term.name), elapsed or 1), 26),
         mkPad(1, math.floor(6 * S)),
         ProgressBar:new{
             dimen = Geom:new{ w = math.floor(width * 0.82), h = math.max(8, math.floor(10 * S)) },
@@ -2486,7 +2537,7 @@ function Dashboard:buildSidePanel(ctx, width, kf, max_h)
         },
         mkPad(1, math.floor(4 * S)),
         mt(ctx.next_term
-            and string.format("%s%s %d 天", T("距"), ctx.next_term.name, remain)
+            and I18n.termCountdown(I18n.term(ctx.next_term.name), remain)
             or "", 18, { gray = true }),
         mkPad(1, math.floor(8 * S)),
         Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
@@ -2550,14 +2601,6 @@ function Dashboard:hintLine()
 end
 
 -- ------------------------------------------------------------------ 数据换算
---- 风向角度 -> 中文方位（如“东南风”）。风级由接口直接给，这里不再换算
-function windDirName(deg)
-    local d = tonumber(deg)
-    if not d then return nil end
-    local idx = math.floor(((d % 360) + 22.5) % 360 / 45) + 1
-    return (WIND_DIRS[idx] or "") .. "风"
-end
-
 --- 单项 IAQI（线性插值，HJ 633-2012）
 local function calcIAQI(conc, breakpoints)
     if not conc then return nil end
