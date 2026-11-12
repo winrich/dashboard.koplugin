@@ -50,8 +50,12 @@ python tools/secret_check.py --history  # 审计全部历史（慢，改完历�
 ```
 
 仓库是公开的：**push 之后内容就永久留在 GitHub 上**，事后删文件删不掉旧 commit。
-所以真凭据只放 `dashboard_config.local.lua`（已被忽略），代码里留空字符串；
-赞赏码这类带昵称/收款账户的图片也不入库。误报可在行尾加 `# secret-check: allow`。
+所以真凭据只放 `dashboard_config.local.lua`（已被忽略），代码里留空字符串。
+
+`assets/wechat-reward.jpg` 是例外：赞赏码本身要展示给读者，但图里**不能带微信昵称**
+（原图底带印着「Henry 的赞赏码」，已改写成只写「赞赏码」）。以后换图必须同样处理，
+确认干净后在 `tools/secret_check_allow.txt` 里放过该路径，否则钩子会把它拦下来。
+误报可在行尾加 `# secret-check: allow`。
 
 ---
 

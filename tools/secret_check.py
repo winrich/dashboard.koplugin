@@ -121,9 +121,10 @@ def scan_text(rel, text, rules, allows, findings, note=""):
     tag = f"（{note}）" if note else ""
     # 文件名规则
     base = os.path.basename(rel)
-    for code, desc, rx in [(c, d, re.compile(p)) for c, d, p in NAME_RULES]:
-        if rx.search(base) or rx.search(rel):
-            findings.append((rel, 0, code, desc + tag, rel))
+    if not any(a.search(rel) for a in allows):
+        for code, desc, rx in [(c, d, re.compile(p)) for c, d, p in NAME_RULES]:
+            if rx.search(base) or rx.search(rel):
+                findings.append((rel, 0, code, desc + tag, rel))
     for lineno, line in enumerate(text.splitlines(), 1):
         if ALLOW_MARK in line:
             continue
