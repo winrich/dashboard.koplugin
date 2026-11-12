@@ -167,11 +167,12 @@ local EN = {
     ["已转回竖屏"] = "Back to portrait.",
 
     -- 页脚与提示
-    -- 英文比中文长得多（中文 26 个字，同义英文按字符算是两倍多），而页脚是
-    -- 「必须单行、绝不折行」的一行，所以这里刻意用短句：Swipe 只出现一次，
-    -- 后面直接跟去向/动作，否则字号会被压到 11 还放不下。
+    -- 英文必须比中文更短：中文 32 个字在 13 号字下已经占满 918/920，英文按字符数
+    -- 是中文的两倍多，写成 "Swipe up: exit · Swipe down: menu · Swipe: layout" 这种
+    -- 完整句会被压到 11 号还是差一点（实测 1012 > 920）。所以三个方向合成一条，
+    -- 只保留一次 "Swipe"。
     ["点按刷新 · 点卡片展开 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式"] =
-        "Tap: refresh · Tap card: list · Swipe up: exit · Swipe down: menu · Swipe: layout",
+        "Tap: refresh · Card: list · Swipe up/down/side: exit/menu/layout",
 
     -- 组件
     ["时钟与天气"] = "Clock & weather",
