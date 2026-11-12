@@ -178,8 +178,13 @@ function TextWidget:getSize()
     }
 end
 function TextWidget:paintTo(bb, x, y)
+    -- 顺手记下 fgcolor：预览图要分清正文（黑）与注释（灰），否则两层字一样黑、看不出层次。
+    -- 断言不读这个字段，真机上它是 Color8 cdata，这里只认 number。
+    local c = self.fgcolor
+    if type(c) ~= "number" then c = 0 end
     RECORD[#RECORD + 1] = { kind = "text", text = tostring(self.text or ""), x = x, y = y,
-                            w = math.floor(self:getSize().w), h = math.floor(self:getSize().h) }
+                            w = math.floor(self:getSize().w), h = math.floor(self:getSize().h),
+                            color = c }
 end
 function TextWidget:setText(text)
     if text == self.text then return end
@@ -617,6 +622,51 @@ _G.G_reader_settings = G_settings
 --     依次指定 竖屏 A/B/C + 横屏 A/B/C 的组件；
 --   STUB_LANG=en / zh 指定界面语言。
 -- 配合 STUB_FRAME=1 与 tools/render_png.py，就能把任意组合/语言画出来看。
+
+-- 预览专用注入（tools/render_board.py 出 README 图时用）：全部走环境变量，
+-- 不设就完全不起作用，也不参与任何断言。真机上这几项来自
+-- Device:getPowerDevice() / NetworkMgr / DocSettings，桩件默认没有，
+-- 出图时就是「电量 -- · 网络 --」，不好看也不像真机。
+--   STUB_POWER="58"            电量百分比；"58,charging" 表示充电中
+--   STUB_WIFI="on|off|down"    WiFi 已连接 / 未开启 / 开着但没连上
+--   STUB_READING="1"           注入一本「三体」当作在读文档
+-- 包一层 do…end：桩件主 chunk 已经贴着 Lua 的 200 个局部变量上限，
+-- 这里多出来的几个名字必须在块结束时回收，否则后面再加东西就编不过。
+do
+    local _env_power = os.getenv("STUB_POWER")
+    if _env_power and _env_power ~= "" and _G.STUB_POWERD then
+        local cap_s, flag = _env_power:match("^(%-?%d+),?(%a*)$")
+        if tonumber(cap_s) then
+            -- 直接改桩件的 powerd，别拦 Device：断言读的是同一个表，
+            -- 只改 getCapacity 会得到「界面 58 / 断言 78」这种自欺欺人的结果。
+            _G.STUB_POWERD.capacity = tonumber(cap_s)
+            _G.STUB_POWERD.charging = (flag == "charging")
+        end
+    end
+
+    local _env_wifi = os.getenv("STUB_WIFI")
+    if _env_wifi == "on" or _env_wifi == "off" or _env_wifi == "down" then
+        NetworkMgr.isWifiOn = function() return _env_wifi ~= "off" end
+        NetworkMgr.isConnected = function() return _env_wifi == "on" end
+    end
+
+    if os.getenv("STUB_READING") then
+        package.preload["docsettings"] = function()
+            return { open = function(_, _path)
+                return { readSetting = function(_, key)
+                    if key == "stats" then
+                        return { title = "三体（全集）", authors = "刘慈欣", pages = 1203 }
+                    elseif key == "percent_finished" then
+                        return 0.37
+                    end
+                    return nil
+                end }
+            end }
+        end
+        G_settings:saveSetting("lastfile", "/mnt/us/documents/三体（全集）.epub")
+    end
+end
+
 local _env_zones = os.getenv("STUB_ZONES")
 local _env_lang = os.getenv("STUB_LANG")
 if _env_zones and _env_zones ~= "" then
@@ -1180,18 +1230,23 @@ for _, r in ipairs(rows) do
 end
 
 -- 电量与操作提示必须真的出现在画面上（不是只写进代码）
+-- 期望值跟桩件的 powerd 走，不写死 "78%"：预览要改电量（STUB_POWER）时才不会
+-- 出现「界面 58 / 断言 78」的自相矛盾。不另起局部变量——主 chunk 已到 200 上限。
 local has_pct, has_hint = false, false
 local pct_text, hint_text
 for _, r in ipairs(RECORD) do
     if r.kind == "text" then
         local t = tostring(r.text)
-        if t:find("78%", 1, true) then has_pct = true; pct_text = t end
+        if t:find(tostring(_G.STUB_POWERD.capacity) .. "%", 1, true) then
+            has_pct = true; pct_text = t
+        end
         -- 判据取两语都有的 "Swipe up" / "上划退出"，靠 hintLine() 的真值更稳
         if t == instance:hintLine() then has_hint = true; hint_text = t end
     end
 end
 if not has_pct then
-    print("[FAIL] 画面上没有电量百分比（桩件电量 78%）")
+    print("[FAIL] 画面上没有电量百分比（桩件电量 "
+        .. tostring(_G.STUB_POWERD.capacity) .. "%）")
     os.exit(1)
 end
 if not has_hint then
@@ -1525,7 +1580,17 @@ EVENTS[#EVENTS + 1] = string.format(
     tostring(w2.cond), w2.temp, w2.code, tostring(w2.sunrise), tostring(w2.sunset),
     instance:airDisplay().text, tostring(instance:sourceLabel()))
 
-if _G.STUB_FRAME then dump_frame() end
+if _G.STUB_FRAME then
+    -- 预览模式：上面那条降级用例刚把数据换成 Open-Meteo，直接出图会得到一张
+    -- 「天气 Open-Meteo（降级）」的版面。出图前切回和风重拉一次，按正常数据重排。
+    if os.getenv("STUB_PREVIEW") then
+        _G.STUB_QW_FAIL = false
+        instance.weather, instance.air = nil, nil
+        pcall(function() instance:fetchWeather(true) end)
+        if instance.shown then pcall(function() instance:refreshLayout() end) end
+    end
+    dump_frame()
+end
 -- 渲染开关只在上面那次 dump 时有效：撤掉它，否则后面的「无设置应回落默认」
 -- 与中文文案断言会全部失败（这两个断言正是用来防止配置被悄悄改坏的）
 if _env_zones or _env_lang then
@@ -1642,6 +1707,9 @@ local function fake_ds(title, authors, pages, pct)
 end
 
 local ds_calls = 0
+-- 换模块前必须清缓存：出预览图时（STUB_READING）前面已经 require 过一次 docsettings，
+-- package.loaded 里躺着那个假 DocSettings，这里光换 package.preload 是不生效的。
+package.loaded["docsettings"] = nil
 package.preload["docsettings"] = function()
     return {
         open = function(_, path)

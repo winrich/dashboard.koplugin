@@ -426,7 +426,7 @@ end
 
 --- 横屏下半区宽度：左 B（7 个日历格宽）/ 右 C（吃掉剩余）/ 中间竖线
 function Dashboard:lowerWidths(avail, S)
-    local gap = math.floor(ZONE_SPEC.landscape.gap * S)
+    local gap = self:lowerVGap(S)
     local vline_w = math.max(2, math.floor(3 * S))
     local right_min = math.floor(330 * S)
     local cell_w = math.min(math.floor(52 * S),
@@ -435,6 +435,14 @@ function Dashboard:lowerWidths(avail, S)
     local bw = cell_w * 7
     local cw = math.max(math.floor(260 * S), avail - bw - gap * 2 - vline_w)
     return bw, cw, vline_w
+end
+
+--- 竖线两侧的留白。
+--- 水平分隔线用 4 个设计单位就够了（那是条线，不挨字），但竖线两边紧挨着正文：
+--- 在读卡的书名、空气明细的 AQI 都会几乎压到线上（实测只剩 7 px，等于贴着）。
+--- 单独给到 10 个设计单位，B/C 两栏都跟着退回一点，宽度由 lowerWidths 同步扣掉。
+function Dashboard:lowerVGap(S)
+    return math.floor(ZONE_SPEC.landscape.gap * 2.6 * S)
 end
 
 -- ------------------------------------------------------------------ 生命周期
@@ -2404,6 +2412,7 @@ function Dashboard:buildLandscape(ctx)
     -- 下半区：左 B / 竖线 / 右 C。宽度由可用空间反推——固定列宽在 300ppi 的
     -- 1448px 屏上会让右栏被挤出屏幕，所以 B 的列宽先算，C 吃掉剩下的。
     local bw, cw, vline_w = self:lowerWidths(avail, S)
+    local vgap = self:lowerVGap(S)
     local lower_h = math.floor(spec.lower * S)
 
     local left = self:buildZone(ctx, "landscape", "B", bw, bw, lower_h)
@@ -2412,9 +2421,9 @@ function Dashboard:buildLandscape(ctx)
         align = "top",
         mkPad(pad, 1),
         left,
-        mkPad(gap, 1),
+        mkPad(vgap, 1),
         Solid:new{ dimen = Geom:new{ w = vline_w, h = lower_h }, color = COLOR_BLACK },
-        mkPad(gap, 1),
+        mkPad(vgap, 1),
         right,
         mkPad(pad, 1),
     })
@@ -2748,7 +2757,15 @@ function Dashboard:compToday3d(ctx, w, h, k)
                 { gray = true }),
         }
     end
-    return spreadRows(blocks, w)
+    -- 等宽单元格再居中：按内容宽度平分留白的话，横屏 A 区 1276 宽会摊出
+    -- 三个 200 px 的大豁口（今日块本来就比「明天/后天/周六」宽），看着像四块散落。
+    -- 切成 w/4 的等宽格子，每块在自己格里居中，节奏就匀了。
+    local cell_w = math.floor(w / #blocks)
+    local cells = { align = "center" }
+    for _, b in ipairs(blocks) do
+        cells[#cells + 1] = mkBox(cell_w, 1, b, { align = "center", auto_h = true })
+    end
+    return HorizontalGroup:new(cells)
 end
 
 --- 一周预报：横屏 A 区又宽又矮，排 7 列；其余场合逐行排（更像列表，好扫）。
@@ -2803,6 +2820,9 @@ function Dashboard:compWeek(ctx, w, h, k)
     -- 七行的右边缘会参差不齐（渲染图里一眼就能看出来）。
     local hi_w = self:makeText(ctx, "-20°", math.floor(hi_px * k)):getSize().w
     local lo_w = self:makeText(ctx, "-20°", math.floor(lo_px * k)):getSize().w
+    -- 降水概率也要定宽：0% 与 10% 差 17 px，不定宽的话「有概率的行」整行左移，
+    -- 七行的温度列就对不成一条竖线（预览图里 777/760/760 三档错位）。
+    local pop_w = self:makeText(ctx, "100%", math.floor(17 * k)):getSize().w
     local rows = { align = "center" }
     for i, day in ipairs(days) do
         local di = math.floor(icon_du * S * k)
@@ -2816,15 +2836,13 @@ function Dashboard:compWeek(ctx, w, h, k)
             { align = "right", auto_h = true })
         local lo = mkBox(lo_w, 1, self:makeText(ctx, degText(day.tmin), math.floor(lo_px * k),
             { gray = true }), { align = "right", auto_h = true })
-        local pop
-        if day.pop then
-            pop = self:makeText(ctx, string.format("%d%%", math.floor(day.pop + 0.5)),
-                math.floor(17 * k), { gray = true })
-        end
+        -- 没有降水概率的日子留一个等宽空格子，保证七行的列宽完全一致
+        local pop = mkBox(pop_w, 1, day.pop and self:makeText(ctx,
+            string.format("%d%%", math.floor(day.pop + 0.5)),
+            math.floor(17 * k), { gray = true }) or nil, { align = "left", auto_h = true })
         local gap1 = math.floor(12 * S * k)
         local gap2 = math.floor(10 * S * k)
-        local used = label_w + di + gap1 + hi_w + gap2 + lo_w
-        if pop then used = used + gap2 + pop:getSize().w end
+        local used = label_w + di + gap1 + hi_w + gap2 + lo_w + gap2 + pop_w
         -- 图标摆整行中间，留白分成前后两段。
         -- 之前是「图标紧贴日期、留白全塞在图标和温度之间」，920 宽的竖屏上
         -- 图标和温度之间空出 330 px，看着像图标漏在左边、右侧一大片白。
@@ -2839,11 +2857,7 @@ function Dashboard:compWeek(ctx, w, h, k)
             fill2 = slack - fill1
         end
         local row = { align = "center", label, mkPad(fill1, 1), icon, mkPad(fill2, 1), hi,
-            mkPad(gap2, 1), lo }
-        if pop then
-            row[#row + 1] = mkPad(gap2, 1)
-            row[#row + 1] = pop
-        end
+            mkPad(gap2, 1), lo, mkPad(gap2, 1), pop }
         if i > 1 then rows[#rows + 1] = mkPad(1, math.floor(row_gap * S * k)) end
         rows[#rows + 1] = HorizontalGroup:new(row)
     end
@@ -2975,12 +2989,24 @@ function Dashboard:compAirDetail(ctx, w, h, k)
     if primary then
         sub = sub .. " · " .. T("首要") .. " " .. I18n.pollutant(primary)
     end
-    local rows = {
+    -- 给个「AQI」标签：光一个 65 摆在版面上没人知道是啥（三格状态那边也是标签在上）。
+    -- 但窄盒里要能去掉——横屏 B 区只有 553 高，带标签就得整块缩字号（实测 588>543），
+    -- 所以两种头都备着，装不下就退到没标签那版。
+    local head_full = VerticalGroup:new{
+        align = "left",
+        self:makeText(ctx, "AQI", math.floor(17 * k), { gray = true }),
+        mkPad(1, math.floor(2 * S * k)),
+        self:makeText(ctx, air.text or "--", math.floor(56 * k)),
+        self:makeText(ctx, sub, math.floor(21 * k), { gray = true, max_width = w }),
+        mkPad(1, math.floor(12 * S * k)),
+    }
+    local head_bare = VerticalGroup:new{
         align = "left",
         self:makeText(ctx, air.text or "--", math.floor(56 * k)),
         self:makeText(ctx, sub, math.floor(21 * k), { gray = true, max_width = w }),
         mkPad(1, math.floor(12 * S * k)),
     }
+    local rows = { align = "left" }
 
     -- 六项按 POLLUTANT_ORDER 轮询：缺哪项就补一格 "--"，格子不错位。
     -- 浓度格式跟着单位走：mg/m³（CO）保留一位小数，μg/m³ 取整——
@@ -3029,7 +3055,12 @@ function Dashboard:compAirDetail(ctx, w, h, k)
             rows[#rows + 1] = mkPad(1, math.floor(8 * S * k))
         end
     end
-    return VerticalGroup:new(rows)
+    local grid = VerticalGroup:new(rows)
+    local out = VerticalGroup:new{ align = "left", head_full, grid }
+    if out:getSize().h > h then
+        out = VerticalGroup:new{ align = "left", head_bare, grid }
+    end
+    return out
 end
 
 --- 电量网络（C 区）：电量百分比（充电中另有标注）+ WiFi 开关与连接状态
