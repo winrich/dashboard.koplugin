@@ -10,10 +10,11 @@
   · 2 倍超采样后降采样，文字边缘不会有锯齿。
 
 数据注入走桩件的环境变量（STUB_POWER / STUB_WIFI / STUB_READING / STUB_PREVIEW），
-只在出图时生效，测试不受影响。
+只在出图时生效，测试不受影响。「现在」由本文件的 ANCHOR 钉死（含 STUB_NOW 注入），
+否则每跑一次时钟和「更新于」都会变，README 的图天天换脸。
 
 用法（项目根目录）：
-    python tools/render_board.py                # 出全部 10 张中文图到 preview/
+    python tools/render_board.py                # 中文全量：首图 portrait.png + 五竖五横
     python tools/render_board.py en             # 出全部 10 张英文图到 preview/en/
     python tools/render_board.py en landscape   # 英文 + 只出横屏
     python tools/render_board.py portrait       # 只出竖屏（中文）
@@ -40,6 +41,12 @@ PLUGIN = "dashboard.koplugin"
 NATIVE_W, NATIVE_H = 1072, 1448
 SCALE = 2                    # 超采样倍数
 BLACK, GRAY = 0, 105         # 桩件里的 COLOR_BLACK=255 / COLOR_DARK_GRAY=85
+
+# 出图锚点：日期和时刻都钉死。真机时钟走的是系统时间，不钉的话每次出图都是一个新的
+# 时刻，README 的图会天天换脸，文章里「写这段的时候，屏幕上是十月初四」也会对不上。
+# 16:18 = 十月初四 / 立冬第 6 天 / 距小雪 10 天（2026-11-12）。
+ANCHOR = datetime.datetime(2026, 11, 12, 16, 18,
+                           tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
 
 FONT_CANDIDATES = [
     r"C:\Windows\Fonts\msyh.ttc",
@@ -153,11 +160,11 @@ def lua_str(s):
 
 
 def agenda_block(agenda):
-    """把样例倒数日 / 待办写成 Lua 表，日期按「今天」现算。
+    """把样例倒数日 / 待办写成 Lua 表，日期一律相对 ANCHOR 现算。
 
     写死日期的话，过几天出图就会变成「已过 30 天」，README 里的图看着像坏了。
     """
-    today = datetime.date.today()
+    today = ANCHOR.date()
 
     def day(off):
         return (today + datetime.timedelta(days=off)).isoformat()
@@ -189,6 +196,7 @@ def grab(w, h, rot, zones, lang, power, wifi, reading, agenda=""):
                STUB_ZONES=",".join(zones),
                STUB_LANG=lang,
                STUB_PREVIEW="1",
+               STUB_NOW=str(int(ANCHOR.timestamp())),
                STUB_POWER=power,
                STUB_WIFI=wifi,
                STUB_READING=reading)
@@ -371,6 +379,13 @@ PRESETS = [
                 "clock_big", "countdown", "todo"]),
 ]
 
+# README 首图用的排法，不属于上面五套预设：竖屏「时钟天气 / 农历节气 / 三格」。
+# 横屏首图就是 landscape-1（zones 一模一样），出完图拷一份改名 landscape.png。
+MAIN_PORTRAIT = dict(id="portrait", orient="portrait",
+                     title="主推 · 时钟天气 / 农历节气 / 三格",
+                     zones=["clock_weather", "lunar_term", "stats_cells",
+                            "clock_weather", "lunar_term", "stats_cells"])
+
 # 倒数日 / 待办样例。第二个字段是「距今天几天」，出图时现算日期。
 AGENDA = {
     "events": [
@@ -442,6 +457,11 @@ def main():
     # 不指定语言时保持老行为：只出中文，不覆盖已有的英文图
     for lang in (langs or ["zh"]):
         done = 0
+        # 首图只出中文（README.en.md 用的是 portrait-1 / landscape-1），
+        # 且只在「出全部图」时补，单独出某个方向时不多写文件
+        if lang == "zh" and not only_orient and not only_idx:
+            render(MAIN_PORTRAIT, lang)
+            done += 1
         # 每个方向单独编号：加了第 5 套之后再用「i <= 4」判断会把 landscape 的第 1 套算成 5
         seen = {"portrait": 0, "landscape": 0}
         for p in PRESETS:
@@ -453,6 +473,9 @@ def main():
                 continue
             render(p, lang)
             done += 1
+        if lang == "zh" and not only_orient and not only_idx:
+            shutil.copyfile(os.path.join(OUT_DIR, "landscape-1.png"),
+                            os.path.join(OUT_DIR, "landscape.png"))
         where = os.path.join(OUT_DIR, "en") if lang == "en" else OUT_DIR
         print(f"\n[{lang}] 共 {done} 张，输出目录：{where}")
 

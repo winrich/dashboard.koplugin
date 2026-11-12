@@ -826,6 +826,24 @@ os.execute = function(cmd)
     return 0
 end
 
+-- 出图时把「现在」钉在 STUB_NOW（UTC 秒）。时钟和「更新于 16:18」都取 os.time()，
+-- 不钉的话每次出图的时刻都不一样，README 的图天天换脸。注意必须传**真**的时间戳
+-- （而不是把本地钟面转成秒），localNow 是「os.time() + 时区偏移再按 UTC 格式化」，
+-- 传假值会整体偏出一个时区。只在这条环境变量存在时生效，测试不受影响。
+-- 写成立即执行函数是为了不占顶层 local（主 chunk 的 local 已顶到 200 上限）。
+(function()
+    local fixed = tonumber(os.getenv("STUB_NOW") or "")
+    if not fixed then return end
+    local real_time, real_date = os.time, os.date
+    os.time = function(t)
+        if t == nil then return fixed end
+        return real_time(t)
+    end
+    os.date = function(fmt, t)
+        return real_date(fmt, t or fixed)
+    end
+end)()
+
 ---------------------------------------------------------------- 执行测试
 local plugin_dir = arg and arg[1] or "dashboard.koplugin"
 package.path = plugin_dir .. "/?.lua;" .. package.path
