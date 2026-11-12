@@ -1,0 +1,93 @@
+{
+ "latitude": 39.89455,
+ "longitude": 116.35983,
+ "generationtime_ms": 0.21076202392578125,
+ "utc_offset_seconds": 0,
+ "timezone": "GMT",
+ "timezone_abbreviation": "GMT",
+ "elevation": 52.0,
+ "current_units": {
+  "time": "iso8601",
+  "interval": "seconds",
+  "temperature_2m": "°C",
+  "relative_humidity_2m": "%",
+  "apparent_temperature": "°C",
+  "weather_code": "wmo code",
+  "wind_speed_10m": "km/h",
+  "wind_direction_10m": "°"
+ },
+ "current": {
+  "time": "2026-11-12T05:15",
+  "interval": 900,
+  "temperature_2m": 10.4,
+  "relative_humidity_2m": 73,
+  "apparent_temperature": 8.8,
+  "weather_code": 0,
+  "wind_speed_10m": 3.8,
+  "wind_direction_10m": 161
+ },
+ "daily_units": {
+  "time": "iso8601",
+  "weather_code": "wmo code",
+  "temperature_2m_max": "°C",
+  "temperature_2m_min": "°C",
+  "sunrise": "iso8601",
+  "sunset": "iso8601"
+ },
+ "daily": {
+  "time": [
+   "2026-11-12",
+   "2026-11-13",
+   "2026-11-14",
+   "2026-11-15",
+   "2026-11-16",
+   "2026-11-17",
+   "2026-11-18"
+  ],
+  "weather_code": [
+   45,
+   0,
+   3,
+   3,
+   3,
+   3,
+   1
+  ],
+  "temperature_2m_max": [
+   11.3,
+   12.2,
+   12.3,
+   11.1,
+   8.0,
+   8.4,
+   4.3
+  ],
+  "temperature_2m_min": [
+   2.0,
+   3.0,
+   3.9,
+   4.5,
+   2.0,
+   0.3,
+   -1.0
+  ],
+  "sunrise": [
+   "2026-11-11T22:55",
+   "2026-11-12T22:56",
+   "2026-11-13T22:57",
+   "2026-11-14T22:59",
+   "2026-11-15T23:00",
+   "2026-11-16T23:01",
+   "2026-11-17T23:02"
+  ],
+  "sunset": [
+   "2026-11-12T09:01",
+   "2026-11-13T09:00",
+   "2026-11-14T08:59",
+   "2026-11-15T08:58",
+   "2026-11-16T08:58",
+   "2026-11-17T08:57",
+   "2026-11-18T08:56"
+  ]
+ }
+}

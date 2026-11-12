@@ -288,26 +288,79 @@ function UIManager:askForRestart() end
 -- 上划退出的关闭动作被推迟到 nextTick，桩件里直接同步执行
 function UIManager:nextTick(fn) fn() end
 
--- 真实和风天气响应样本（2026-11-11 北京实测抓取的字段结构，数值保持原样）。
--- 三个接口各一份，用来验证「gzip -> 解压 -> JSON 解析 -> 展示字段」整条链路。
+-- 和风天气响应样本。**结构与 2026-11-12 实测抓取的一致**（真实原文已脱敏存
+-- tools/fixtures/*.json），数值换成整数便于断言。三个接口各一份，用来验证
+-- 「gzip -> 解压 -> JSON 解析 -> 展示字段」整条链路。
+--
+-- 结构要点（都是实测踩出来的）：
+--   · daily 的每一天**没有 date 字段**，日期只能从 forecastStartTime 取
+--   · astro 里除日出日落还有月升月落与 moonPhase，只有和风给
+--   · 空气的 CO 单位是 mg/m³，其余是 μg/m³，不能统一硬写
 local QW_SAMPLES = {
     -- /weather/v1/current/
     ['current'] = '{"condition":{"text":"晴","code":"100"},'
-        .. '"temperature":{"value":13.19,"unit":"\194\176C"},'
-        .. '"feelsLike":{"value":10.16,"unit":"\194\176C"},'
+        .. '"temperature":{"value":13.19,"unit":"°C"},'
+        .. '"feelsLike":{"value":10.16,"unit":"°C"},'
         .. '"humidity":0.44,'
         .. '"wind":{"direction":{"degree":185,"compass":"s"},'
         .. '"speed":{"value":3.38,"unit":"m/s"},"scale":2}}',
-    -- /weather/v1/daily/（localTime=true，时间带 +08:00）
-    ['daily'] = '{"days":[{"astro":{"sunrise":"2026-11-11T06:54+08:00",'
-        .. '"sunset":"2026-11-11T17:02+08:00"},'
-        .. '"temperatureMax":{"value":14.1,"unit":"\194\176C"},'
-        .. '"temperatureMin":{"value":0.56,"unit":"\194\176C"}}]}',
-    -- /airquality/v1/current/（国标 AQI 65，PM2.5 42 / PM10 70）
+    -- /weather/v1/daily/?days=7（localTime=true，时间带 +08:00）
+    ['daily'] = '{"days":['
+        .. '{"forecastStartTime":"2026-11-11T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-11T06:54+08:00","sunset":"2026-11-11T17:02+08:00",'
+        .. '"moonrise":"2026-11-11T09:52+08:00","moonset":"2026-11-11T18:41+08:00",'
+        .. '"solarNoon":"2026-11-11T11:58+08:00","moonPhase":"waxing-crescent"},'
+        .. '"temperatureMax":{"value":14.1,"unit":"°C"},'
+        .. '"temperatureMin":{"value":0.56,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"晴","code":"100"},'
+        .. '"precipitation":{"probability":0,"amount":{"value":0,"unit":"mm"}}},'
+        .. '"nighttime":{"condition":{"text":"夜","code":"150"}}}'
+        .. ',{"forecastStartTime":"2026-11-12T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-12T06:55+08:00","sunset":"2026-11-12T17:01+08:00",'
+        .. '"moonPhase":"waxing-crescent"},'
+        .. '"temperatureMax":{"value":15.2,"unit":"°C"},'
+        .. '"temperatureMin":{"value":1.2,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"霾","code":"502"},'
+        .. '"precipitation":{"probability":10,"amount":{"value":0,"unit":"mm"}}}}'
+        .. ',{"forecastStartTime":"2026-11-13T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-13T06:56+08:00","sunset":"2026-11-13T17:00+08:00"},'
+        .. '"temperatureMax":{"value":13.4,"unit":"°C"},'
+        .. '"temperatureMin":{"value":2.6,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"多云","code":"101"},'
+        .. '"precipitation":{"probability":20,"amount":{"value":0.2,"unit":"mm"}}}}'
+        .. ',{"forecastStartTime":"2026-11-14T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-14T06:57+08:00","sunset":"2026-11-14T16:59+08:00"},'
+        .. '"temperatureMax":{"value":12.0,"unit":"°C"},'
+        .. '"temperatureMin":{"value":3.0,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"阴","code":"104"}}}'
+        .. ',{"forecastStartTime":"2026-11-15T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-15T06:58+08:00","sunset":"2026-11-15T16:58+08:00"},'
+        .. '"temperatureMax":{"value":10.5,"unit":"°C"},'
+        .. '"temperatureMin":{"value":2.0,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"小雨","code":"305"}}}'
+        .. ',{"forecastStartTime":"2026-11-16T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-16T06:59+08:00","sunset":"2026-11-16T16:57+08:00"},'
+        .. '"temperatureMax":{"value":9.1,"unit":"°C"},'
+        .. '"temperatureMin":{"value":-1.0,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"晴","code":"100"}}}'
+        .. ',{"forecastStartTime":"2026-11-17T00:00+08:00",'
+        .. '"astro":{"sunrise":"2026-11-17T07:00+08:00","sunset":"2026-11-17T16:56+08:00"},'
+        .. '"temperatureMax":{"value":11.8,"unit":"°C"},'
+        .. '"temperatureMin":{"value":0.2,"unit":"°C"},'
+        .. '"daytime":{"condition":{"text":"多云","code":"101"}}}'
+        .. ']}',
+    -- /airquality/v1/current/（国标 AQI 65，6 项污染物齐全，CO 是 mg/m³）
     ['air'] = '{"indexes":[{"code":"cn-mee","name":"AQI (CN)","aqi":65,'
-        .. '"category":"\232\137\175"}],'
-        .. '"pollutants":[{"code":"pm2p5","concentration":{"value":42.0}},'
-        .. '{"code":"pm10","concentration":{"value":70.0}}]}',
+        .. '"category":"良","primaryPollutant":{"code":"pm2p5",'
+        .. '"name":"PM 2.5"}}],'
+        .. '"pollutants":['
+        .. '{"code":"pm2p5","name":"PM 2.5","concentration":{"value":42.0,"unit":"μg/m³"}},'
+        .. '{"code":"pm10","name":"PM 10","concentration":{"value":70.0,"unit":"μg/m³"}},'
+        .. '{"code":"no2","name":"NO2","concentration":{"value":31.0,"unit":"μg/m³"}},'
+        .. '{"code":"o3","name":"O3","concentration":{"value":50.0,"unit":"μg/m³"}},'
+        .. '{"code":"so2","name":"SO2","concentration":{"value":4.0,"unit":"μg/m³"}},'
+        .. '{"code":"co","name":"CO","concentration":{"value":0.8,"unit":"mg/m\194\179"}}'
+        .. ']}',
 }
 
 -- Lua <-> Python 之间只传 ASCII 的 hex，避免二进制被 UTF-8 转码破坏
@@ -333,14 +386,24 @@ function ltn12.sink.table(t)
     end
 end
 
--- Open-Meteo 降级样本（2026-11-11 北京实测抓取，明文不压缩——正好也验证明文直通分支）
+-- Open-Meteo 降级样本（结构照 2026-11-12 实测抓取，明文不压缩——正好也验证
+-- 明文直通分支）。daily 里是 7 个平行数组，按 weekday 顺序对齐；
+-- 空气给 6 项，其中 CO 是 μg/m³（和风是 mg/m³），解析时该除以 1000。
 local OM_SAMPLES = {
     forecast = '{"current":{"temperature_2m":10.0,"relative_humidity_2m":74,'
         .. '"apparent_temperature":8.2,"weather_code":0,"wind_speed_10m":4.5,'
         .. '"wind_direction_10m":185},'
-        .. '"daily":{"temperature_2m_max":[11.2],"temperature_2m_min":[1.2],'
-        .. '"sunrise":["2026-11-10T22:54"],"sunset":["2026-11-11T09:01"]}}',
-    air = '{"current":{"pm10":111.5,"pm2_5":108.7}}',
+        .. '"daily":{"time":["2026-11-11","2026-11-12","2026-11-13","2026-11-14",'
+        .. '"2026-11-15","2026-11-16","2026-11-17"],'
+        .. '"weather_code":[0,3,45,61,71,95,2],'
+        .. '"temperature_2m_max":[11.2,12.0,10.4,8.8,6.1,9.0,13.3],'
+        .. '"temperature_2m_min":[1.2,2.0,0.4,-1.8,-3.1,0.0,2.2],'
+        .. '"sunrise":["2026-11-10T22:54","2026-11-11T22:55","2026-11-12T22:56",'
+        .. '"2026-11-13T22:57","2026-11-14T22:58","2026-11-15T22:59","2026-11-16T23:00"],'
+        .. '"sunset":["2026-11-11T09:01","2026-11-12T09:00","2026-11-13T08:59",'
+        .. '"2026-11-14T08:58","2026-11-15T08:57","2026-11-16T08:56","2026-11-17T08:56"]}}',
+    air = '{"current":{"pm10":111.5,"pm2_5":108.7,"carbon_monoxide":2634.0,'
+        .. '"nitrogen_dioxide":78.7,"sulphur_dioxide":26.0,"ozone":17.0}}',
 }
 
 -- 服务端强制 gzip，桩件也照做：返回真实压缩字节，而不是明文 JSON
@@ -778,6 +841,10 @@ EVENTS[#EVENTS + 1] = "== 休眠（看板已打开）：复用当前画面，唤
 -- 时钟控件必须真的挂在控件树里。纵向拉伸会反复试算版式，而 buildPortrait 每次
 -- 都会把 self.clock_widget 指向当次建的控件——一旦留着被否决那一版，
 -- tick 就在刷新一棵没显示的树，钟会彻底停住（画面看不出来，日志也没错）。
+--
+-- 前提是「当前版式里确实有时钟组件」：把 A 区换成大字时钟、纯天气、在读卡之后，
+-- 版式里可能一个时钟都没有（比如 纯天气 + 空气明细 + 日月）。那种情况下
+-- clock_widget 应该保持 nil，而不是指向一个上一版留下的控件。
 local function in_tree(node, target, depth)
     if node == target then return true end
     if type(node) ~= "table" or depth > 6 then return false end
@@ -787,12 +854,24 @@ local function in_tree(node, target, depth)
     end
     return false
 end
-if not instance.clock_widget or not in_tree(instance.root, instance.clock_widget, 0) then
-    print("[FAIL] 时钟控件不在控件树里（重排时选错了那一版，时钟将不再刷新）")
+local layout_now = instance:getZoneLayout()
+local orient_now = instance.layout_landscape and "landscape" or "portrait"
+local has_clock = false
+for _, key in ipairs({ "A", "B", "C" }) do
+    local comp = instance:componentRegistry()[layout_now[orient_now][key]]
+    if comp and comp.has_clock then has_clock = true end
+end
+if has_clock then
+    if not instance.clock_widget or not in_tree(instance.root, instance.clock_widget, 0) then
+        print("[FAIL] 版式里有钟，但时钟控件不在控件树里（重排时选错了那一版，时钟将不再刷新）")
+        os.exit(1)
+    end
+elseif instance.clock_widget then
+    print("[FAIL] 版式里没有钟，却还留着 clock_widget 引用（会在旧树上刷新）")
     os.exit(1)
 end
-EVENTS[#EVENTS + 1] = string.format("== 时钟控件在树内，纵向拉伸档位 vk=%.2f ==",
-    instance.vk or 1)
+EVENTS[#EVENTS + 1] = string.format("== 时钟控件在树内（版式含钟 = %s），纵向拉伸档位 vk=%.2f ==",
+    tostring(has_clock), instance.vk or 1)
 
 -- 手势：框架不认 onTap/onHold，只有注册成触摸区才会派发事件
 local zone_list = instance.root._zones or {}
@@ -1234,11 +1313,17 @@ end
 EVENTS[#EVENTS + 1] = string.format("== 操作提示为 1 行（字号 %d，自然宽 %d / 上限 %d）==",
     hu.px, hu.w, hu.max_w)
 
--- 模拟跨分钟 tick
-local texts_before = RECORD[#RECORD]
+-- 模拟跨分钟 tick。
+-- 版式里可能没有钟（纯天气 / 在读卡 / 日月 这类组合），这时 clock_widget 为 nil，
+-- 断言要跟着版式走，否则一换组件就得改测试。
 instance:tick()
-EVENTS[#EVENTS + 1] = string.format("== tick() 通过，时钟控件文本 = %s，定时器 = %d ==",
-    instance.clock_widget.text, #timers)
+if instance.clock_widget then
+    EVENTS[#EVENTS + 1] = string.format("== tick() 通过，时钟控件文本 = %s，定时器 = %d ==",
+        instance.clock_widget.text, #timers)
+else
+    EVENTS[#EVENTS + 1] = string.format(
+        "== tick() 通过（版式无钟，跳过时钟文本），定时器 = %d ==", #timers)
+end
 
 -- 唤醒宽限期：休眠之后天气必然过期，如果唤醒第一拍 tick 就去同步拉取，
 -- 正好卡在用户按电源键的那一刻（http.TIMEOUT = 20 秒，最坏能卡一分多钟）
@@ -1319,6 +1404,71 @@ if mismatches[1] then
     os.exit(1)
 end
 
+-- 七日预报与 6 项污染物（v2.45 数据层）。
+-- 只验 AQI 是不够的：预报组件吃的是 weather.daily，「空气明细」吃的是 air.parts，
+-- 这两处少一天/少一项，界面上就是一片 "--"，必须在这里卡住。
+local daily = w.daily
+if type(daily) ~= "table" then
+    print("[FAIL] weather.daily 缺失（七日预报没解析出来）")
+    os.exit(1)
+end
+if #daily ~= 7 then
+    print(string.format("[FAIL] weather.daily 应有 7 天，实际 %d 天", #daily))
+    os.exit(1)
+end
+local d1 = daily[1]
+local date_ok = type(d1.date) == "table" and d1.date.y == 2026
+    and d1.date.m == 11 and d1.date.d == 11
+if not date_ok then
+    print("[FAIL] daily[1].date 没从 forecastStartTime 取对（接口没有 date 字段）")
+    os.exit(1)
+end
+if not near(d1.tmax, 14.1) or not near(d1.tmin, 0.56) then
+    print("[FAIL] daily[1] 最高/最低温不对")
+    os.exit(1)
+end
+if d1.sunrise ~= "06:54" or d1.sunset ~= "17:02" then
+    print("[FAIL] daily[1] 日出日落不对: " .. tostring(d1.sunrise) .. "/" .. tostring(d1.sunset))
+    os.exit(1)
+end
+if d1.moonphase ~= "waxing-crescent" then
+    print("[FAIL] daily[1].moonphase 没解析出来: " .. tostring(d1.moonphase))
+    os.exit(1)
+end
+if d1.cond ~= "晴" or d1.ncond ~= "夜" then
+    print("[FAIL] daily[1] 白天/夜间现象不对: "
+        .. tostring(d1.cond) .. "/" .. tostring(d1.ncond))
+    os.exit(1)
+end
+
+local parts = instance.air and instance.air.parts
+if type(parts) ~= "table" or #parts ~= 6 then
+    print(string.format("[FAIL] air.parts 应有 6 项污染物，实际 %s",
+        type(parts) == "table" and tostring(#parts) or "缺失"))
+    os.exit(1)
+end
+local co
+for _, p in ipairs(parts) do
+    if p.code == "co" then co = p end
+end
+if not co then
+    print("[FAIL] air.parts 里没有 CO")
+    os.exit(1)
+end
+if co.unit ~= "mg/m³" then
+    print("[FAIL] CO 单位应为 mg/m³，实际 " .. tostring(co.unit))
+    os.exit(1)
+end
+if instance.air.primary ~= "pm2p5" then
+    print("[FAIL] 首要污染物应取 indexes[0].primaryPollutant = pm2p5，实际 "
+        .. tostring(instance.air.primary))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 数据层：daily %d 天（首日 %04d-%02d-%02d %s），污染物 %d 项（CO %s %s），首要 %s ==",
+    #daily, d1.date.y, d1.date.m, d1.date.d, tostring(d1.cond), #parts,
+    tostring(co.value), tostring(co.unit), tostring(instance.air.primary))
+
 -- 降级路径：和风整体失败 -> Open-Meteo，来源标记必须跟着变
 _G.STUB_QW_FAIL = true
 instance.weather, instance.air = nil, nil
@@ -1343,6 +1493,29 @@ if instance:airDisplay().text ~= "142" then
     bad[#bad + 1] = "降级 AQI（PM2.5 108.7 / PM10 111.5 应换算为 142）"
 end
 if instance:sourceLabel() ~= T("天气 Open-Meteo（降级）") then bad[#bad + 1] = "来源标签" end
+-- 降级源也要撑起七日预报与 6 项污染物（否则装了一周预报组件就是一格 "--"）
+if type(w2.daily) ~= "table" or #w2.daily ~= 7 then
+    bad[#bad + 1] = "降级源的 daily 应有 7 天"
+end
+local d2 = type(w2.daily) == "table" and w2.daily[1]
+if d2 and (not d2.date or d2.date.m ~= 11 or d2.date.d ~= 11) then
+    bad[#bad + 1] = "降级源 daily[1].date（应从 time 字段取到 2026-11-11）"
+end
+if d2 and d2.code ~= 100 then
+    bad[#bad + 1] = "降级源 daily[1] 现象（WMO 0 应映射成和风 100）"
+end
+local dparts = instance.air and instance.air.parts
+if type(dparts) ~= "table" or #dparts ~= 6 then
+    bad[#bad + 1] = "降级源 air.parts 应有 6 项"
+end
+-- CO：Open-Meteo 给 μg/m³，界面统一按 mg/m³ 显示，2634 μg → 2.634 mg
+local dco
+for _, p in ipairs(dparts or {}) do
+    if p.code == "co" then dco = p end
+end
+if not dco or not near(dco.value, 2.634, 0.001) or dco.unit ~= "mg/m³" then
+    bad[#bad + 1] = "降级源 CO 应换算成 2.634 mg/m³"
+end
 if bad[1] then
     print("[FAIL] 降级字段不符: " .. table.concat(bad, "，"))
     os.exit(1)
@@ -1359,6 +1532,194 @@ if _env_zones or _env_lang then
     store["dashboard_components"] = nil
     store["dashboard_lang"] = nil
     require("dashboard_i18n").setLang("zh")
+end
+
+-- ============ 组件矩阵：所有组件 × 该组件允许的区 × 本尺寸 ============
+-- 目的：任何组件放进任何「白名单允许的区」，都不能超过盒子高度**和宽度**。
+--   · k=1 就装下     → 理想，正常字号
+--   · 需要缩字       → 允许（K_LADDER 会缩），但记下来，缩多了观感差
+--   · 最小档仍溢出   → 硬伤：真机上会撑破版心、触发全局缩放，判 FAIL
+-- 宽和高都要查：v2.45 的空气明细三列排布只溢出宽度、不溢出高度，
+-- 只看高度的断言放过了它，最后是在渲染图里看到文字顶到屏幕外才发现的。
+-- 盒子尺寸一律从 main.lua 的 zoneSpec/contentBox/lowerWidths 取，不另写常数。
+local Lunar2 = require("dashboard_lunar")
+_G.STUB_QW_FAIL = false
+pcall(function() instance:fetchWeather(true) end)
+
+local S_m, edge_m, avail_m = instance:contentBox(SW, SH)
+local spec_m = instance:zoneSpec()
+local orient_m = instance.layout_landscape and "landscape" or "portrait"
+local ctx_m = {
+    W = SW, H = SH, landscape = (orient_m == "landscape"),
+    now = instance:localNow(), tz = instance:getTz(),
+    city = instance:getCity(), S = S_m, edge = edge_m, body_w = avail_m,
+}
+ctx_m.lunar = Lunar2.solar_to_lunar(ctx_m.now.year, ctx_m.now.month, ctx_m.now.day)
+ctx_m.cur_term, ctx_m.next_term = Lunar2.current_term(ctx_m.now.year, ctx_m.now.month,
+    ctx_m.now.day, ctx_m.tz.offset)
+
+local function matrixBox(orient, key)
+    if orient == "portrait" then
+        local pad = math.floor(spec_m.portrait.pad * S_m)
+        return avail_m, math.floor(spec_m.portrait[key] * S_m), avail_m - pad * 2
+    end
+    if key == "A" then
+        return avail_m, math.floor(spec_m.landscape.A * S_m), avail_m
+    end
+    local bw, cw = instance:lowerWidths(avail_m, S_m)
+    local w = (key == "B") and bw or cw
+    return w, math.floor(spec_m.landscape.lower * S_m), w
+end
+
+local ladder = instance:kLadder()
+local m_fail, m_shrink, m_ok, m_total = {}, {}, 0, 0
+-- 宽高一起判：返回空串表示装得下，否则返回「哪个方向、差多少」
+local function unfit(unit, box_h, content_w)
+    local s, bad = unit:getSize(), {}
+    if s.h > box_h then
+        bad[#bad + 1] = string.format("高 %d>%d", math.floor(s.h), math.floor(box_h))
+    end
+    if s.w > content_w + 1 then
+        bad[#bad + 1] = string.format("宽 %d>%d", math.floor(s.w), math.floor(content_w))
+    end
+    return table.concat(bad, "、")
+end
+for id, comp in pairs(instance:componentRegistry()) do
+    for _, key in ipairs(comp.zones[orient_m] or {}) do
+        m_total = m_total + 1
+        local box_w, box_h, content_w = matrixBox(orient_m, key)
+        local okc, child = pcall(function()
+            return instance[comp.build](instance, ctx_m, content_w, box_h, 1)
+        end)
+        if not okc then
+            m_fail[#m_fail + 1] = string.format("%s@%s/%s 构建异常: %s",
+                id, orient_m, key, tostring(child))
+        else
+            local why = unfit(child, box_h, content_w)
+            if why == "" then
+                m_ok = m_ok + 1
+            else
+                local fitted, last_why = nil, why
+                for i = 2, #ladder do
+                    local c2 = instance[comp.build](instance, ctx_m, content_w, box_h, ladder[i])
+                    last_why = unfit(c2, box_h, content_w)
+                    if last_why == "" then fitted = ladder[i] break end
+                end
+                if fitted then
+                    m_shrink[#m_shrink + 1] = string.format("%s@%s/%s %s(k=%.2f)",
+                        id, orient_m, key, why, fitted)
+                else
+                    m_fail[#m_fail + 1] = string.format("%s@%s/%s 最小档仍溢出 %s",
+                        id, orient_m, key, last_why)
+                end
+            end
+        end
+    end
+end
+if m_fail[1] then
+    print("[FAIL] 组件矩阵（" .. orient_m .. "）:" .. table.concat(m_fail, "；"))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 组件矩阵（%s）：%d 个组合全部装下（k=1 %d 个，需缩字 %d 个%s）==",
+    orient_m, m_total, m_ok, #m_shrink,
+    #m_shrink > 0 and ("：" .. table.concat(m_shrink, "，")) or "")
+
+-- ============ 在读卡：活文档优先、lastfile 兜底 ============
+-- 两条路各有各的坑：活文档拿不到时要能退到侧车（屏保场景），
+-- 侧车读不到时还要能用文件名兜住（新书还没生成侧车）。三种情况都走一遍。
+local function fake_ds(title, authors, pages, pct)
+    return {
+        readSetting = function(_, key)
+            if key == "stats" then
+                return { title = title, authors = authors, pages = pages }
+            elseif key == "percent_finished" then
+                return pct
+            end
+            return nil
+        end,
+    }
+end
+
+local ds_calls = 0
+package.preload["docsettings"] = function()
+    return {
+        open = function(_, path)
+            ds_calls = ds_calls + 1
+            return fake_ds("侧车书名 " .. path:match("[^/]+$"), "侧车作者", 640, 0.42)
+        end,
+    }
+end
+G_reader_settings:saveSetting("lastfile", "/mnt/us/documents/测试书.epub")
+local r_last = instance:readingInfo()
+if not r_last or r_last.source ~= "last" then
+    print("[FAIL] lastfile 兜底没生效：" .. tostring(r_last and r_last.source))
+    os.exit(1)
+end
+if not tostring(r_last.title):find("测试书", 1, true) or r_last.percent ~= 0.42 or r_last.pages ~= 640 then
+    print(string.format("[FAIL] lastfile 侧车字段没读全：%s / %s / %s / %s",
+        tostring(r_last.title), tostring(r_last.authors), tostring(r_last.pages), tostring(r_last.percent)))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 在读卡 lastfile 兜底：%s · %s · %d 页 · %.0f%%（侧车读 %d 次）==",
+    r_last.title, r_last.authors, r_last.pages, r_last.percent * 100, ds_calls)
+
+-- 活文档优先：同样有 lastfile 的情况下，活文档的书名必须赢
+local saved_document, saved_doc_settings, saved_page
+    = instance.ui.document, instance.ui.doc_settings, instance.ui.getCurrentPage
+instance.ui.document = {
+    getPageCount = function() return 500 end,
+}
+instance.ui.doc_settings = fake_ds("正在读的书", "某作者", 500, 0.25)
+local r_live = instance:readingInfo()
+if not r_live or r_live.source ~= "live" or r_live.title ~= "正在读的书" then
+    print("[FAIL] 活文档没优先于 lastfile：" .. tostring(r_live and (r_live.source .. "/" .. tostring(r_live.title))))
+    os.exit(1)
+end
+
+-- 没有 percent_finished 时用「当前页 / 总页数」兜底
+instance.ui.doc_settings = fake_ds("只有页码的书", "某作者", nil, nil)
+instance.ui.getCurrentPage = function() return 125 end
+local r_page = instance:readingInfo()
+if not r_page or math.abs((r_page.percent or -1) - 0.25) > 0.001 then
+    print("[FAIL] 没有 percent_finished 时没按页码比例兜底：" .. tostring(r_page and r_page.percent))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 在读卡活文档优先：%s · 页码兜底 %.0f%% ==",
+    r_live.title, r_page.percent * 100)
+
+-- 在读卡排版：书名动辄二三十字，必须单行省略、不许把盒子顶破
+local long_title = "一个特别特别长的书名用来测试省略号是不是真的生效以及不会把版面顶破"
+instance.ui.doc_settings = fake_ds(long_title, "某作者", 500, 0.33)
+local box_w_r, box_h_r, content_w_r = matrixBox(orient_m, orient_m == "portrait" and "B" or "C")
+local card = instance:compReading(ctx_m, content_w_r, box_h_r, 1)
+local cs_r = card:getSize()
+if cs_r.h > box_h_r or cs_r.w > content_w_r + 1 then
+    print(string.format("[FAIL] 在读卡超出盒子：%dx%d > %dx%d", cs_r.w, cs_r.h, content_w_r, box_h_r))
+    os.exit(1)
+end
+local saw_title = false
+local function scan(widget)
+    if not widget then return end
+    if widget.text and tostring(widget.text):find("省略号", 1, true) then saw_title = true end
+    for _, ch in ipairs(widget) do scan(ch) end
+end
+scan(card)
+if not saw_title then
+    print("[FAIL] 在读卡里没有书名文本")
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format(
+    "== 在读卡 31 字书名装进 %dx%d 盒子（单行省略），排版 %dx%d ==",
+    content_w_r, box_h_r, cs_r.w, cs_r.h)
+
+-- 收尾：把活文档摘掉，后面的用例回到「没有在读文档」的状态
+instance.ui.document, instance.ui.doc_settings = saved_document, saved_doc_settings
+instance.ui.getCurrentPage = saved_page
+G_reader_settings:saveSetting("lastfile", nil)
+if instance:readingInfo() ~= nil then
+    print("[FAIL] 摘掉活文档和 lastfile 之后仍有在读信息，不该画出一个空卡")
+    os.exit(1)
 end
 
 -- 关闭，检查状态恢复

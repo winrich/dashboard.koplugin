@@ -5,10 +5,13 @@ Open-Meteo 降级数据源
 免注册、免 API Key，但要素比和风少，所以只作降级而不是主源：
 
   · 现象代码是 WMO 标准，这里映射成和风编号，界面那套图标表可以直接复用
-  · 空气质量只给 PM2.5 / PM10 浓度，没有国标 AQI，由 main.lua 按 HJ 633-2012 换算
+  · 空气质量给 PM2.5 / PM10 / O₃ / NO₂ / SO₂ / CO 六项浓度，但没有国标 AQI，
+    由 main.lua 按 HJ 633-2012 换算；CO 单位是 μg/m³（和风给 mg/m³），
+    解析时统一换算成 mg/m³，免得同一位置两个源显示的量级差 1000 倍
   · 风力接口只给风速（km/h），按蒲福风级表换算等级
   · 日出日落按 GMT 取（timezone=GMT），再按用户选择的时区偏移换算出显示时刻，
     与和风路径的换算方式保持一致
+  · **不给月相与月升月落**——这部分由 dashboard_moon.lua 本地算，不依赖数据源
 
 实测（2026-11）：响应为明文 JSON，不带 Content-Encoding。仍保留 gzip 魔数判断，
 避免哪天服务端改了压缩策略后解析出一堆乱码。
@@ -21,6 +24,9 @@ local ltn12 = require("ltn12")
 local _ = require("gettext")
 
 http.TIMEOUT = 20
+
+--- 取几天预报，与和风侧保持一致（两个预报组件共用）
+local FORECAST_DAYS = 7
 
 local M = {}
 
@@ -134,11 +140,14 @@ function M.fetch(opts)
         "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
         .. "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
         .. "weather_code,wind_speed_10m,wind_direction_10m"
-        .. "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
-        .. "&timezone=GMT&forecast_days=1", lat, lon)
+        .. "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset"
+        .. "&timezone=GMT&forecast_days=%d", lat, lon, FORECAST_DAYS)
+    -- 6 项污染物：与和风对齐，界面上的「空气明细」两路都能填满。
+    -- 注意 Open-Meteo 的 CO 单位是 μg/m³，和风是 mg/m³，解析时统一到 mg/m³。
     local air_url = string.format(
         "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=%s&longitude=%s"
-        .. "&current=pm10,pm2_5&timezone=GMT", lat, lon)
+        .. "&current=pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
+        .. "&timezone=GMT", lat, lon)
 
     local first_err
     local weather
@@ -176,6 +185,32 @@ function M.fetch(opts)
                 sunset = local_hm(first(daily.sunset), offset),
                 ts = os.time(),
             }
+
+            -- 逐日预报：daily 里是 7 个平行数组，按下标对齐成和风那种「一天一条」。
+            -- 没有月相/月升月落/降水概率——这几个字段 Open-Meteo 不给，
+            -- 月相由 main.lua 用 dashboard_moon 本地算，其余留空由界面显示 "--"。
+            local times = type(daily.time) == "table" and daily.time or {}
+            local list = {}
+            for i, iso in ipairs(times) do
+                local wd = tonumber(type(daily.weather_code) == "table"
+                    and daily.weather_code[i])
+                local dm = M.CODES[wd] or { nil, nil }
+                local y, m, d = tostring(iso):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
+                list[#list + 1] = {
+                    date = y and { y = tonumber(y), m = tonumber(m), d = tonumber(d) } or nil,
+                    tmax = tonumber(type(daily.temperature_2m_max) == "table"
+                        and daily.temperature_2m_max[i]),
+                    tmin = tonumber(type(daily.temperature_2m_min) == "table"
+                        and daily.temperature_2m_min[i]),
+                    code = dm[2],
+                    cond = dm[1],
+                    sunrise = local_hm(type(daily.sunrise) == "table"
+                        and daily.sunrise[i], offset),
+                    sunset = local_hm(type(daily.sunset) == "table"
+                        and daily.sunset[i], offset),
+                }
+            end
+            if #list > 0 then weather.daily = list end
         else
             first_err = string.format(_("Open-Meteo 数据解析失败（HTTP %s）"), tostring(code))
             logger.warn("dashboard: Open-Meteo JSON 解析失败",
@@ -194,9 +229,24 @@ function M.fetch(opts)
             local cur = data.current
             local pm25 = tonumber(cur.pm2_5)
             local pm10 = tonumber(cur.pm10)
-            if pm25 or pm10 then
-                -- 没有国标 AQI，交给 main.lua 按浓度换算
-                air = { pm25 = pm25, pm10 = pm10, ts = os.time() }
+            -- 6 项污染物，字段名与和风的 code 对齐，界面只认一套键。
+            -- CO 这里给的是 μg/m³，和风给 mg/m³，统一除以 1000。
+            local co = tonumber(cur.carbon_monoxide)
+            local specs = {
+                { code = "pm2p5", name = "PM2.5", value = pm25, unit = "μg/m³" },
+                { code = "pm10",  name = "PM10",  value = pm10, unit = "μg/m³" },
+                { code = "no2",   name = "NO₂",   value = tonumber(cur.nitrogen_dioxide), unit = "μg/m³" },
+                { code = "o3",    name = "O₃",    value = tonumber(cur.ozone), unit = "μg/m³" },
+                { code = "so2",   name = "SO₂",   value = tonumber(cur.sulphur_dioxide), unit = "μg/m³" },
+                { code = "co",    name = "CO",    value = co and co / 1000 or nil, unit = "mg/m³" },
+            }
+            local parts = {}
+            for _, s in ipairs(specs) do
+                if s.value then parts[#parts + 1] = s end
+            end
+            if pm25 or pm10 or #parts > 0 then
+                -- 没有国标 AQI 与首要污染物，交给 main.lua 按浓度换算
+                air = { pm25 = pm25, pm10 = pm10, parts = parts, ts = os.time() }
             end
         else
             logger.warn("dashboard: Open-Meteo 空气质量解析失败")

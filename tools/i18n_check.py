@@ -4,7 +4,7 @@
 用法：python tools/i18n_check.py [-v]
 
 做的事：
-  1. 从 main.lua 里抽出所有 T("...") 的字面量（只认单行、无拼接的调用）；
+  1. 从插件目录下所有 .lua 里抽出 T("...") 的字面量（只认单行、无拼接的调用）；
   2. 从 dashboard_i18n.lua 的 EN 表里抽出已翻译的键；
   3. 列出「代码里在用、但没有英文」的条目，以及「表里有、代码已不用」的条目。
 
@@ -78,6 +78,19 @@ def t_keys(path):
     return keys
 
 
+def t_keys_all():
+    """扫插件目录下所有 .lua。
+
+    只扫 main.lua 会漏掉 dashboard_i18n.lua 里的 M.T("今天")——dayLabel 就是在
+    那里拼「今天/明天/后天」的，结果这两个词会被误报成「表内未使用」。
+    """
+    keys = set()
+    for fn in sorted(os.listdir(PLUGIN)):
+        if fn.endswith(".lua"):
+            keys |= t_keys(os.path.join(PLUGIN, fn))
+    return keys
+
+
 def en_keys(path):
     text = open(path, encoding="utf-8").read()
     start = text.index("local EN = {")
@@ -128,7 +141,7 @@ def dynamic_keys():
 
 def main():
     verbose = "-v" in sys.argv
-    used = t_keys(os.path.join(PLUGIN, "main.lua"))
+    used = t_keys_all()
     have = en_keys(os.path.join(PLUGIN, "dashboard_i18n.lua"))
     dyn = dynamic_keys()
 

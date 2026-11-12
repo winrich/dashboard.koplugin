@@ -190,6 +190,25 @@ local EN = {
     ["空气明细"] = "Air quality",
     ["电量网络"] = "Battery & WiFi",
 
+    -- v2.45 新组件用到的短标签（预报 / 空气明细 / 日月 / 在读卡 / 电量网络）
+    ["首要"] = "Main",
+    ["白昼"] = "Daylight",
+    ["月相"] = "Moon",
+    ["月升"] = "Moonrise",
+    ["月落"] = "Moonset",
+    ["亮面"] = "Lit",
+    ["本机计算"] = "on device",
+    ["电量"] = "Battery",
+    ["网络"] = "Network",
+    ["已连接"] = "Connected",
+    ["未连接"] = "Offline",
+    ["未开启"] = "Wi-Fi off",
+    ["充电中"] = "Charging",
+    ["在读"] = "Now reading",
+    ["暂无在读"] = "No book open",
+    ["作者"] = "by",
+    ["页"] = "p",
+
     -- 布局组件菜单
     ["布局组件"] = "Layout components",
     ["竖屏布局"] = "Portrait layout",
@@ -455,6 +474,89 @@ function M.termCountdown(name, days)
         return string.format("%d days to %s", days, name)
     end
     return string.format("距%s%d天", name, days)
+end
+
+-- ------------------------------------------------------------------ 预报与月相
+--- 月相名。键是和风 astro.moonPhase 的 8 个枚举值，也是 dashboard_moon 输出的
+--- M.NAMES——两边同一套，所以这里不需要「未收录」兜底逻辑，但仍保留透传。
+local MOON_ZH = {
+    ["new-moon"] = "朔",
+    ["waxing-crescent"] = "蛾眉月",
+    ["first-quarter"] = "上弦月",
+    ["waxing-gibbous"] = "盈凸月",
+    ["full-moon"] = "望",
+    ["waning-gibbous"] = "亏凸月",
+    ["last-quarter"] = "下弦月",
+    ["waning-crescent"] = "残月",
+}
+local MOON_EN = {
+    ["new-moon"] = "New moon",
+    ["waxing-crescent"] = "Waxing crescent",
+    ["first-quarter"] = "First quarter",
+    ["waxing-gibbous"] = "Waxing gibbous",
+    ["full-moon"] = "Full moon",
+    ["waning-gibbous"] = "Waning gibbous",
+    ["last-quarter"] = "Last quarter",
+    ["waning-crescent"] = "Waning crescent",
+}
+
+--- 月相名：「蛾眉月」/「Waxing crescent」。认不出的键原样返回。
+function M.moonPhase(name)
+    if not name then return nil end
+    local tbl = (M.lang() == "en") and MOON_EN or MOON_ZH
+    return tbl[name] or name
+end
+
+--- 污染物符号。数据源给的名字写法不一（和风 "PM 2.5"、Open-Meteo "PM2.5"），
+--- 统一按 code 出符号，否则同一块面板里两个源的字距都不一样。
+--- 一律用 ASCII 数字：U+2082/U+2083 这类下标字符在 Kindle 的中文字体里通常没有，
+--- 真机上会显示成方框（本地渲染时就能看到 O□ / NO□）。
+local POLLUTANT_LABEL = {
+    pm2p5 = "PM2.5", pm10 = "PM10", no2 = "NO2", o3 = "O3", so2 = "SO2", co = "CO",
+}
+--- 污染物展示顺序：颗粒物在前，气态在后，和国标 AQI 报表的习惯一致
+M.POLLUTANT_ORDER = { "pm2p5", "pm10", "o3", "no2", "so2", "co" }
+
+function M.pollutant(code)
+    if not code then return "" end
+    return POLLUTANT_LABEL[code] or tostring(code):upper()
+end
+
+--- 星期全称（1=周日）：中文「周三」，英文「Wed」
+--- 预报列很窄，中英都取最短形式；表头的单字用 weekdayHead。
+function M.weekdayShort(i)
+    if M.lang() == "en" then
+        return WEEKDAY_EN[i] or ""
+    end
+    local name = require("dashboard_lunar").WEEKDAY_NAMES[i]
+    return name and ("周" .. name) or ""
+end
+
+--- 「今天 / 明天 / 后天 / 周三」——预报第一列用相对日，比星期更好认。
+--- 英文只保留 Today / Tomorrow：'In 2 days' 在 7 列布局里会把列撑宽，
+--- 第三天起一律用星期缩写。
+function M.dayLabel(i, wd)
+    if M.lang() == "en" then
+        if i == 1 then return M.T("今天") end
+        if i == 2 then return M.T("明天") end
+        return M.weekdayShort(wd)
+    end
+    if i == 1 then return M.T("今天") end
+    if i == 2 then return M.T("明天") end
+    if i == 3 then return M.T("后天") end
+    return M.weekdayShort(wd)
+end
+
+--- 短日期「11/12」。预报列里再用「11月12日」会把整行撑宽。
+function M.monthDay(m, d)
+    if not m or not d then return "" end
+    return string.format("%d/%d", m, d)
+end
+
+--- 温差（最高-最低）：「10°」，取不到就 nil
+function M.tempRange(tmax, tmin)
+    if not tmax or not tmin then return nil end
+    return string.format("%d°", math.floor(tmax - tmin + 0.5))
 end
 
 M.EN = EN

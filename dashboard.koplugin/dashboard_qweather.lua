@@ -3,8 +3,8 @@
 
 三个接口，均只认经纬度，不需要 LocationID、不调用 GeoAPI：
   GET /weather/v1/current/{lat}/{lon}?localTime=true&lang=zh     实况
-  GET /weather/v1/daily/{lat}/{lon}?days=1&localTime=true&lang=zh 今日预报（含日出日落、最高最低温）
-  GET /airquality/v1/current/{lat}/{lon}?lang=zh                  空气质量（含国标 AQI）
+  GET /weather/v1/daily/{lat}/{lon}?days=7&localTime=true&lang=zh 七日预报（含日出日落、月相、最高最低温）
+  GET /airquality/v1/current/{lat}/{lon}?lang=zh                  空气质量（国标 AQI + 6 项污染物）
 
 认证：请求头 X-QW-Api-Key（不再用 ?key= 查询参数）
 Host：每个账号独立的 API Host，形如 abcxyz.qweatherapi.com
@@ -23,6 +23,18 @@ local ltn12 = require("ltn12")
 local _ = require("gettext")
 
 http.TIMEOUT = 20
+
+--- 一次取几天预报。
+--- 为什么是 7：三日预报与一周预报两个组件共用这一份数据，取 7 天能同时喂饱；
+--- 接口实测上限 10 天（days=15 返回 HTTP 400），取 7 不浪费也不越界。
+--- 请求数与原来只取 1 天时相同，只是一个参数变大。
+local FORECAST_DAYS = 7
+
+--- 污染物浓度的统一单位：CO 用 mg/m³，其余用 μg/m³。
+--- 接口里 CO 本来就给 mg/m³，但降级源 Open-Meteo 给的是 μg/m³，
+--- 不在这里归一，界面上同一个位置会一会儿 0.8 一会儿 800，看着像错。
+local CANON_UNIT = { co = "mg/m³" }
+local CANON_DEFAULT_UNIT = "μg/m³"
 
 local M = {}
 
@@ -326,6 +338,16 @@ function M.mask(secret)
 end
 
 -- ------------------------------------------------------------------ 时间换算
+--- ISO8601 里的日期部分 -> { y, m, d }。
+--- 接口的每日预报**没有 date 字段**（实测 v1 daily 只给 forecastStartTime），
+--- 日期只能从这里取，不能想当然读 day.date。
+function M.iso_date(iso)
+    if type(iso) ~= "string" then return nil end
+    local y, m, d = iso:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
+    if not y then return nil end
+    return { y = tonumber(y), m = tonumber(m), d = tonumber(d) }
+end
+
 --- ISO8601（带偏移）-> 目标时区下的 "HH:MM"
 --- 接口 localTime=true 返回的是查询地当地的时间，如 2026-11-11T06:54+08:00；
 --- 用户可在看板里选其他时区，这里统一换算，避免时钟与日出日落对不上。
@@ -423,8 +445,8 @@ function M.fetch(opts)
 
     local cur_url = string.format("%s/weather/v1/current/%s/%s?localTime=true&lang=zh",
         base, lat, lon)
-    local day_url = string.format("%s/weather/v1/daily/%s/%s?days=1&localTime=true&lang=zh",
-        base, lat, lon)
+    local day_url = string.format("%s/weather/v1/daily/%s/%s?days=%d&localTime=true&lang=zh",
+        base, lat, lon, FORECAST_DAYS)
     local air_url = string.format("%s/airquality/v1/current/%s/%s?lang=zh", base, lat, lon)
 
     local first_err
@@ -469,21 +491,58 @@ function M.fetch(opts)
         first_err = first_err or describe_error(code, nil)
     end
 
-    ------------------------------------------------------------------ 今日预报
+    ------------------------------------------------------------------ 七日预报
+    -- 一次取 7 天，装进 weather.daily；顶层的 tmax/tmin/sunrise/sunset 仍取
+    -- 第一天，既有组件读的是那几个字段，改了会连带破版。
     if weather then
         local draw, dcode = http_get(day_url, headers)
         if draw then
             local body = M.gunzip(draw)
             local ok, data = pcall(JSON.decode, body or "")
-            if ok and type(data) == "table" and type(data.days) == "table" and data.days[1] then
-                local day = data.days[1]
-                local astro = type(day.astro) == "table" and day.astro or {}
-                weather.tmax = tonumber(type(day.temperatureMax) == "table"
-                    and day.temperatureMax.value)
-                weather.tmin = tonumber(type(day.temperatureMin) == "table"
-                    and day.temperatureMin.value)
-                weather.sunrise = M.local_hm(astro.sunrise, tz.offset)
-                weather.sunset = M.local_hm(astro.sunset, tz.offset)
+            if ok and type(data) == "table" and type(data.days) == "table"
+                and #data.days > 0 then
+                local daily = {}
+                for _, day in ipairs(data.days) do
+                    if type(day) == "table" then
+                        local astro = type(day.astro) == "table" and day.astro or {}
+                        local dt = type(day.daytime) == "table" and day.daytime or {}
+                        local nt = type(day.nighttime) == "table" and day.nighttime or {}
+                        local dc = type(dt.condition) == "table" and dt.condition or {}
+                        local nc = type(nt.condition) == "table" and nt.condition or {}
+                        local pr = type(dt.precipitation) == "table" and dt.precipitation or {}
+                        local amt = type(pr.amount) == "table" and pr.amount or {}
+                        daily[#daily + 1] = {
+                            -- 接口没有 date 字段，只能从 forecastStartTime 取
+                            date = M.iso_date(day.forecastStartTime),
+                            tmax = tonumber(type(day.temperatureMax) == "table"
+                                and day.temperatureMax.value),
+                            tmin = tonumber(type(day.temperatureMin) == "table"
+                                and day.temperatureMin.value),
+                            code = tonumber(dc.code),
+                            cond = dc.text,
+                            ncode = tonumber(nc.code),
+                            ncond = nc.text,
+                            pop = tonumber(pr.probability),
+                            precip = tonumber(amt.value),
+                            uv = tonumber(day.uvIndexMax),
+                            sunrise = M.local_hm(astro.sunrise, tz.offset),
+                            sunset = M.local_hm(astro.sunset, tz.offset),
+                            -- 月升月落与月相只有和风给；降级源没有，界面回落本地算法
+                            moonrise = M.local_hm(astro.moonrise, tz.offset),
+                            moonset = M.local_hm(astro.moonset, tz.offset),
+                            solar_noon = M.local_hm(astro.solarNoon, tz.offset),
+                            moonphase = astro.moonPhase,
+                        }
+                    end
+                end
+                if #daily > 0 then
+                    weather.daily = daily
+                    local today = daily[1]
+                    weather.tmax = today.tmax or weather.tmax
+                    weather.tmin = today.tmin or weather.tmin
+                    weather.sunrise = today.sunrise or weather.sunrise
+                    weather.sunset = today.sunset or weather.sunset
+                end
             else
                 logger.warn("dashboard: 预报 JSON 解析失败")
             end
@@ -499,28 +558,67 @@ function M.fetch(opts)
         local body = M.gunzip(araw)
         local ok, data = pcall(JSON.decode, body or "")
         if ok and type(data) == "table" then
-            local aqi, level
+            local aqi, level, primary
             -- 优先国标 AQI（cn-mee），境外城市没有时再回退
             if type(data.indexes) == "table" then
                 for _, idx in ipairs(data.indexes) do
                     if type(idx) == "table" and idx.code == "cn-mee" then
                         aqi = tonumber(idx.aqi)
                         level = idx.category
+                        if type(idx.primaryPollutant) == "table" then
+                            primary = idx.primaryPollutant.code
+                        end
                         break
                     end
                 end
             end
-            local pm25, pm10
+            -- 6 项污染物：浓度 + 单位 + 该项分指数（cn-mee）。
+            -- CO 接口给 mg/m³、其余 μg/m³，统一到 CANON_UNIT 再存，
+            -- 免得同一个位置在两个数据源之间一会儿 0.8 一会儿 800。
+            local pm25, pm10, parts = nil, nil, {}
             if type(data.pollutants) == "table" then
                 for _, p in ipairs(data.pollutants) do
                     if type(p) == "table" and type(p.concentration) == "table" then
-                        if p.code == "pm2p5" then pm25 = tonumber(p.concentration.value)
-                        elseif p.code == "pm10" then pm10 = tonumber(p.concentration.value) end
+                        local code = p.code
+                        local val = tonumber(p.concentration.value)
+                        local sub
+                        if type(p.subIndexes) == "table" then
+                            for _, s in ipairs(p.subIndexes) do
+                                if type(s) == "table" and s.code == "cn-mee" then
+                                    sub = tonumber(s.aqi)
+                                    break
+                                end
+                            end
+                        end
+                        if code == "pm2p5" then
+                            pm25 = val
+                        elseif code == "pm10" then
+                            pm10 = val
+                        end
+                        if code and val then
+                            local unit = CANON_UNIT[code] or CANON_DEFAULT_UNIT
+                            -- 接口原始单位是 mg 表示的，而我们要的规范单位是 μg，换算 ×1000
+                            local src_unit = p.concentration.unit
+                            if unit == CANON_DEFAULT_UNIT and type(src_unit) == "string"
+                                and src_unit:find("mg", 1, true) then
+                                val = val * 1000
+                            elseif unit == "mg/m³" and type(src_unit) == "string"
+                                and src_unit:find("μg", 1, true) then
+                                val = val / 1000
+                            end
+                            parts[#parts + 1] = {
+                                code = code, name = p.name, value = val,
+                                unit = unit, iaqi = sub,
+                            }
+                        end
                     end
                 end
             end
-            if aqi or pm25 or pm10 then
-                air = { aqi = aqi, level = level, pm25 = pm25, pm10 = pm10, ts = os.time() }
+            if aqi or pm25 or pm10 or #parts > 0 then
+                air = {
+                    aqi = aqi, level = level, pm25 = pm25, pm10 = pm10,
+                    parts = parts, primary = primary, ts = os.time(),
+                }
             end
         else
             logger.warn("dashboard: 空气质量 JSON 解析失败")

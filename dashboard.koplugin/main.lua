@@ -5,8 +5,10 @@
   · 竖屏（H > W）  仪表盘版式：顶部城市条 + 大时钟 + 天气 + 农历大字 + 节气进度条 + 底部三格
   · 横屏（W >= H） 上下分区版式：顶部城市条 + 大时钟与天气 + 整月日历网格 + 农历节气
 
-显示内容：时钟、公历日期与星期、农历（干支、生肖）、当前节气与距下一节气天数、
-当日天气（图标/温度/现象/体感）、湿度、风向风力、空气质量 AQI、日出日落。
+显示内容：每个区各选一个组件（菜单「布局组件」里换）。可选组件：
+  时钟与天气 / 农历与节气 / 三格状态 / 月历 / 侧栏（v2.44 及以前）
+  大字时钟 / 纯天气 / 今日+三日 / 一周预报 / 在读卡 / 日月 / 空气明细 / 电量网络（v2.45 新增）
+月相优先用和风的 astro.moonphase，降级时由 dashboard_moon.lua 现算（日月黄经差）。
 
 数据源：和风天气开发服务（QWeather），需要在 dashboard_config.lua 或
 dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host 与 API Key。
@@ -68,6 +70,7 @@ local Lunar = require("dashboard_lunar")
 local CityData = require("dashboard_cities")
 local QWeather = require("dashboard_qweather")
 local OpenMeteo = require("dashboard_openmeteo")
+local Moon = require("dashboard_moon")
 
 -- 多语言：T() 查表，未收录时原样返回中文（缺词条不会崩，只会退回中文）
 local T = I18n.T
@@ -111,7 +114,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.44"
+local DASHBOARD_VERSION = "2.45"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -216,7 +219,12 @@ function Stack:paintTo(bb, x, y)
     if child then
         local cs = child:getSize()
         local ox = math.max(0, math.floor((self.dimen.w - cs.w) / 2))
-        if self.align == "left" then ox = 0 end
+        if self.align == "left" then
+            ox = 0
+        elseif self.align == "right" then
+            -- 右对齐：温度列用固定宽度的盒子靠右，七行右边缘才对得齐
+            ox = math.max(0, self.dimen.w - cs.w)
+        end
         local oy = math.max(0, math.floor((self.dimen.h - cs.h) / 2))
         child:paintTo(bb, x + ox, y + oy)
     end
@@ -323,6 +331,9 @@ local ZONE_DEFAULT = {
 local COMPONENTS = {
     clock_weather = {
         label = "时钟与天气", zones = { portrait = { "A" }, landscape = { "A" } },
+        -- has_clock：这个组件会产生「自己会走的钟」。tick 靠 self.clock_widget
+        -- 逐分钟改字，桩件也靠这个标记判断「版式里到底该不该有钟」。
+        has_clock = true,
         build = "compClockWeather",
     },
     lunar_term = {
@@ -341,11 +352,47 @@ local COMPONENTS = {
         label = "侧栏三合一", zones = { portrait = {}, landscape = { "C" } },
         build = "compSidePanel",
     },
+    -- ---- v2.45 新增 8 个 ----
+    -- 白名单不是随手写的，每条都按「这个区装得下吗」定：
+    --   竖屏 A 920×407 / B 920×505 / C 920×232；横屏 A 1276×294 / B 630×553 / C 593×553
+    -- 例：一周预报要 7 列就得宽，横屏只有 A 区够宽；竖屏排成 7 行，A/B 都行。
+    clock_big = {
+        label = "大字时钟", zones = { portrait = { "A" }, landscape = { "A" } },
+        has_clock = true,
+        build = "compClockBig",
+    },
+    weather_big = {
+        label = "纯天气", zones = { portrait = { "A" }, landscape = { "A" } },
+        build = "compWeatherBig",
+    },
+    weather_today_3d = {
+        label = "今日+三日", zones = { portrait = { "A", "B" }, landscape = { "A" } },
+        build = "compToday3d",
+    },
+    forecast_week = {
+        label = "一周预报", zones = { portrait = { "A", "B" }, landscape = { "A", "B" } },
+        build = "compWeek",
+    },
+    reading_now = {
+        label = "在读卡", zones = { portrait = { "A", "B", "C" }, landscape = { "C" } },
+        build = "compReading",
+    },
+    sun_moon = {
+        label = "日月", zones = { portrait = { "B", "C" }, landscape = { "B", "C" } },
+        build = "compSunMoon",
+    },
+    air_detail = {
+        label = "空气明细", zones = { portrait = { "B" }, landscape = { "B", "C" } },
+        build = "compAirDetail",
+    },
+    battery_net = {
+        label = "电量网络", zones = { portrait = { "C" }, landscape = { "C" } },
+        build = "compBatteryNet",
+    },
 }
 
 -- 收紧档位：只降字号，不换布局、不裁内容
 local K_LADDER = { 1, 0.94, 0.88, 0.82, 0.76 }
-
 -- 月历的横向铺排参数：
 --   列距 = 格宽 × CAL_GAP_RATIO（看起来是列与列之间透气，而不是把格子拉扁）
 --   格宽上限 = 行高 × CAL_ASPECT_MAX（再宽日号就在格子里浮起来了）
@@ -356,6 +403,39 @@ local Dashboard = WidgetContainer:extend{
     name = "dashboard",
     is_doc_only = false,
 }
+
+-- ------------------------------------------------------------------ 版式度量
+-- 下面几个方法把「布局用到的数值」暴露出来，生产代码与桩件断言共用同一份，
+-- 避免测试里另写一套常数——改了一边、另一边还在用旧值，这种错最难发现。
+
+--- 组件注册表：桩件按它遍历「所有组件 × 该组件允许的区」
+function Dashboard:componentRegistry() return COMPONENTS end
+
+--- 分区规格（设计单位）
+function Dashboard:zoneSpec() return ZONE_SPEC end
+
+--- 收紧档位（桩件的组件矩阵断言按同一套档位复算，别各写一份）
+function Dashboard:kLadder() return K_LADDER end
+
+--- 版心几何：倍率、四边留白、可用宽高
+function Dashboard:contentBox(W, H)
+    local S = math.min(W, H) / BASE_SHORT
+    local edge = math.max(EDGE_MIN_PX, math.floor(EDGE_UNITS * S))
+    return S, edge, W - edge * 2, H - edge * 2
+end
+
+--- 横屏下半区宽度：左 B（7 个日历格宽）/ 右 C（吃掉剩余）/ 中间竖线
+function Dashboard:lowerWidths(avail, S)
+    local gap = math.floor(ZONE_SPEC.landscape.gap * S)
+    local vline_w = math.max(2, math.floor(3 * S))
+    local right_min = math.floor(330 * S)
+    local cell_w = math.min(math.floor(52 * S),
+        math.floor((avail - right_min - gap * 2 - vline_w) / 7))
+    cell_w = math.max(math.floor(34 * S), cell_w)
+    local bw = cell_w * 7
+    local cw = math.max(math.floor(260 * S), avail - bw - gap * 2 - vline_w)
+    return bw, cw, vline_w
+end
 
 -- ------------------------------------------------------------------ 生命周期
 function Dashboard:init()
@@ -1369,6 +1449,141 @@ function Dashboard:airDisplay()
     return { text = tostring(aqi), level = level }
 end
 
+--- 第 i 天预报（1 = 今天）。数据源只给日期，星期在这里补齐，组件只管画。
+--- 老缓存没有 daily 字段、或数据源只回了 1 天时返回 nil，组件显示 "--" 而不是崩。
+function Dashboard:dailyAt(i)
+    local w = self.weather
+    if not w or type(w.daily) ~= "table" then return nil end
+    local d = w.daily[i]
+    if type(d) ~= "table" or type(d.date) ~= "table" then return nil end
+    if not d.wd then
+        -- 与 buildCalendar 用同一套换算：1=周日 … 7=周六
+        d.wd = (Lunar.days_from_civil(d.date.y, d.date.m, d.date.d) + 4) % 7 + 1
+    end
+    return d
+end
+
+--- 从今天起最多 n 天的预报（数据不足就返回短的，不补空壳）
+function Dashboard:forecastDays(n)
+    local out = {}
+    for i = 1, (n or 7) do
+        local d = self:dailyAt(i)
+        if not d then break end
+        out[#out + 1] = d
+    end
+    return out
+end
+
+--- 月相：和风的每日预报带 moonPhase（它自己的天文引擎算的），优先用它；
+--- 降级源不给这个字段，回落到本地 dashboard_moon（已与和风 10 天逐日对到 10/10）。
+--- 亮面比例两路都用本地算——和风不提供这个数值。
+function Dashboard:moonInfo(ctx)
+    local day = self:dailyAt(1)
+    local hour = (ctx.now.hour or 12) + (ctx.now.min or 0) / 60
+    local phase = Moon.phase(ctx.now.year, ctx.now.month, ctx.now.day,
+        ctx.tz.offset, hour)
+    local name = (day and day.moonphase) or phase.name
+    return {
+        name = name,
+        label = I18n.moonPhase(name),
+        ratio = phase.ratio,
+        from_api = (day and day.moonphase) ~= nil,
+    }
+end
+
+--- 从一份 DocSettings 里抠出书名 / 作者 / 页数 / 进度，读不到的字段就留空。
+--- ds 在真机上是 DocSettings 实例（userdata 或 table 都有可能），
+--- 所以每个 readSetting 都单独 pcall，不让一个字段读失败带走整张卡。
+local function read_doc_info(ds, out)
+    if ds == nil then return out end
+    local function setting(key)
+        local ok, v = pcall(function() return ds:readSetting(key) end)
+        if ok then return v end
+        return nil
+    end
+    local stats = setting("stats")
+    if type(stats) == "table" then
+        if type(stats.title) == "string" and stats.title ~= "" then out.title = stats.title end
+        if type(stats.authors) == "string" and stats.authors ~= "" then out.authors = stats.authors end
+        out.pages = tonumber(stats.pages) or out.pages
+    end
+    local t = setting("title")
+    if not out.title and type(t) == "string" and t ~= "" then out.title = t end
+    local a = setting("authors")
+    if not out.authors and type(a) == "string" and a ~= "" then out.authors = a end
+    local pct = tonumber(setting("percent_finished"))
+    if pct then out.percent = math.max(0, math.min(1, pct)) end
+    local dp = tonumber(setting("doc_pages"))
+    if dp and not out.pages then out.pages = dp end
+    return out
+end
+
+--- 在读卡：优先活文档（从阅读界面打开看板时进度最新），
+--- 拿不到再读 KOReader 的 lastfile 侧车——看板当屏保时（在书架/休眠）也有内容。
+--- 两路都失败就返回 nil，组件整块不画，不会画出一个空卡。
+function Dashboard:readingInfo()
+    local info = {}
+
+    -- 1) 活文档
+    local ui = self.ui
+    if ui then
+        local ok_doc, doc = pcall(function() return ui.document end)
+        if ok_doc and doc then
+            local ok_set, ds = pcall(function() return ui.doc_settings end)
+            if ok_set and ds then read_doc_info(ds, info) end
+            -- 页内进度兜底：有些书没有 percent_finished，用当前页/总页数
+            if not info.percent then
+                local ok_page, page = pcall(function() return ui:getCurrentPage() end)
+                local ok_cnt, cnt = pcall(function() return doc:getPageCount() end)
+                if ok_page and ok_cnt and tonumber(page) and tonumber(cnt)
+                    and tonumber(cnt) > 0 then
+                    info.percent = math.max(0, math.min(1, page / cnt))
+                    info.pages = info.pages or cnt
+                end
+            end
+            if info.title then
+                info.source = "live"
+                return info
+            end
+        end
+    end
+
+    -- 2) lastfile 侧车（屏保 / 书架场景）
+    local ok_path, path = pcall(function() return G_reader_settings:readSetting("lastfile") end)
+    if ok_path and type(path) == "string" and path ~= "" then
+        local ok_req, DocSettings = pcall(require, "docsettings")
+        if ok_req and type(DocSettings) == "table" and DocSettings.open then
+            local ok_open, ds = pcall(function() return DocSettings:open(path) end)
+            if ok_open and ds then read_doc_info(ds, info) end
+        end
+        if not info.title then
+            -- 侧车读不到（新书还没生成 / 权限问题）就用文件名，总比空着强
+            info.title = path:match("([^/\\]+)%.[^%.]+$") or path
+        end
+        info.source = "last"
+        return info
+    end
+
+    return nil
+end
+
+--- 电量与网络状态。网络部分全走 pcall：KOReader 的 NetworkMgr 在不同版本上
+--- 方法名有出入，取不到就只显示电量那一半，不影响整块。
+function Dashboard:netInfo()
+    local cap, charging = self:batteryInfo()
+    local info = { cap = cap, charging = charging }
+    local function call(name)
+        local ok, v = pcall(function() return NetworkMgr[name](NetworkMgr) end)
+        if ok then return v end
+        return nil
+    end
+    local on = call("isWifiOn")
+    if on ~= nil then info.wifi_on = on and true or false end
+    local conn = call("isConnected")
+    if conn ~= nil then info.connected = conn and true or false end
+    return info
+end
+
 --- 节气进度：当前节气已过天数 / 节气总长
 function Dashboard:solarTermRatio(ctx)
     local cur, nxt = ctx.cur_term, ctx.next_term
@@ -1840,9 +2055,7 @@ function Dashboard:createRoot()
     -- 先按物理基准排一次；若高度超出可用区（真机字体度量比预估高，或横屏纵向
     -- 空间本就比竖屏紧），按 FIT_STEP 逐级缩小重排，最多 FIT_MAX_STEPS 次。
     -- 布局构建是纯计算，重排无副作用；稳定后 self.scale 记录实际倍率。
-    local S = math.min(W, H) / BASE_SHORT
-    local edge = math.max(EDGE_MIN_PX, math.floor(EDGE_UNITS * S))
-    local avail_w, avail_h = W - edge * 2, H - edge * 2
+    local S, edge, avail_w, avail_h = self:contentBox(W, H)
     -- 版心宽度：所有行都按它排，长横线随之内缩，四边自然留出 edge
     ctx.edge = edge
     ctx.body_w = avail_w
@@ -2083,7 +2296,12 @@ function Dashboard:buildWeatherBlock(ctx, icon_px, temp_px, max_w)
 end
 
 --- 底部三格：标签 + 大数值（可带一行小注）
-function Dashboard:buildStatCells(ctx, cell_w, items)
+--- 等分状态格：湿度 / 风力 / AQI，或电量 / 网络。
+--- 总宽传进来、格宽在这里算：分隔线本身也占 1 px，先从总宽扣掉再等分，
+--- 否则 3 格会溢出 2 px（600x800 横屏 C 区实测 323>321，宽检查抓出来的）。
+function Dashboard:buildStatCells(ctx, total_w, items)
+    local n = #items
+    local cell_w = math.floor((total_w - (n - 1)) / n)
     local cells = {}
     for i, it in ipairs(items) do
         if i > 1 then
@@ -2185,13 +2403,7 @@ function Dashboard:buildLandscape(ctx)
 
     -- 下半区：左 B / 竖线 / 右 C。宽度由可用空间反推——固定列宽在 300ppi 的
     -- 1448px 屏上会让右栏被挤出屏幕，所以 B 的列宽先算，C 吃掉剩下的。
-    local vline_w = math.max(2, math.floor(3 * S))
-    local right_min = math.floor(330 * S)
-    local cell_w = math.min(math.floor(52 * S),
-        math.floor((avail - right_min - gap * 2 - vline_w) / 7))
-    cell_w = math.max(math.floor(34 * S), cell_w)
-    local bw = cell_w * 7
-    local cw = math.max(math.floor(260 * S), avail - bw - gap * 2 - vline_w)
+    local bw, cw, vline_w = self:lowerWidths(avail, S)
     local lower_h = math.floor(spec.lower * S)
 
     local left = self:buildZone(ctx, "landscape", "B", bw, bw, lower_h)
@@ -2338,7 +2550,7 @@ end
 function Dashboard:compStats(ctx, w, h, k)
     local d = self:weatherDisplay()
     local air = self:airDisplay()
-    return self:buildStatCells(ctx, math.floor(w / 3), {
+    return self:buildStatCells(ctx, w, {
         { T("湿度"), d.hum or "--" },
         { T("风力"), d.wind or "--", d.wind_dir },
         { "AQI", air.text, air.level },
@@ -2393,6 +2605,455 @@ end
 --- 侧栏三合一：农历 / 节气 / 天文与空气
 function Dashboard:compSidePanel(ctx, w, h, k)
     return self:buildSidePanel(ctx, w, k, h)
+end
+
+-- ---------------------------------------------------------------- v2.45 新组件
+-- 统一约定（与前面五个组件一致）：
+--   · 字号传「设计单位」，Font:getFace 内部会乘短边倍率；
+--   · 图标边长、间距这类像素量必须自己乘 ctx.S；
+--   · 盒子高度 h 是像素，用来判断装不装得下；
+--   · 宽度只做「不超出 w」的约束，不硬撑——横屏左右只剩 6.4mm 留白。
+
+--- 把若干块横向排开，把剩余宽度均分成间隔。
+--- 为什么不用固定列宽：一列里「14°/1°」和「-10°/-18°」宽度差一截，
+--- 固定列宽在大负数时会把文字压出格子；均分剩余空隙则永远贴边不溢出。
+local function spreadRows(blocks, total_w)
+    local used, n = 0, #blocks
+    for _, b in ipairs(blocks) do used = used + b:getSize().w end
+    local gap = (n > 1) and math.floor(math.max(0, total_w - used) / (n - 1)) or 0
+    local items = { align = "center" }
+    for i, b in ipairs(blocks) do
+        if i > 1 then items[#items + 1] = mkPad(gap, 1) end
+        items[#items + 1] = b
+    end
+    return HorizontalGroup:new(items)
+end
+
+--- 温度文案「14°」；取不到给 "--"
+local function degText(v)
+    if not v then return "--" end
+    return string.format("%d°", math.floor(v + 0.5))
+end
+
+--- 某天预报的图标名：数据源给的是现象代码，换成本地图标表
+function Dashboard:dayIcon(day)
+    if not day or not day.code then return "partly" end
+    local meta = QWeather.condition(day.code)
+    return meta[2]
+end
+
+--- 两段 "HH:MM" 之间的分钟差（日落 - 日出 = 白昼），跨零点按 +24h 处理
+local function minutesBetween(from_hm, to_hm)
+    if type(from_hm) ~= "string" or type(to_hm) ~= "string" then return nil end
+    local h1, m1 = from_hm:match("^(%d%d):(%d%d)")
+    local h2, m2 = to_hm:match("^(%d%d):(%d%d)")
+    if not (h1 and h2) then return nil end
+    local a = tonumber(h1) * 60 + tonumber(m1)
+    local b = tonumber(h2) * 60 + tonumber(m2)
+    if b < a then b = b + 1440 end
+    return b - a
+end
+
+--- 大字时钟（A 区）：只有时钟与日期，比「时钟与天气」更纯粹。
+--- 仍然登记 self.clock_widget：tick 靠它逐分钟改字，不登记时钟就停在打开那一刻。
+function Dashboard:compClockBig(ctx, w, h, k)
+    local S, land = ctx.S, ctx.landscape
+    self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
+    self.clock_widget = self:makeText(ctx, self.clock_text,
+        math.floor((land and 88 or 124) * k))
+    return VerticalGroup:new{
+        align = "center",
+        self.clock_widget,
+        mkPad(1, math.floor((land and 6 or 10) * S * k)),
+        self:makeText(ctx, I18n.dateLine(ctx.now, not land),
+            math.floor((land and 26 or 30) * k), { gray = true }),
+    }
+end
+
+--- 纯天气（A 区）：大图标 + 温度 + 现象 + 高低温，不放时钟
+function Dashboard:compWeatherBig(ctx, w, h, k)
+    local S, land = ctx.S, ctx.landscape
+    local d = self:weatherDisplay()
+    local icon_w = math.floor((land and 84 or 112) * S * k)
+    local side_max = math.max(math.floor(80 * S),
+        w - icon_w - math.floor(16 * S))
+    local side = VerticalGroup:new{
+        align = "left",
+        -- 竖屏温度 92→86：真机字号要再乘 1.79（Font:getFace 里走 scaleBySize），
+        -- 92 时整列 410 px，比 A 区的 400 px 高出一截，只能靠 K_LADDER 缩字收场
+        self:makeText(ctx, d.temp, math.floor((land and 70 or 86) * k),
+            { max_width = side_max }),
+        self:makeText(ctx, d.cond, math.floor((land and 26 or 32) * k),
+            { max_width = side_max }),
+        self:makeText(ctx, d.range or "--", math.floor((land and 20 or 24) * k),
+            { gray = true, max_width = side_max }),
+        -- 竖屏 A 区又高又宽，只放三行会显得空；补一行体感（横屏放不下就不放）
+        land and mkPad(1, 1) or self:makeText(ctx, d.feels or "", math.floor(19 * k),
+            { gray = true, max_width = side_max }),
+    }
+    return HorizontalGroup:new{
+        align = "center",
+        ImageWidget:new{
+            file = self:iconPath(d.icon), width = icon_w, height = icon_w,
+            scale_factor = 0, alpha = true,
+        },
+        mkPad(math.floor(16 * S * k), 1),
+        side,
+    }
+end
+
+--- 今日 + 后三日：左边今日大块，右边三列（标签 / 图标 / 高温 / 低温）
+function Dashboard:compToday3d(ctx, w, h, k)
+    local S, land = ctx.S, ctx.landscape
+    local days = self:forecastDays(4)
+    if #days == 0 then
+        return CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(h) },
+            self:makeText(ctx, T("暂无数据"), math.floor(26 * k), { gray = true }),
+        }
+    end
+    local d = self:weatherDisplay()
+    -- 横屏 A 区只有 162 设计单位高，今日块的图标与温度各降一档就正好放下（289 内）
+    local icon_w = math.floor((land and 46 or 72) * S * k)
+    local today_max = math.max(math.floor(90 * S), math.floor(w * 0.30))
+    local today = VerticalGroup:new{
+        align = "center",
+        ImageWidget:new{
+            file = self:iconPath(d.icon), width = icon_w, height = icon_w,
+            scale_factor = 0, alpha = true,
+        },
+        self:makeText(ctx, d.temp, math.floor((land and 40 or 58) * k),
+            { max_width = today_max }),
+        self:makeText(ctx, d.cond, math.floor((land and 20 or 24) * k),
+            { gray = true, max_width = today_max }),
+        self:makeText(ctx, d.range or "--", math.floor((land and 18 or 22) * k),
+            { gray = true, max_width = today_max }),
+    }
+    local blocks = { today }
+    for i = 2, #days do
+        local day = days[i]
+        local di = math.floor((land and 26 or 36) * S * k)
+        blocks[#blocks + 1] = VerticalGroup:new{
+            align = "center",
+            self:makeText(ctx, I18n.dayLabel(i, day.wd), math.floor((land and 15 or 18) * k),
+                { gray = true }),
+            mkPad(1, math.floor(3 * S * k)),
+            ImageWidget:new{
+                file = self:iconPath(self:dayIcon(day)), width = di, height = di,
+                scale_factor = 0, alpha = true,
+            },
+            mkPad(1, math.floor(3 * S * k)),
+            self:makeText(ctx, degText(day.tmax), math.floor((land and 20 or 24) * k)),
+            self:makeText(ctx, degText(day.tmin), math.floor((land and 17 or 20) * k),
+                { gray = true }),
+        }
+    end
+    return spreadRows(blocks, w)
+end
+
+--- 一周预报：横屏 A 区又宽又矮，排 7 列；其余场合逐行排（更像列表，好扫）。
+function Dashboard:compWeek(ctx, w, h, k)
+    local S, land = ctx.S, ctx.landscape
+    local days = self:forecastDays(7)
+    if #days == 0 then
+        return CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(h) },
+            self:makeText(ctx, T("暂无数据"), math.floor(26 * k), { gray = true }),
+        }
+    end
+    local as_columns = land and h < math.floor(400 * S)
+
+    if as_columns then
+        -- 七列各吃 w/7：竖屏设备被强制成横屏版式时 B 区只有 413~420 px，
+        -- 原来那套字号排下来要 430 px，得整块缩到 k=0.94。窄盒里各降一档就正好。
+        local narrow = w < math.floor(300 * S)
+        local label_px = narrow and 14 or 16
+        local icon_du = narrow and 24 or 30
+        local hi_px = narrow and 18 or 21
+        local lo_px = narrow and 16 or 18
+        local blocks = {}
+        for i, day in ipairs(days) do
+            local di = math.floor(icon_du * S * k)
+            blocks[#blocks + 1] = VerticalGroup:new{
+                align = "center",
+                self:makeText(ctx, I18n.dayLabel(i, day.wd), math.floor(label_px * k), { gray = true }),
+                mkPad(1, math.floor(3 * S * k)),
+                ImageWidget:new{
+                    file = self:iconPath(self:dayIcon(day)), width = di, height = di,
+                    scale_factor = 0, alpha = true,
+                },
+                mkPad(1, math.floor(3 * S * k)),
+                self:makeText(ctx, degText(day.tmax), math.floor(hi_px * k)),
+                self:makeText(ctx, degText(day.tmin), math.floor(lo_px * k), { gray = true }),
+            }
+        end
+        return spreadRows(blocks, w)
+    end
+
+    -- 逐行：日期靠左、温度靠右，中间用弹性留白撑开。
+    -- 不这么排的话 7 行会挤在版面中间、右侧空一大片（实测过：整块只占 350/920）。
+    local dense = h < math.floor(230 * S)
+    local label_px = dense and 17 or 19
+    local hi_px = dense and 20 or 22
+    local lo_px = dense and 17 or 19
+    local icon_du = dense and 22 or 26
+    local row_gap = dense and 4 or 6
+    local label_w = math.floor(w * 0.22)
+    -- 温度列用固定宽度的右对齐盒子：不然「1°」和「-2°」宽度不同，
+    -- 七行的右边缘会参差不齐（渲染图里一眼就能看出来）。
+    local hi_w = self:makeText(ctx, "-20°", math.floor(hi_px * k)):getSize().w
+    local lo_w = self:makeText(ctx, "-20°", math.floor(lo_px * k)):getSize().w
+    local rows = { align = "center" }
+    for i, day in ipairs(days) do
+        local di = math.floor(icon_du * S * k)
+        local label = mkBox(label_w, 1, self:makeText(ctx,
+            I18n.dayLabel(i, day.wd), math.floor(label_px * k)), { align = "left", auto_h = true })
+        local icon = ImageWidget:new{
+            file = self:iconPath(self:dayIcon(day)), width = di, height = di,
+            scale_factor = 0, alpha = true,
+        }
+        local hi = mkBox(hi_w, 1, self:makeText(ctx, degText(day.tmax), math.floor(hi_px * k)),
+            { align = "right", auto_h = true })
+        local lo = mkBox(lo_w, 1, self:makeText(ctx, degText(day.tmin), math.floor(lo_px * k),
+            { gray = true }), { align = "right", auto_h = true })
+        local pop
+        if day.pop then
+            pop = self:makeText(ctx, string.format("%d%%", math.floor(day.pop + 0.5)),
+                math.floor(17 * k), { gray = true })
+        end
+        local gap1 = math.floor(12 * S * k)
+        local gap2 = math.floor(10 * S * k)
+        local used = label_w + di + gap1 + hi_w + gap2 + lo_w
+        if pop then used = used + gap2 + pop:getSize().w end
+        -- 图标摆整行中间，留白分成前后两段。
+        -- 之前是「图标紧贴日期、留白全塞在图标和温度之间」，920 宽的竖屏上
+        -- 图标和温度之间空出 330 px，看着像图标漏在左边、右侧一大片白。
+        local slack = math.max(0, w - used)
+        local min_pad = math.floor(8 * S)
+        local fill1, fill2
+        if slack < min_pad * 2 then
+            fill1, fill2 = 0, slack
+        else
+            local icon_left = math.floor((w - di) / 2)
+            fill1 = math.min(math.max(icon_left - label_w, min_pad), slack - min_pad)
+            fill2 = slack - fill1
+        end
+        local row = { align = "center", label, mkPad(fill1, 1), icon, mkPad(fill2, 1), hi,
+            mkPad(gap2, 1), lo }
+        if pop then
+            row[#row + 1] = mkPad(gap2, 1)
+            row[#row + 1] = pop
+        end
+        if i > 1 then rows[#rows + 1] = mkPad(1, math.floor(row_gap * S * k)) end
+        rows[#rows + 1] = HorizontalGroup:new(row)
+    end
+    return VerticalGroup:new(rows)
+end
+
+--- 在读卡：书名 / 作者 / 进度条 / 百分比。
+--- 书名只画一行并带省略号——真机书名动辄二三十字，折行会把盒子顶破。
+function Dashboard:compReading(ctx, w, h, k)
+    local S = ctx.S
+    local info = self:readingInfo()
+    if not info then
+        return CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(h) },
+            self:makeText(ctx, T("暂无在读"), math.floor(26 * k), { gray = true }),
+        }
+    end
+    local rows = {
+        align = "left",
+        self:makeText(ctx, T("在读"), math.floor(18 * k), { gray = true }),
+        mkPad(1, math.floor(4 * S * k)),
+        self:makeText(ctx, info.title, math.floor(30 * k), { max_width = w, ellipsis = true }),
+    }
+    if info.authors then
+        rows[#rows + 1] = self:makeText(ctx,
+            T("作者") .. " " .. info.authors, math.floor(18 * k), { gray = true })
+    end
+    local pct = info.percent or 0
+    rows[#rows + 1] = mkPad(1, math.floor(10 * S * k))
+    -- 进度条铺满整宽：它是这一块的「最宽元素」，宽度决定整块被盒子居中后
+    -- 的左边界。取 0.72w 时整块只有 662 宽，居中后文字比下面的一周预报内缩了 130 px。
+    rows[#rows + 1] = ProgressBar:new{
+        dimen = Geom:new{ w = math.floor(w), h = math.max(8, math.floor(10 * S * k)) },
+        ratio = pct,
+        border = math.max(1, math.floor(2 * S)),
+    }
+    local pct_text = string.format("%d%%", math.floor(pct * 100 + 0.5))
+    if info.pages then
+        pct_text = pct_text .. string.format(" · %d %s", info.pages, T("页"))
+    end
+    rows[#rows + 1] = mkPad(1, math.floor(4 * S * k))
+    rows[#rows + 1] = self:makeText(ctx, pct_text, math.floor(20 * k), { gray = true })
+    return VerticalGroup:new(rows)
+end
+
+--- 日月（B/C 区）：日出 / 日落 / 月相三列；高度富余时补白昼与月升月落。
+--- 注释一律**不进三列**，改在下面单独成行：
+---   窄盒（横屏 B 区最窄只到 413 px）里三列各带注释时总宽 525 px，直接顶出盒子；
+---   单独成行后每行都能 max_width 折行，宽窄两种盒子都不用另写一套版式。
+function Dashboard:compSunMoon(ctx, w, h, k)
+    local S = ctx.S
+    local d = self:weatherDisplay()
+    local moon = self:moonInfo(ctx)
+    local day = self:dailyAt(1)
+    local daylen = minutesBetween(d.sunrise, d.sunset)
+    local tall = h >= math.floor(250 * S)
+    -- 三列各占 (w - 2×列距)/3：窄盒里大字再按 36 设计单位会被挤破，按盒宽退到 26
+    local big_px = (w < math.floor(300 * S)) and 26 or (tall and 36 or 32)
+    local col_gap = math.floor(18 * S * k)
+    local col_w = math.max(math.floor(60 * S), math.floor((w - col_gap * 2) / 3))
+
+    -- 列宽是硬边界：正文长度随语言变（英文 "Waxing crescent" 是中文「盈凸月」的三倍多），
+    -- 先用正常字号、装不进列宽就逐档退，退到底还宽才折行。
+    local function column(label, big)
+        local str = big or "--"
+        local px = big_px
+        for _, cand in ipairs({ big_px, big_px - 6, big_px - 12 }) do
+            px = cand
+            if self:makeText(ctx, str, math.floor(cand * k)):getSize().w <= col_w then break end
+        end
+        return VerticalGroup:new{
+            align = "center",
+            self:makeText(ctx, label, math.floor(18 * k), { gray = true }),
+            mkPad(1, math.floor(4 * S * k)),
+            self:makeText(ctx, str, math.floor(px * k), { max_width = col_w }),
+        }
+    end
+
+    local moon_note
+    if day and day.moonrise and day.moonset then
+        moon_note = string.format("%s %s · %s %s",
+            T("月升"), day.moonrise, T("月落"), day.moonset)
+    else
+        moon_note = string.format("%s %d%%", T("亮面"), math.floor(moon.ratio * 100 + 0.5))
+    end
+    if not moon.from_api then
+        moon_note = moon_note .. " · " .. T("本机计算")
+    end
+    local daylen_text
+    if daylen then
+        daylen_text = string.format("%s %dh%02dm", T("白昼"),
+            math.floor(daylen / 60), daylen % 60)
+    end
+
+    local cols = spreadRows({
+        column(T("日出"), d.sunrise),
+        column(T("日落"), d.sunset),
+        column(T("月相"), moon.label),
+    }, w)
+    if not tall then return cols end
+    -- 高度够时补两行注释：白昼时长 / 月升月落。都给 max_width，长文案折行不收边。
+    local rows = {
+        align = "center",
+        cols,
+        mkPad(1, math.floor(12 * S * k)),
+        self:makeText(ctx, daylen_text or moon_note, math.floor(17 * k),
+            { gray = true, max_width = w }),
+    }
+    if daylen_text then
+        rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
+        rows[#rows + 1] = self:makeText(ctx, moon_note, math.floor(17 * k),
+            { gray = true, max_width = w })
+    end
+    return VerticalGroup:new(rows)
+end
+
+--- 空气明细：AQI 大数 + 等级/首要，下面 2×3 六项浓度。
+--- 等级与首要**另起一行**放在 AQI 下面：并排时 AQI 三位数（如 142）会把
+--- 「轻度污染」挤到数字上，视觉上像叠字。竖排最稳，窄区也不怕。
+function Dashboard:compAirDetail(ctx, w, h, k)
+    local S = ctx.S
+    local air = self:airDisplay()
+    local parts = (self.air and self.air.parts) or {}
+    local by_code = {}
+    for _, p in ipairs(parts) do by_code[p.code] = p end
+
+    local primary = self.air and self.air.primary
+    local sub = air.level or ""
+    if primary then
+        sub = sub .. " · " .. T("首要") .. " " .. I18n.pollutant(primary)
+    end
+    local rows = {
+        align = "left",
+        self:makeText(ctx, air.text or "--", math.floor(56 * k)),
+        self:makeText(ctx, sub, math.floor(21 * k), { gray = true, max_width = w }),
+        mkPad(1, math.floor(12 * S * k)),
+    }
+
+    -- 六项按 POLLUTANT_ORDER 轮询：缺哪项就补一格 "--"，格子不错位。
+    -- 浓度格式跟着单位走：mg/m³（CO）保留一位小数，μg/m³ 取整——
+    -- CO 的 0.8 与 2.6 取整后会变成 1 和 3，差别就很明显了。
+    local cells, order = {}, I18n.POLLUTANT_ORDER
+    for _, code in ipairs(order) do
+        local p = by_code[code]
+        local value = "--"
+        if p and p.value then
+            local num = (p.unit == "mg/m³")
+                and string.format("%.1f", p.value)
+                or tostring(math.floor(p.value + 0.5))
+            value = num .. " " .. p.unit
+        end
+        cells[#cells + 1] = self:makeText(ctx,
+            I18n.pollutant(code) .. " " .. value, math.floor(18 * k), { max_width = w })
+    end
+
+    -- 列数按实测宽度选，不能写死三列：竖屏 920 宽三列刚好，横屏 C 区只有 650 宽，
+    -- 三列会把最后两格顶到屏幕外（实测溢出 95 px）。
+    -- 判据是「最宽那格 × 列数 ≤ 盒宽」——等宽栅格里每格只有 w/列数，
+    -- 按「每行之和」判会放过一格比格宽还宽的情况，相邻两格就叠在一起了。
+    local max_cell = 0
+    for _, c in ipairs(cells) do
+        max_cell = math.max(max_cell, c:getSize().w)
+    end
+    local per_row = 1
+    for _, cand in ipairs({ 3, 2 }) do
+        if max_cell * cand <= w then per_row = cand; break end
+    end
+    local cell_w = math.floor(w / per_row)
+
+    -- 等宽栅格、格内左对齐。不用 spreadRows：两列时它会把格子推到版面两端
+    -- （横屏 C 区 733 宽，左边「PM2.5 109」右边「PM10 112」，中间空一大条），
+    -- 栅格排下来才像一张表，六项也好对位。
+    for i = 1, #cells, per_row do
+        local line = { align = "left" }
+        for j = 0, per_row - 1 do
+            local c = cells[i + j]
+            if c then
+                line[#line + 1] = mkBox(cell_w, 1, c, { align = "left", auto_h = true })
+            end
+        end
+        rows[#rows + 1] = HorizontalGroup:new(line)
+        if i + per_row <= #cells then
+            rows[#rows + 1] = mkPad(1, math.floor(8 * S * k))
+        end
+    end
+    return VerticalGroup:new(rows)
+end
+
+--- 电量网络（C 区）：电量百分比（充电中另有标注）+ WiFi 开关与连接状态
+function Dashboard:compBatteryNet(ctx, w, h, k)
+    local net = self:netInfo()
+    local wifi_text
+    if net.wifi_on == nil then
+        wifi_text = "--"
+    elseif not net.wifi_on then
+        wifi_text = T("未开启")
+    elseif net.connected then
+        wifi_text = T("已连接")
+    else
+        wifi_text = T("未连接")
+    end
+    local items = {
+        {
+            T("电量"),
+            net.cap and string.format("%d%%", net.cap) or "--",
+            net.charging and T("充电中") or nil,
+        },
+        { T("网络"), wifi_text, nil },
+    }
+    return self:buildStatCells(ctx, w, items)
 end
 
 --- 整月日历：周一起始、跨月补位、今天反白、节气日带点

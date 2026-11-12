@@ -1,0 +1,1170 @@
+{
+ "metadata": {
+  "tag": "55e34e05d003e0e496430fa6f725f62628e36ec01436a9d2d9175d6456bd4764",
+  "attributions": [
+   "https://developer.qweather.com/attribution.html"
+  ]
+ },
+ "days": [
+  {
+   "forecastStartTime": "2026-11-12T00:00+08:00",
+   "forecastEndTime": "2026-11-13T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-12T06:55+08:00",
+    "sunset": "2026-11-12T17:01+08:00",
+    "astronomicalDawn": "2026-11-12T05:22+08:00",
+    "nauticalDawn": "2026-11-12T05:54+08:00",
+    "civilDawn": "2026-11-12T06:26+08:00",
+    "astronomicalDusk": "2026-11-12T18:34+08:00",
+    "nauticalDusk": "2026-11-12T18:02+08:00",
+    "civilDusk": "2026-11-12T17:29+08:00",
+    "solarNoon": "2026-11-12T11:58+08:00",
+    "solarMidnight": "2026-11-12T23:58+08:00",
+    "moonrise": "2026-11-12T09:52+08:00",
+    "moonset": "2026-11-12T18:41+08:00",
+    "moonTransit": "2026-11-12T14:17+08:00",
+    "moonUnderfoot": "2026-11-12T01:51+08:00",
+    "moonPhase": "waxing-crescent"
+   },
+   "temperatureMax": {
+    "value": 14.14,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 1.55,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 7.01,
+    "unit": "°C"
+   },
+   "uvIndexMax": 2,
+   "daytime": {
+    "forecastStartTime": "2026-11-12T07:00+08:00",
+    "forecastEndTime": "2026-11-12T19:00+08:00",
+    "condition": {
+     "text": "霾",
+     "code": "502"
+    },
+    "temperatureMax": {
+     "value": 14.14,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 2.47,
+     "unit": "°C"
+    },
+    "humidity": 0.56,
+    "wind": {
+     "direction": {
+      "degree": 201,
+      "compass": "ssw"
+     },
+     "speed": {
+      "value": 1.02,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 5.29,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.25
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-12T19:00+08:00",
+    "forecastEndTime": "2026-11-13T07:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 9.92,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 2.71,
+     "unit": "°C"
+    },
+    "humidity": 0.75,
+    "wind": {
+     "direction": {
+      "degree": null,
+      "compass": "vrb"
+     },
+     "speed": {
+      "value": 0.8,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 3.46,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-13T00:00+08:00",
+   "forecastEndTime": "2026-11-14T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-13T06:56+08:00",
+    "sunset": "2026-11-13T17:00+08:00",
+    "astronomicalDawn": "2026-11-13T05:23+08:00",
+    "nauticalDawn": "2026-11-13T05:55+08:00",
+    "civilDawn": "2026-11-13T06:27+08:00",
+    "astronomicalDusk": "2026-11-13T18:33+08:00",
+    "nauticalDusk": "2026-11-13T18:01+08:00",
+    "civilDusk": "2026-11-13T17:29+08:00",
+    "solarNoon": "2026-11-13T11:58+08:00",
+    "solarMidnight": "2026-11-13T23:58+08:00",
+    "moonrise": "2026-11-13T10:42+08:00",
+    "moonset": "2026-11-13T19:36+08:00",
+    "moonTransit": "2026-11-13T15:08+08:00",
+    "moonUnderfoot": "2026-11-13T02:42+08:00",
+    "moonPhase": "waxing-crescent"
+   },
+   "temperatureMax": {
+    "value": 15.01,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 2.71,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 7.44,
+    "unit": "°C"
+   },
+   "uvIndexMax": 2,
+   "daytime": {
+    "forecastStartTime": "2026-11-13T07:00+08:00",
+    "forecastEndTime": "2026-11-13T19:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 15.01,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 3,
+     "unit": "°C"
+    },
+    "humidity": 0.44,
+    "wind": {
+     "direction": {
+      "degree": 129,
+      "compass": "se"
+     },
+     "speed": {
+      "value": 1,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 3.85,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-13T19:00+08:00",
+    "forecastEndTime": "2026-11-14T07:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 10.09,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 3.61,
+     "unit": "°C"
+    },
+    "humidity": 0.67,
+    "wind": {
+     "direction": {
+      "degree": 2,
+      "compass": "n"
+     },
+     "speed": {
+      "value": 0.94,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 3.86,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-14T00:00+08:00",
+   "forecastEndTime": "2026-11-15T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-14T06:57+08:00",
+    "sunset": "2026-11-14T16:59+08:00",
+    "astronomicalDawn": "2026-11-14T05:24+08:00",
+    "nauticalDawn": "2026-11-14T05:56+08:00",
+    "civilDawn": "2026-11-14T06:28+08:00",
+    "astronomicalDusk": "2026-11-14T18:32+08:00",
+    "nauticalDusk": "2026-11-14T18:00+08:00",
+    "civilDusk": "2026-11-14T17:28+08:00",
+    "solarNoon": "2026-11-14T11:58+08:00",
+    "solarMidnight": "2026-11-14T23:58+08:00",
+    "moonrise": "2026-11-14T11:24+08:00",
+    "moonset": "2026-11-14T20:35+08:00",
+    "moonTransit": "2026-11-14T15:58+08:00",
+    "moonUnderfoot": "2026-11-14T03:33+08:00",
+    "moonPhase": "waxing-crescent"
+   },
+   "temperatureMax": {
+    "value": 13.44,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 3.61,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 7.74,
+    "unit": "°C"
+   },
+   "uvIndexMax": 1,
+   "daytime": {
+    "forecastStartTime": "2026-11-14T07:00+08:00",
+    "forecastEndTime": "2026-11-14T19:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 13.44,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.85,
+     "unit": "°C"
+    },
+    "humidity": 0.51,
+    "wind": {
+     "direction": {
+      "degree": 46,
+      "compass": "ne"
+     },
+     "speed": {
+      "value": 0.94,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 4.28,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.03
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-14T19:00+08:00",
+    "forecastEndTime": "2026-11-15T07:00+08:00",
+    "condition": {
+     "text": "少云",
+     "code": "102"
+    },
+    "temperatureMax": {
+     "value": 9.84,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 5.6,
+     "unit": "°C"
+    },
+    "humidity": 0.63,
+    "wind": {
+     "direction": {
+      "degree": 1,
+      "compass": "n"
+     },
+     "speed": {
+      "value": 1.07,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 7.42,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.17
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-15T00:00+08:00",
+   "forecastEndTime": "2026-11-16T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-15T06:58+08:00",
+    "sunset": "2026-11-15T16:58+08:00",
+    "astronomicalDawn": "2026-11-15T05:25+08:00",
+    "nauticalDawn": "2026-11-15T05:57+08:00",
+    "civilDawn": "2026-11-15T06:29+08:00",
+    "astronomicalDusk": "2026-11-15T18:32+08:00",
+    "nauticalDusk": "2026-11-15T18:00+08:00",
+    "civilDusk": "2026-11-15T17:27+08:00",
+    "solarNoon": "2026-11-15T11:58+08:00",
+    "solarMidnight": "2026-11-15T23:58+08:00",
+    "moonrise": "2026-11-15T12:00+08:00",
+    "moonset": "2026-11-15T21:37+08:00",
+    "moonTransit": "2026-11-15T16:45+08:00",
+    "moonUnderfoot": "2026-11-15T04:22+08:00",
+    "moonPhase": "waxing-crescent"
+   },
+   "temperatureMax": {
+    "value": 11.01,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 5.6,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 7.71,
+    "unit": "°C"
+   },
+   "uvIndexMax": 2,
+   "daytime": {
+    "forecastStartTime": "2026-11-15T07:00+08:00",
+    "forecastEndTime": "2026-11-15T19:00+08:00",
+    "condition": {
+     "text": "晴间多云",
+     "code": "103"
+    },
+    "temperatureMax": {
+     "value": 11.01,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 6.04,
+     "unit": "°C"
+    },
+    "humidity": 0.47,
+    "wind": {
+     "direction": {
+      "degree": 45,
+      "compass": "ne"
+     },
+     "speed": {
+      "value": 1.82,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 8.73,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.33
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-15T19:00+08:00",
+    "forecastEndTime": "2026-11-16T07:00+08:00",
+    "condition": {
+     "text": "多云",
+     "code": "101"
+    },
+    "temperatureMax": {
+     "value": 8.37,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.66,
+     "unit": "°C"
+    },
+    "humidity": 0.53,
+    "wind": {
+     "direction": {
+      "degree": 113,
+      "compass": "ese"
+     },
+     "speed": {
+      "value": 1.65,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 4.25,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0.2,
+     "type": "none"
+    },
+    "cloudCover": 0.72
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-16T00:00+08:00",
+   "forecastEndTime": "2026-11-17T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-16T06:59+08:00",
+    "sunset": "2026-11-16T16:57+08:00",
+    "astronomicalDawn": "2026-11-16T05:26+08:00",
+    "nauticalDawn": "2026-11-16T05:58+08:00",
+    "civilDawn": "2026-11-16T06:30+08:00",
+    "astronomicalDusk": "2026-11-16T18:31+08:00",
+    "nauticalDusk": "2026-11-16T17:59+08:00",
+    "civilDusk": "2026-11-16T17:26+08:00",
+    "solarNoon": "2026-11-16T11:59+08:00",
+    "solarMidnight": "2026-11-16T23:59+08:00",
+    "moonrise": "2026-11-16T12:30+08:00",
+    "moonset": "2026-11-16T22:39+08:00",
+    "moonTransit": "2026-11-16T17:31+08:00",
+    "moonUnderfoot": "2026-11-16T05:08+08:00",
+    "moonPhase": "waxing-crescent"
+   },
+   "temperatureMax": {
+    "value": 7.93,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 3.83,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 5.93,
+    "unit": "°C"
+   },
+   "uvIndexMax": 4,
+   "daytime": {
+    "forecastStartTime": "2026-11-16T07:00+08:00",
+    "forecastEndTime": "2026-11-16T19:00+08:00",
+    "condition": {
+     "text": "晴间多云",
+     "code": "103"
+    },
+    "temperatureMax": {
+     "value": 7.93,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.54,
+     "unit": "°C"
+    },
+    "humidity": 0.46,
+    "wind": {
+     "direction": {
+      "degree": 136,
+      "compass": "se"
+     },
+     "speed": {
+      "value": 1.02,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 4.17,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0.17,
+     "type": "none"
+    },
+    "cloudCover": 0.46
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-16T19:00+08:00",
+    "forecastEndTime": "2026-11-17T07:00+08:00",
+    "condition": {
+     "text": "晴间多云",
+     "code": "103"
+    },
+    "temperatureMax": {
+     "value": 5.67,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 1.88,
+     "unit": "°C"
+    },
+    "humidity": 0.72,
+    "wind": {
+     "direction": {
+      "degree": 5,
+      "compass": "n"
+     },
+     "speed": {
+      "value": 0.27,
+      "unit": "m/s"
+     },
+     "scale": 0
+    },
+    "windGustMax": {
+     "value": 1.78,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0.17,
+     "type": "none"
+    },
+    "cloudCover": 0.43
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-17T00:00+08:00",
+   "forecastEndTime": "2026-11-18T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-17T07:01+08:00",
+    "sunset": "2026-11-17T16:57+08:00",
+    "astronomicalDawn": "2026-11-17T05:27+08:00",
+    "nauticalDawn": "2026-11-17T05:59+08:00",
+    "civilDawn": "2026-11-17T06:32+08:00",
+    "astronomicalDusk": "2026-11-17T18:30+08:00",
+    "nauticalDusk": "2026-11-17T17:58+08:00",
+    "civilDusk": "2026-11-17T17:26+08:00",
+    "solarNoon": "2026-11-17T11:59+08:00",
+    "solarMidnight": "2026-11-17T23:59+08:00",
+    "moonrise": "2026-11-17T12:56+08:00",
+    "moonset": "2026-11-17T23:42+08:00",
+    "moonTransit": "2026-11-17T18:15+08:00",
+    "moonUnderfoot": "2026-11-17T05:53+08:00",
+    "moonPhase": "first-quarter"
+   },
+   "temperatureMax": {
+    "value": 8.11,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 1.86,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 4.83,
+    "unit": "°C"
+   },
+   "uvIndexMax": 2,
+   "daytime": {
+    "forecastStartTime": "2026-11-17T07:00+08:00",
+    "forecastEndTime": "2026-11-17T19:00+08:00",
+    "condition": {
+     "text": "多云",
+     "code": "101"
+    },
+    "temperatureMax": {
+     "value": 8.11,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 1.86,
+     "unit": "°C"
+    },
+    "humidity": 0.69,
+    "wind": {
+     "direction": {
+      "degree": 207,
+      "compass": "ssw"
+     },
+     "speed": {
+      "value": 0.89,
+      "unit": "m/s"
+     },
+     "scale": 1
+    },
+    "windGustMax": {
+     "value": 5.5,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0.03,
+     "type": "none"
+    },
+    "cloudCover": 0.72
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-17T19:00+08:00",
+    "forecastEndTime": "2026-11-18T07:00+08:00",
+    "condition": {
+     "text": "晴间多云",
+     "code": "103"
+    },
+    "temperatureMax": {
+     "value": 6.52,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 2.89,
+     "unit": "°C"
+    },
+    "humidity": 0.41,
+    "wind": {
+     "direction": {
+      "degree": 320,
+      "compass": "nw"
+     },
+     "speed": {
+      "value": 4.62,
+      "unit": "m/s"
+     },
+     "scale": 3
+    },
+    "windGustMax": {
+     "value": 13.41,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.38
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-18T00:00+08:00",
+   "forecastEndTime": "2026-11-19T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-18T07:02+08:00",
+    "sunset": "2026-11-18T16:56+08:00",
+    "astronomicalDawn": "2026-11-18T05:28+08:00",
+    "nauticalDawn": "2026-11-18T06:00+08:00",
+    "civilDawn": "2026-11-18T06:33+08:00",
+    "astronomicalDusk": "2026-11-18T18:30+08:00",
+    "nauticalDusk": "2026-11-18T17:58+08:00",
+    "civilDusk": "2026-11-18T17:25+08:00",
+    "solarNoon": "2026-11-18T11:59+08:00",
+    "solarMidnight": "2026-11-18T23:59+08:00",
+    "moonrise": "2026-11-18T13:19+08:00",
+    "moonset": null,
+    "moonTransit": "2026-11-18T18:57+08:00",
+    "moonUnderfoot": "2026-11-18T06:36+08:00",
+    "moonPhase": "waxing-gibbous"
+   },
+   "temperatureMax": {
+    "value": 9.91,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 2.89,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 6.16,
+    "unit": "°C"
+   },
+   "uvIndexMax": 3,
+   "daytime": {
+    "forecastStartTime": "2026-11-18T07:00+08:00",
+    "forecastEndTime": "2026-11-18T19:00+08:00",
+    "condition": {
+     "text": "少云",
+     "code": "102"
+    },
+    "temperatureMax": {
+     "value": 9.91,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 3.95,
+     "unit": "°C"
+    },
+    "humidity": 0.25,
+    "wind": {
+     "direction": {
+      "degree": 319,
+      "compass": "nw"
+     },
+     "speed": {
+      "value": 4.96,
+      "unit": "m/s"
+     },
+     "scale": 3
+    },
+    "windGustMax": {
+     "value": 10.54,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.17
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-18T19:00+08:00",
+    "forecastEndTime": "2026-11-19T07:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 7.8,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.15,
+     "unit": "°C"
+    },
+    "humidity": 0.31,
+    "wind": {
+     "direction": {
+      "degree": 321,
+      "compass": "nw"
+     },
+     "speed": {
+      "value": 2.38,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 8.02,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-19T00:00+08:00",
+   "forecastEndTime": "2026-11-20T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-19T07:03+08:00",
+    "sunset": "2026-11-19T16:55+08:00",
+    "astronomicalDawn": "2026-11-19T05:29+08:00",
+    "nauticalDawn": "2026-11-19T06:01+08:00",
+    "civilDawn": "2026-11-19T06:34+08:00",
+    "astronomicalDusk": "2026-11-19T18:29+08:00",
+    "nauticalDusk": "2026-11-19T17:57+08:00",
+    "civilDusk": "2026-11-19T17:24+08:00",
+    "solarNoon": "2026-11-19T11:59+08:00",
+    "solarMidnight": "2026-11-19T23:59+08:00",
+    "moonrise": "2026-11-19T13:42+08:00",
+    "moonset": "2026-11-19T00:45+08:00",
+    "moonTransit": "2026-11-19T19:40+08:00",
+    "moonUnderfoot": "2026-11-19T07:19+08:00",
+    "moonPhase": "waxing-gibbous"
+   },
+   "temperatureMax": {
+    "value": 12.59,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 4.15,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 8.14,
+    "unit": "°C"
+   },
+   "uvIndexMax": 3,
+   "daytime": {
+    "forecastStartTime": "2026-11-19T07:00+08:00",
+    "forecastEndTime": "2026-11-19T19:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 12.59,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.15,
+     "unit": "°C"
+    },
+    "humidity": 0.24,
+    "wind": {
+     "direction": {
+      "degree": 249,
+      "compass": "wsw"
+     },
+     "speed": {
+      "value": 2.21,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 8.5,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.01
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-19T19:00+08:00",
+    "forecastEndTime": "2026-11-20T07:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 10.08,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.6,
+     "unit": "°C"
+    },
+    "humidity": 0.23,
+    "wind": {
+     "direction": {
+      "degree": 335,
+      "compass": "nnw"
+     },
+     "speed": {
+      "value": 5.02,
+      "unit": "m/s"
+     },
+     "scale": 3
+    },
+    "windGustMax": {
+     "value": 10.3,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.05
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-20T00:00+08:00",
+   "forecastEndTime": "2026-11-21T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-20T07:04+08:00",
+    "sunset": "2026-11-20T16:55+08:00",
+    "astronomicalDawn": "2026-11-20T05:30+08:00",
+    "nauticalDawn": "2026-11-20T06:02+08:00",
+    "civilDawn": "2026-11-20T06:35+08:00",
+    "astronomicalDusk": "2026-11-20T18:29+08:00",
+    "nauticalDusk": "2026-11-20T17:57+08:00",
+    "civilDusk": "2026-11-20T17:24+08:00",
+    "solarNoon": "2026-11-20T11:59+08:00",
+    "solarMidnight": null,
+    "moonrise": "2026-11-20T14:04+08:00",
+    "moonset": "2026-11-20T01:49+08:00",
+    "moonTransit": "2026-11-20T20:24+08:00",
+    "moonUnderfoot": "2026-11-20T08:02+08:00",
+    "moonPhase": "waxing-gibbous"
+   },
+   "temperatureMax": {
+    "value": 9.55,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 4.6,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 6.89,
+    "unit": "°C"
+   },
+   "uvIndexMax": 3,
+   "daytime": {
+    "forecastStartTime": "2026-11-20T07:00+08:00",
+    "forecastEndTime": "2026-11-20T19:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 9.55,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 4.6,
+     "unit": "°C"
+    },
+    "humidity": 0.18,
+    "wind": {
+     "direction": {
+      "degree": 319,
+      "compass": "nw"
+     },
+     "speed": {
+      "value": 4.82,
+      "unit": "m/s"
+     },
+     "scale": 3
+    },
+    "windGustMax": {
+     "value": 11.43,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-20T19:00+08:00",
+    "forecastEndTime": "2026-11-21T07:00+08:00",
+    "condition": {
+     "text": "晴",
+     "code": "100"
+    },
+    "temperatureMax": {
+     "value": 7.39,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 3.56,
+     "unit": "°C"
+    },
+    "humidity": 0.23,
+    "wind": {
+     "direction": {
+      "degree": 315,
+      "compass": "nw"
+     },
+     "speed": {
+      "value": 3.19,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 9.56,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0
+   }
+  },
+  {
+   "forecastStartTime": "2026-11-21T00:00+08:00",
+   "forecastEndTime": "2026-11-22T00:00+08:00",
+   "astro": {
+    "sunrise": "2026-11-21T07:05+08:00",
+    "sunset": "2026-11-21T16:54+08:00",
+    "astronomicalDawn": "2026-11-21T05:31+08:00",
+    "nauticalDawn": "2026-11-21T06:03+08:00",
+    "civilDawn": "2026-11-21T06:36+08:00",
+    "astronomicalDusk": "2026-11-21T18:28+08:00",
+    "nauticalDusk": "2026-11-21T17:56+08:00",
+    "civilDusk": "2026-11-21T17:23+08:00",
+    "solarNoon": "2026-11-21T12:00+08:00",
+    "solarMidnight": "2026-11-21T00:00+08:00",
+    "moonrise": "2026-11-21T14:28+08:00",
+    "moonset": "2026-11-21T02:55+08:00",
+    "moonTransit": "2026-11-21T21:11+08:00",
+    "moonUnderfoot": "2026-11-21T08:47+08:00",
+    "moonPhase": "waxing-gibbous"
+   },
+   "temperatureMax": {
+    "value": 10.13,
+    "unit": "°C"
+   },
+   "temperatureMin": {
+    "value": 3.56,
+    "unit": "°C"
+   },
+   "temperatureAvg": {
+    "value": 6.68,
+    "unit": "°C"
+   },
+   "uvIndexMax": 3,
+   "daytime": {
+    "forecastStartTime": "2026-11-21T07:00+08:00",
+    "forecastEndTime": "2026-11-21T19:00+08:00",
+    "condition": {
+     "text": "少云",
+     "code": "102"
+    },
+    "temperatureMax": {
+     "value": 10.13,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 3.56,
+     "unit": "°C"
+    },
+    "humidity": 0.25,
+    "wind": {
+     "direction": {
+      "degree": 217,
+      "compass": "sw"
+     },
+     "speed": {
+      "value": 2.23,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 5.36,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.14
+   },
+   "nighttime": {
+    "forecastStartTime": "2026-11-21T19:00+08:00",
+    "forecastEndTime": "2026-11-22T07:00+08:00",
+    "condition": {
+     "text": "少云",
+     "code": "102"
+    },
+    "temperatureMax": {
+     "value": 7.65,
+     "unit": "°C"
+    },
+    "temperatureMin": {
+     "value": 5.79,
+     "unit": "°C"
+    },
+    "humidity": 0.29,
+    "wind": {
+     "direction": {
+      "degree": 332,
+      "compass": "nnw"
+     },
+     "speed": {
+      "value": 2.14,
+      "unit": "m/s"
+     },
+     "scale": 2
+    },
+    "windGustMax": {
+     "value": 9.87,
+     "unit": "m/s"
+    },
+    "precipitation": {
+     "amount": {
+      "value": 0,
+      "unit": "mm"
+     },
+     "probability": 0,
+     "type": "none"
+    },
+    "cloudCover": 0.07
+   }
+  }
+ ]
+}

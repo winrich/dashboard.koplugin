@@ -1,0 +1,160 @@
+{
+ "metadata": {
+  "tag": "f03e947b2a7de595de1f7ec7d9d24912e728c6a0c5c2210c0a5651201a4f58ca",
+  "attributions": [
+   "https://developer.qweather.com/attribution.html"
+  ]
+ },
+ "indexes": [
+  {
+   "code": "cn-mee",
+   "name": "AQI (CN)",
+   "aqi": 132,
+   "aqiDisplay": "132",
+   "level": "3",
+   "category": "轻度污染",
+   "color": {
+    "red": 255,
+    "green": 126,
+    "blue": 0,
+    "alpha": 1
+   },
+   "primaryPollutant": {
+    "code": "pm2p5",
+    "name": "PM 2.5",
+    "fullName": "颗粒物（粒径小于等于2.5µm）"
+   },
+   "health": {
+    "effect": "易感人群症状有轻度加剧，健康人群出现刺激症状。",
+    "advice": {
+     "generalPopulation": "一般人群可正常活动。",
+     "sensitivePopulation": "儿童、老年人及心脏病、呼吸系统疾病患者应减少长时间、高强度的户外锻炼。"
+    }
+   }
+  }
+ ],
+ "pollutants": [
+  {
+   "code": "pm2p5",
+   "name": "PM 2.5",
+   "fullName": "颗粒物（粒径小于等于2.5µm）",
+   "concentration": {
+    "value": 95.0,
+    "unit": "μg/m³"
+   },
+   "subIndexes": [
+    {
+     "code": "cn-mee",
+     "aqi": 132,
+     "aqiDisplay": "132"
+    }
+   ]
+  },
+  {
+   "code": "pm10",
+   "name": "PM 10",
+   "fullName": "颗粒物（粒径小于等于10µm）",
+   "concentration": {
+    "value": 123.0,
+    "unit": "μg/m³"
+   },
+   "subIndexes": [
+    {
+     "code": "cn-mee",
+     "aqi": 102,
+     "aqiDisplay": "102"
+    }
+   ]
+  },
+  {
+   "code": "no2",
+   "name": "NO2",
+   "fullName": "二氧化氮",
+   "concentration": {
+    "value": 31.0,
+    "unit": "μg/m³"
+   },
+   "subIndexes": [
+    {
+     "code": "cn-mee",
+     "aqi": 16,
+     "aqiDisplay": "16"
+    }
+   ]
+  },
+  {
+   "code": "o3",
+   "name": "O3",
+   "fullName": "臭氧",
+   "concentration": {
+    "value": 50.0,
+    "unit": "μg/m³"
+   },
+   "subIndexes": [
+    {
+     "code": "cn-mee",
+     "aqi": 16,
+     "aqiDisplay": "16"
+    }
+   ]
+  },
+  {
+   "code": "so2",
+   "name": "SO2",
+   "fullName": "二氧化硫",
+   "concentration": {
+    "value": 4.0,
+    "unit": "μg/m³"
+   },
+   "subIndexes": [
+    {
+     "code": "cn-mee",
+     "aqi": 2,
+     "aqiDisplay": "2"
+    }
+   ]
+  },
+  {
+   "code": "co",
+   "name": "CO",
+   "fullName": "一氧化碳",
+   "concentration": {
+    "value": 0.8,
+    "unit": "mg/m³"
+   },
+   "subIndexes": [
+    {
+     "code": "cn-mee",
+     "aqi": 8,
+     "aqiDisplay": "8"
+    }
+   ]
+  }
+ ],
+ "stations": [
+  {
+   "id": "P58655",
+   "name": "万寿西宫"
+  },
+  {
+   "id": "P59067",
+   "name": "天坛"
+  },
+  {
+   "id": "P52102",
+   "name": "东四"
+  },
+  {
+   "id": "P5257",
+   "name": "官园"
+  },
+  {
+   "id": "P57961",
+   "name": "奥体中心"
+  },
+  {
+   "id": "P56750",
+   "name": "农展馆"
+  }
+ ]
+}
