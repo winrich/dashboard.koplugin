@@ -697,13 +697,16 @@ do
     end
 
     -- 600x900 的「封面位图」：写 PNG 时把 tools/fixtures/cover_demo.png 拷过去，
-    -- 这样落盘的是真 PNG，预览图也能把它画出来。
+    -- 这样落盘的是真 PNG，预览图也能把它画出来。英文出图换英文封面，
+    -- 否则 README.en.md 的阅读卡里会冒出中文书名。
     local function make_cover_bb()
+        local _cv_en = os.getenv("STUB_LANG") == "en"
         return {
             getWidth = function() return 600 end,
             getHeight = function() return 900 end,
             writePNG = function(_, path)
-                return copy_file("tools/fixtures/cover_demo.png", path)
+                return copy_file(_cv_en and "tools/fixtures/cover_demo_en.png"
+                    or "tools/fixtures/cover_demo.png", path)
             end,
             free = function() end,
         }
@@ -765,11 +768,16 @@ do
     end
 
     if os.getenv("STUB_READING") then
+        -- 书名跟语言走：README.en.md 的图里不能出现中文（STUB_LANG 在文件后面才读，
+        -- 这里直接查环境变量，别依赖后面的 _env_lang）
+        local _rd_en = os.getenv("STUB_LANG") == "en"
+        local _rd_title = _rd_en and "The Three-Body Problem" or "三体（全集）"
+        local _rd_author = _rd_en and "Liu Cixin" or "刘慈欣"
         package.preload["docsettings"] = function()
             return { open = function(_, _path)
                 return { readSetting = function(_, key)
                     if key == "stats" then
-                        return { title = "三体（全集）", authors = "刘慈欣", pages = 1203 }
+                        return { title = _rd_title, authors = _rd_author, pages = 1203 }
                     elseif key == "percent_finished" then
                         return 0.37
                     end
@@ -777,7 +785,7 @@ do
                 end }
             end }
         end
-        G_settings:saveSetting("lastfile", "/mnt/us/documents/三体（全集）.epub")
+        G_settings:saveSetting("lastfile", "/mnt/us/documents/" .. _rd_title .. ".epub")
     end
 
     -- 预览专用：注入一组倒数日 / 待办。出图脚本按「今天」现算日期，
@@ -2546,6 +2554,25 @@ if I18n.weekdayHead(2) ~= "Mo" then bad_en[#bad_en + 1] = "月历表头" end
 if I18n.zodiacYear("马") ~= "Year of the Horse" then
     bad_en[#bad_en + 1] = "生肖年份 " .. tostring(I18n.zodiacYear("马"))
 end
+-- 农历也要全英文：英文图里出现「十月初四」就是 README.en.md 的穿帮
+local lunar_probe = { year = 2026, month = 10, day = 4, leap = false }
+if I18n.lunarMonthDay(lunar_probe) ~= "Month 10, Day 4" then
+    bad_en[#bad_en + 1] = "农历月日 " .. tostring(I18n.lunarMonthDay(lunar_probe))
+end
+if I18n.lunarMonthDay({ year = 2026, month = 6, day = 1, leap = true }) ~= "Leap Month 6, Day 1" then
+    bad_en[#bad_en + 1] = "农历闰月 " .. tostring(I18n.lunarMonthDay(
+        { year = 2026, month = 6, day = 1, leap = true }))
+end
+if I18n.lunarGanzhi(lunar_probe) ~= "Bing-Wu" then
+    bad_en[#bad_en + 1] = "干支 " .. tostring(I18n.lunarGanzhi(lunar_probe))
+end
+if I18n.lunarMonthDay(lunar_probe):find("[\228-\233]") then
+    bad_en[#bad_en + 1] = "农历月日仍含汉字"
+end
+-- 「1 items」是机翻味道，量词必须跟单复数
+if I18n.items(1) ~= "item" or I18n.items(3) ~= "items" then
+    bad_en[#bad_en + 1] = "量词单复数 " .. I18n.items(1) .. "/" .. I18n.items(3)
+end
 if I18n.termProgress(I18n.term("立冬"), 5) ~= "Start of Winter · day 5" then
     bad_en[#bad_en + 1] = "节气进度 " .. I18n.termProgress(I18n.term("立冬"), 5)
 end
@@ -2572,6 +2599,15 @@ if wd_zh.cond ~= "雾" or wd_zh.wind ~= "3 级" or wd_zh.wind_dir ~= "东南风"
 end
 if I18n.city(instance:getCity()) ~= "北京" or I18n.weekdayHead(2) ~= "一" then
     print("[FAIL] 中文模式的城市名或月历表头不对")
+    os.exit(1)
+end
+-- 中文农历必须原样退回「十月初四 / 丙午」，别被英文分支带跑
+if I18n.lunarMonthDay(lunar_probe) ~= "十月初四"
+    or I18n.lunarGanzhi(lunar_probe) ~= "丙午"
+    or I18n.items(1) ~= "项" then
+    print("[FAIL] 中文模式的农历或量词被改坏："
+        .. tostring(I18n.lunarMonthDay(lunar_probe)) .. " / "
+        .. tostring(I18n.lunarGanzhi(lunar_probe)) .. " / " .. I18n.items(1))
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = "== 多语言：英文本地化、数据层文案、未收录回落、切回中文 =="

@@ -1,5 +1,7 @@
 # Kindle 桌面看板（KOReader 插件）
 
+**中文** · [English](README.en.md)
+
 一个常驻全屏的桌面看板：时钟、公历日期与星期、农历（干支/生肖）、当前节气与进度、
 当日天气（含图标）、湿度、风向风力、空气质量 AQI、日出日落。
 按屏幕方向自动切换版式，支持自选时区与国内直辖市/省会和港澳台城市。
@@ -201,7 +203,11 @@ BlitBuffer），不显式调一次就永远拿不到——这就是早年版本�
   时按中文——避免升级后看板突然变英文。
 - 文案表在 `dashboard_i18n.lua`，**键就是中文原文**；缺词条时原样显示中文、不报错。
   覆盖率用 `python tools/i18n_check.py` 检查，缺哪条一目了然。
-- 农历月日与干支仍显示汉字（中国历法专名），节气给英文译名，星期与日期按英文格式。
+- 农历也改成英文写法：月日显示 `Month 10, Day 4`（闰月 `Leap Month 6, Day 1`），
+  干支用拼音 `Bing-Wu` 并配 `Year of the Horse`。中文模式下仍是「十月初四 / 丙午」不变。
+- 英文的农历两段都长（`Month 10, Day 4` + `Year of the Horse`），并排要 1200 px，竖屏 920、
+  横屏中栏 630 都放不下，所以**英文改成三段居中竖排**；横屏还要按宽度逐档降到能单行放下的字号
+  （54 → 30），否则会折成「Month 10, Day / 4」。中文模式仍是「左大字 + 右干支两行」。
 
 英文模式下这些「拼出来的」文案也一并换掉，而不是只翻静态标签：
 
@@ -247,6 +253,7 @@ kindle-dashboard/
 │  ├─ _meta.lua                 插件元信息
 │  └─ icons/                    12 个单色天气图标（320×320 PNG，屏上显示约 150px）
 ├─ preview/                     README 里的预览图（board.html 渲染 + 竖屏/横屏 PNG）
+│  └─ en/                       英文版预览图（README.en.md 用，`python tools/render_board.py en`）
 └─ tools/                       开发期校验工具（不需要拷到设备）
    ├─ run_stub.py               一键跑 7 种尺寸/方向的冒烟测试
    ├─ stub_test.lua             KOReader API 桩，跑完整生命周期
@@ -257,7 +264,8 @@ kindle-dashboard/
    ├─ moon_check.py             月相三项校验：对和风逐日、食相锚点、400 天自洽
    ├─ fixtures/                 接口响应样本（已脱敏），离线可复现的数据层断言
    ├─ package.py                打包成 zip（自动跳过本机凭据文件）
-   └─ gen_icons.py              天气图标生成器
+   ├─ gen_icons.py              天气图标生成器
+   └─ render_board.py           出 README 预览图（`python tools/render_board.py`，加 `en` 出英文版）
 ```
 
 ## 凭据配置（和风天气，**可选**）
@@ -413,7 +421,7 @@ MobileRead 上做 Kindle 屏保工具的开发者的原话：
    会把 `screen_saver_mode` 复位成 `false` 的地方，跳过它下次休眠就进不了 show 分支。
 2. 渲染后要 `UIManager:forceRePaint()` **同步刷完**再让挂起继续，否则屏幕留在旧画面上。
 
-
+## 版心与字号
 
 整块版心按「屏幕尺寸 - 2 × 边距」排版，四边都留白，长分隔线也跟着内缩（以前是通屏宽，
 所以看着贴着屏幕边）：
@@ -578,6 +586,7 @@ MobileRead 上做 Kindle 屏保工具的开发者的原话：
 | 空气 6 项 | 两个数据源都断言 `parts` 恰为 6 项（pm2p5/pm10/o3/no2/so2/co）、首要污染物为 `pm2p5`、CO 单位归一到 `mg/m³` 且数值 2.634（和风 2634 μg/m³ ÷ 1000、Open-Meteo 同量级） |
 | 七日预报 | 断言 `daily` 恰为 7 天、日期从 `forecastStartTime` 逐日 `+1d` 推得、日出日落与 `astro` 一致、昼夜现象与 moonphase 都对上 |
 | 多语言（版面） | 英文页脚单行 907/920（直译版 924 会折行，已压短）；节气行英文单独降字号后单行 878/920；顶栏 `Beijing · UTC+8` 不折行 |
+| 多语言（农历） | 断言英文为 `Month 10, Day 4` / 闰月 `Leap Month 6, Day 1` / 干支 `Bing-Wu`，且结果串里不含汉字；量词断言 `items(1) = "item"`、`items(3) = "items"`；切回中文后必须还原成「十月初四 / 丙午 / 项」 |
 
 尚未验证（必须上机确认，不做承诺）：
 

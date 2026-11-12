@@ -232,7 +232,7 @@ local EN = {
     ["添加待办"] = "Add a to-do",
     ["置顶这条"] = "Pin this",
     ["取消置顶"] = "Unpin",
-    ["项"] = "items",
+    -- 「项」不再走查表：英文要单复数（1 item / 2 items），由 M.items() 处理
     -- 录入失败时的提示。英文要把「怎么写」一起说清楚，否则用户不知道错在哪
     ["内容不能为空。"] = "The text cannot be empty.",
     ["名称不能为空。"] = "The name cannot be empty.",
@@ -389,6 +389,38 @@ function M.zodiac(name, index)
         if n == name then return ZODIAC_EN[i] or name end
     end
     return name
+end
+
+-- 天干 / 地支拼音（与 dashboard_lunar 的 GAN / ZHI 同序）
+local STEM_EN = { "Jia", "Yi", "Bing", "Ding", "Wu", "Ji", "Geng", "Xin", "Ren", "Gui" }
+local BRANCH_EN = { "Zi", "Chou", "Yin", "Mao", "Chen", "Si", "Wu", "Wei",
+                    "Shen", "You", "Xu", "Hai" }
+
+--- 农历干支年。英文用拼音（Bing-Wu），中文原样（丙午）。
+--- 英文读者单看拼音没意义，但下面一行紧跟 in the Year of the Horse，两行叠起来才完整。
+function M.lunarGanzhi(lunar)
+    if M.lang() ~= "en" then
+        return require("dashboard_lunar").ganzhi_year(lunar)
+    end
+    local i = (lunar.year or 0) - 4
+    return STEM_EN[i % 10 + 1] .. "-" .. BRANCH_EN[i % 12 + 1]
+end
+
+--- 农历月日。英文 Month 10, Day 4（闰月 Leap Month 6），中文十月初四。
+function M.lunarMonthDay(lunar)
+    if M.lang() ~= "en" then
+        return require("dashboard_lunar").month_day_text(lunar)
+    end
+    return string.format("%sMonth %d, Day %d",
+        lunar.leap and "Leap " or "", lunar.month, lunar.day)
+end
+
+--- 「项」量词。英文要跟单复数：1 item / 2 items（"1 items" 一眼就是机翻）
+function M.items(n)
+    if M.lang() == "en" then
+        return (tonumber(n) == 1) and "item" or "items"
+    end
+    return "项"
 end
 
 --- 日期行。short=true 为竖屏（不带年份），false 为横屏（带年份）

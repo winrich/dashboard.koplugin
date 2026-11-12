@@ -121,7 +121,7 @@ local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.48"
+local DASHBOARD_VERSION = "2.49"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -2353,7 +2353,7 @@ function Dashboard:genTodoMenu()
         callback = function()
             local n = Agenda.clearDone()
             UIManager:show(InfoMessage:new{
-                text = string.format("%s %d %s", T("清除已完成"), n, T("项")),
+                text = string.format("%s %d %s", T("清除已完成"), n, I18n.items(n)),
                 timeout = 2,
             })
             self:afterAgendaChange()
@@ -3035,21 +3035,52 @@ function Dashboard:compLunar(ctx, w, h, k)
     })
     push(mkPad(w, math.floor(2 * S * k)))
 
-    local side = VerticalGroup:new{
-        align = "left",
-        self:makeText(ctx, Lunar.ganzhi_year(ctx.lunar), math.floor(30 * k)),
-        mkPad(1, math.floor(4 * S * k)),
-        self:makeText(ctx, I18n.zodiacYear(Lunar.zodiac(ctx.lunar)),
-            math.floor(22 * k), { gray = true }),
-    }
-    local big = self:makeText(ctx, Lunar.month_day_text(ctx.lunar), math.floor(54 * k))
-    local fill = math.max(math.floor(20 * S), w - big:getSize().w - side:getSize().w)
-    push(HorizontalGroup:new{
-        align = "center",
-        big,
-        mkPad(fill, 1),
-        side,
-    })
+    local big_txt = I18n.lunarMonthDay(ctx.lunar)
+    if I18n.lang() == "en" then
+        -- 英文这两段都长（Month 10, Day 4 / Year of the Horse），并排要 1200 px，
+        -- 竖屏 920 放不下，横屏 B 区 630 更放不下。改成三段居中竖排：
+        -- 宽度只取决于最长的一行，且总高比原来两行 side 还略低。
+        -- 横屏中栏只有 630 宽（竖屏 920），54 号的 "Month 10, Day 4" 要 800，
+        -- 靠 max_width 会折成两行（"Month 10, Day" / "4"），很难看。
+        -- 所以先按宽度逐档降字号，降到 30 号仍放不下才退回折行兜底。
+        local big_px = math.floor(54 * k)
+        local floor_px = math.max(28, math.floor(30 * k))
+        local big = self:makeText(ctx, big_txt, big_px)
+        while big_px > floor_px and big:getSize().w > w do
+            big_px = big_px - 2
+            big = self:makeText(ctx, big_txt, big_px)
+        end
+        if big:getSize().w > w then
+            big = self:makeText(ctx, big_txt, big_px, { max_width = w })
+        end
+        push(VerticalGroup:new{
+            align = "center",
+            big,
+        })
+        push(mkPad(w, math.floor(2 * S * k)))
+        push(CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(26 * S * k) },
+            self:makeText(ctx, string.format("%s · %s",
+                I18n.lunarGanzhi(ctx.lunar), I18n.zodiacYear(Lunar.zodiac(ctx.lunar))),
+                math.floor(20 * k), { gray = true, max_width = w }),
+        })
+    else
+        local side = VerticalGroup:new{
+            align = "left",
+            self:makeText(ctx, I18n.lunarGanzhi(ctx.lunar), math.floor(30 * k)),
+            mkPad(1, math.floor(4 * S * k)),
+            self:makeText(ctx, I18n.zodiacYear(Lunar.zodiac(ctx.lunar)),
+                math.floor(22 * k), { gray = true }),
+        }
+        local big = self:makeText(ctx, big_txt, math.floor(54 * k))
+        local fill = math.max(math.floor(20 * S), w - big:getSize().w - side:getSize().w)
+        push(HorizontalGroup:new{
+            align = "center",
+            big,
+            mkPad(fill, 1),
+            side,
+        })
+    end
     push(mkPad(w, math.floor(14 * S * k)))
 
     local term_text, ratio = self:termText(ctx, true)
@@ -3802,7 +3833,7 @@ function Dashboard:compTodo(ctx, w, h, k)
         if v.pending_future > 0 then
             -- 「今日无待办 · 未来 3 项」：让人知道不是数据丢了，只是今天没事
             sub = string.format("%s · %s %d %s", T("今日无待办"), T("未来"),
-                v.pending_future, T("项"))
+                v.pending_future, I18n.items(v.pending_future))
         else
             sub = TL("菜单 → 待办事项 → 添加", "Menu → To-dos → Add")
         end
@@ -3841,7 +3872,7 @@ function Dashboard:compTodo(ctx, w, h, k)
         if used + foot_h + math.floor(6 * S * k) <= h then
             rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
             rows[#rows + 1] = self:makeText(ctx,
-                string.format("%s %d %s", T("未来"), v.pending_future, T("项")),
+                string.format("%s %d %s", T("未来"), v.pending_future, I18n.items(v.pending_future)),
                 math.floor(16 * k), { gray = true })
         end
     end
@@ -3972,9 +4003,9 @@ function Dashboard:buildSidePanel(ctx, width, kf, max_h)
         align = "left",
         mt(T("农历"), 18, { gray = true }),
         mkPad(1, math.floor(2 * S)),
-        mt(Lunar.month_day_text(ctx.lunar), 32),
+        mt(I18n.lunarMonthDay(ctx.lunar), 32),
         mkPad(1, math.floor(4 * S)),
-        mt(string.format("%s · %s", Lunar.ganzhi_year(ctx.lunar),
+        mt(string.format("%s · %s", I18n.lunarGanzhi(ctx.lunar),
             I18n.zodiacYear(Lunar.zodiac(ctx.lunar))), 20, { gray = true }),
         mkPad(1, math.floor(8 * S)),
         Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },

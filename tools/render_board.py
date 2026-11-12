@@ -13,9 +13,11 @@
 只在出图时生效，测试不受影响。
 
 用法（项目根目录）：
-    python tools/render_board.py                # 出全部 10 张（竖屏 5 + 横屏 5）
-    python tools/render_board.py portrait       # 只出竖屏
-    python tools/render_board.py 2              # 只出第 2 套（两向都出）
+    python tools/render_board.py                # 出全部 10 张中文图到 preview/
+    python tools/render_board.py en             # 出全部 10 张英文图到 preview/en/
+    python tools/render_board.py en landscape   # 英文 + 只出横屏
+    python tools/render_board.py portrait       # 只出竖屏（中文）
+    python tools/render_board.py 2              # 只出第 2 套（所选语言）
 """
 
 import atexit
@@ -387,6 +389,24 @@ AGENDA = {
     ],
 }
 
+# 英文出图用同一组事件，只换文案：README.en.md 的图里不能出现中文
+AGENDA_EN = {
+    "events": [
+        ("Mom's birthday", 18, True),
+        ("Company party", 9, False),
+        ("Wedding anniversary", 45, False),
+        ("Winter break", 63, False),
+        ("Last checkup", -12, False),
+    ],
+    "todos": [
+        ("Submit monthly report", 0, False),
+        ("Fix cover logic", 0, False),
+        ("Buy milk", 0, True),
+        ("Home visit: Li Ming", 1, False),
+        ("Pay electric bill", -1, False),
+    ],
+}
+
 # 真机数据（预览图不用 -- 占位符）：电量 58% 未充电、WiFi 已连接、在读《三体》37%
 POWER, WIFI, READING = "58", "on", "1"
 
@@ -394,14 +414,16 @@ POWER, WIFI, READING = "58", "on", "1"
 def render(preset, lang="zh"):
     rot = 0 if preset["orient"] == "portrait" else 1
     dw, dh = (NATIVE_W, NATIVE_H) if rot == 0 else (NATIVE_H, NATIVE_W)
+    agenda = AGENDA_EN if lang == "en" else AGENDA
     items = grab(NATIVE_W, NATIVE_H, rot, preset["zones"], lang, POWER, WIFI, READING,
-                 agenda_block(AGENDA))
+                 agenda_block(agenda))
     img = draw_items(items, dw, dh)
     img = border(img, pad=0)
-    os.makedirs(OUT_DIR, exist_ok=True)
-    path = os.path.join(OUT_DIR, preset["id"] + ".png")
+    out_dir = os.path.join(OUT_DIR, "en") if lang == "en" else OUT_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, preset["id"] + ".png")
     img.save(path, optimize=True)
-    print(f"[OK] {preset['id']:<12} {dw}×{dh}  {len(items):>3} 个元素  {preset['title']}")
+    print(f"[OK] {lang} {preset['id']:<12} {dw}×{dh}  {len(items):>3} 个元素  {preset['title']}")
     return path
 
 
@@ -409,24 +431,30 @@ def main():
     args = sys.argv[1:]
     only_orient = None
     only_idx = None
+    langs = []
     for a in args:
         if a in ("portrait", "landscape"):
             only_orient = a
+        elif a in ("zh", "en"):
+            langs.append(a)
         elif a.isdigit():
             only_idx = int(a)
-    done = 0
-    # 每个方向单独编号：加了第 5 套之后再用「i <= 4」判断会把 landscape 的第 1 套算成 5
-    seen = {"portrait": 0, "landscape": 0}
-    for p in PRESETS:
-        seen[p["orient"]] += 1
-        idx = seen[p["orient"]]
-        if only_orient and p["orient"] != only_orient:
-            continue
-        if only_idx and idx != only_idx:
-            continue
-        render(p)
-        done += 1
-    print(f"\n共 {done} 张，输出目录：{OUT_DIR}")
+    # 不指定语言时保持老行为：只出中文，不覆盖已有的英文图
+    for lang in (langs or ["zh"]):
+        done = 0
+        # 每个方向单独编号：加了第 5 套之后再用「i <= 4」判断会把 landscape 的第 1 套算成 5
+        seen = {"portrait": 0, "landscape": 0}
+        for p in PRESETS:
+            seen[p["orient"]] += 1
+            idx = seen[p["orient"]]
+            if only_orient and p["orient"] != only_orient:
+                continue
+            if only_idx and idx != only_idx:
+                continue
+            render(p, lang)
+            done += 1
+        where = os.path.join(OUT_DIR, "en") if lang == "en" else OUT_DIR
+        print(f"\n[{lang}] 共 {done} 张，输出目录：{where}")
 
 
 if __name__ == "__main__":
