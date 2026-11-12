@@ -13,12 +13,13 @@
 只在出图时生效，测试不受影响。
 
 用法（项目根目录）：
-    python tools/render_board.py                # 出全部 8 张（竖屏 4 + 横屏 4）
+    python tools/render_board.py                # 出全部 10 张（竖屏 5 + 横屏 5）
     python tools/render_board.py portrait       # 只出竖屏
     python tools/render_board.py 2              # 只出第 2 套（两向都出）
 """
 
 import atexit
+import datetime
 import os
 import shutil
 import subprocess
@@ -144,12 +145,40 @@ def settings_dir():
 
 
 # --------------------------------------------------------------------- 取帧
-def grab(w, h, rot, zones, lang, power, wifi, reading):
+def lua_str(s):
+    """Lua 长字符串最稳：这些文案里有中文、空格、书名号，不用逐个转义。"""
+    return "[[" + str(s).replace("]]", "]] .. ']' .. [[") + "]]"
+
+
+def agenda_block(agenda):
+    """把样例倒数日 / 待办写成 Lua 表，日期按「今天」现算。
+
+    写死日期的话，过几天出图就会变成「已过 30 天」，README 里的图看着像坏了。
+    """
+    today = datetime.date.today()
+
+    def day(off):
+        return (today + datetime.timedelta(days=off)).isoformat()
+
+    events = []
+    for name, off, pinned in agenda.get("events", []):
+        events.append("{name=%s, date=%s, pinned=%s}"
+                      % (lua_str(name), lua_str(day(off)), "true" if pinned else "false"))
+    todos = []
+    for text, off, done in agenda.get("todos", []):
+        todos.append("{text=%s, date=%s, done=%s}"
+                     % (lua_str(text), lua_str(day(off)), "true" if done else "false"))
+    return ("STUB_AGENDA = { events = {%s}, todos = {%s}, seq = 100 }\n"
+            % (",".join(events), ",".join(todos)))
+
+
+def grab(w, h, rot, zones, lang, power, wifi, reading, agenda=""):
     lua = (
         "STUB_FRAME = true\n"
         f"STUB_W = {w}\nSTUB_H = {h}\nSTUB_START_ROTATION = {rot}\n"
         f"STUB_SETTINGS_DIR = [[{settings_dir()}]]\n"
         f'STUB_RUN_ID = "{uuid.uuid4().hex[:8]}"\n'
+        + agenda +
         f'arg = {{ [1] = [[{PLUGIN}]] }}\n'
         f'package.path = [[{PLUGIN}/?.lua;]] .. package.path\n'
         f'dofile([[{HERE}/stub_test.lua]])\n'
@@ -331,7 +360,32 @@ PRESETS = [
     dict(id="landscape-4", orient="landscape", title="大钟与数据 · 大字时钟 / 日月 / 空气明细",
          zones=["clock_big", "sun_moon", "air_detail",
                 "clock_big", "sun_moon", "air_detail"]),
+    # ---------------- v2.47：倒数日 / 待办 ----------------
+    dict(id="portrait-5", orient="portrait", title="倒数日与待办 · 时钟天气 / 倒数日 / 待办",
+         zones=["clock_weather", "countdown", "todo",
+                "clock_weather", "countdown", "todo"]),
+    dict(id="landscape-5", orient="landscape", title="大钟与待办 · 大字时钟 / 倒数日 / 待办",
+         zones=["clock_big", "countdown", "todo",
+                "clock_big", "countdown", "todo"]),
 ]
+
+# 倒数日 / 待办样例。第二个字段是「距今天几天」，出图时现算日期。
+AGENDA = {
+    "events": [
+        ("妈妈生日", 18, True),
+        ("部门年会", 9, False),
+        ("结婚纪念日", 45, False),
+        ("放寒假", 63, False),
+        ("上次体检", -12, False),
+    ],
+    "todos": [
+        ("交班主任月报", 0, False),
+        ("修看板封面逻辑", 0, False),
+        ("买牛奶", 0, True),
+        ("家访：李明", 1, False),
+        ("交电费", -1, False),
+    ],
+}
 
 # 真机数据（预览图不用 -- 占位符）：电量 58% 未充电、WiFi 已连接、在读《三体》37%
 POWER, WIFI, READING = "58", "on", "1"
@@ -340,7 +394,8 @@ POWER, WIFI, READING = "58", "on", "1"
 def render(preset, lang="zh"):
     rot = 0 if preset["orient"] == "portrait" else 1
     dw, dh = (NATIVE_W, NATIVE_H) if rot == 0 else (NATIVE_H, NATIVE_W)
-    items = grab(NATIVE_W, NATIVE_H, rot, preset["zones"], lang, POWER, WIFI, READING)
+    items = grab(NATIVE_W, NATIVE_H, rot, preset["zones"], lang, POWER, WIFI, READING,
+                 agenda_block(AGENDA))
     img = draw_items(items, dw, dh)
     img = border(img, pad=0)
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -360,8 +415,11 @@ def main():
         elif a.isdigit():
             only_idx = int(a)
     done = 0
-    for i, p in enumerate(PRESETS, 1):
-        idx = i if i <= 4 else i - 4
+    # 每个方向单独编号：加了第 5 套之后再用「i <= 4」判断会把 landscape 的第 1 套算成 5
+    seen = {"portrait": 0, "landscape": 0}
+    for p in PRESETS:
+        seen[p["orient"]] += 1
+        idx = seen[p["orient"]]
         if only_orient and p["orient"] != only_orient:
             continue
         if only_idx and idx != only_idx:

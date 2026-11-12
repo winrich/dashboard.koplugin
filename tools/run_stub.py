@@ -32,6 +32,7 @@ SYNTAX_FILES = [
     f"{PLUGIN_DIR}/dashboard_i18n.lua",
     f"{PLUGIN_DIR}/dashboard_moon.lua",
     f"{PLUGIN_DIR}/dashboard_cover.lua",
+    f"{PLUGIN_DIR}/dashboard_agenda.lua",
     f"{PLUGIN_DIR}/dashboard_config.lua",
 ]
 

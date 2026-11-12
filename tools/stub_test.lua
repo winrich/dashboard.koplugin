@@ -442,14 +442,23 @@ local store = {}
 local G_settings = {}
 function G_settings:readSetting(k, d) return store[k] or d end
 function G_settings:saveSetting(k, v) store[k] = v end
+function G_settings:delSetting(k) store[k] = nil; return self end
 function G_settings:isTrue(k) return store[k] == true end
 function G_settings:nilOrTrue(k) return store[k] ~= false end
 function G_settings:flush() return self end
 
 local LuaSettings = {}
 LuaSettings.__index = LuaSettings
+-- 按路径持久化：真实 LuaSettings 是「一个文件一份数据」，桩件若每次都返回空表，
+-- 「写完再读回来」这类断言就永远测不出问题（倒数日 / 待办正是靠这条）。
+local LS_STORE = {}
 function LuaSettings:open(path)
-    return setmetatable({ path = path, data = {} }, LuaSettings)
+    local d = LS_STORE[path]
+    if not d then
+        d = {}
+        LS_STORE[path] = d
+    end
+    return setmetatable({ path = path, data = d }, LuaSettings)
 end
 function LuaSettings:readSetting(k, d) return self.data[k] or d end
 function LuaSettings:saveSetting(k, v) self.data[k] = v; return self end
@@ -758,6 +767,16 @@ do
         end
         G_settings:saveSetting("lastfile", "/mnt/us/documents/三体（全集）.epub")
     end
+
+    -- 预览专用：注入一组倒数日 / 待办。出图脚本按「今天」现算日期，
+    -- 所以图里的「还有 N 天」不会隔天就过期。
+    if _G.STUB_AGENDA then
+        local s = LuaSettings:open(DataStorage:getSettingsDir() .. "/dashboard_agenda.lua")
+        s:saveSetting("events", _G.STUB_AGENDA.events or {})
+        s:saveSetting("todos", _G.STUB_AGENDA.todos or {})
+        s:saveSetting("seq", _G.STUB_AGENDA.seq or 100)
+        s:flush()
+    end
 end
 
 local _env_zones = os.getenv("STUB_ZONES")
@@ -970,8 +989,7 @@ if not instance.screensaver_owned then
     os.exit(1)
 end
 -- 唤醒必须返回 true，Kindle:outofScreenSaver 才会做一次全屏重绘
-local woke_ok = Screensaver:close()
-if woke_ok ~= true then
+if Screensaver:close() ~= true then
     print("[FAIL] 唤醒时没有请求重绘（被接管的 close 必须返回 true）")
     os.exit(1)
 end
@@ -980,6 +998,72 @@ if Device.screen_saver_mode then
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = "== 休眠（看板已打开）：复用当前画面，唤醒请求全屏重绘 =="
+
+-- ============ 点按展开：坐标命中 + 列表菜单 ============
+-- 摆放位置靠「绘制时记录」而不是「按布局算」：版心居中、留白、间距拉伸都会
+-- 影响盒子的绝对坐标，重算一份必然和真实绘制对不上。这条用例就是守着这条链路：
+-- 摆上可展开组件 -> 真的画一遍 -> 坐标有了 -> 坐标内的点被吃掉、坐标外的点放行。
+-- 坐标内/坐标外两条路都要走一遍。写成函数而不是 do…end：桩件主 chunk 的
+-- 局部变量已经贴着 200 个上限，do 块里的局部变量会和主 chunk 的抢寄存器。
+local function check_zone_tap()
+    -- 出图时 STUB_ZONES 已经把版面配好了，这里必须先存下来：用例结束时若直接
+    -- resetZoneLayout，最终帧就退回默认版面，预览图会画成另一套（踩过）。
+    local saved_layout = G_reader_settings:readSetting("dashboard_components")
+    local orient_t = instance.layout_landscape and "landscape" or "portrait"
+    local zone_t = (orient_t == "portrait") and "A" or "B"
+    local other_t = (orient_t == "portrait") and "B" or "C"
+    instance:setZoneComponent(orient_t, zone_t, "countdown")
+    instance:setZoneComponent(orient_t, other_t, "todo")
+    instance:refreshLayout()
+
+    local rec = instance.zone_hits and instance.zone_hits[zone_t]
+    if not (rec and rec.x and rec.y) then
+        print("[FAIL] 可展开组件没有在绘制时记录盒子坐标")
+        os.exit(1)
+    end
+    if rec.w <= 0 or rec.h <= 0 then
+        print("[FAIL] 记录的盒子尺寸不对")
+        os.exit(1)
+    end
+
+    local handler
+    for _, z in ipairs(instance.root._zones or {}) do
+        if z.id == "dashboard_zone_tap" then handler = z.handler end
+    end
+    if not handler then
+        print("[FAIL] 没有注册可展开组件的点按区")
+        os.exit(1)
+    end
+
+    if handler({ pos = { x = rec.x + math.floor(rec.w / 2), y = rec.y + 5 } }) ~= true then
+        print("[FAIL] 点在倒数日卡片上没有吃掉事件（会去刷新天气）")
+        os.exit(1)
+    end
+    if not (instance.menu_open and instance.menu and instance.menu.item_count > 1) then
+        print("[FAIL] 点卡片没有弹出列表菜单")
+        os.exit(1)
+    end
+    instance:closeMenu()
+    if instance.menu_open then
+        print("[FAIL] 列表菜单关不掉，menu_open 卡住会阻断以后的重新布局")
+        os.exit(1)
+    end
+
+    -- 盒子之外必须是 false：框架要继续问下一个触摸区（点按刷新）
+    if handler({ pos = { x = 1, y = 1 } }) ~= false then
+        print("[FAIL] 点在空白处也把事件吃掉了，点按刷新会失效")
+        os.exit(1)
+    end
+
+    if saved_layout then
+        G_reader_settings:saveSetting("dashboard_components", saved_layout)
+    else
+        instance:resetZoneLayout()
+    end
+    instance:refreshLayout()
+    EVENTS[#EVENTS + 1] = "== 点按展开：命中卡片弹出列表、空白处放行 =="
+end
+check_zone_tap()
 
 -- 时钟控件必须真的挂在控件树里。纵向拉伸会反复试算版式，而 buildPortrait 每次
 -- 都会把 self.clock_widget 指向当次建的控件——一旦留着被否决那一版，
@@ -997,11 +1081,15 @@ local function in_tree(node, target, depth)
     end
     return false
 end
-local layout_now = instance:getZoneLayout()
-local orient_now = instance.layout_landscape and "landscape" or "portrait"
+local function zone_component(key)
+    -- 合并成一个函数是为了少占一个主 chunk 局部变量（上限 200，已经贴边）
+    local lay = instance:getZoneLayout()
+    return instance:componentRegistry()[lay[instance.layout_landscape and "landscape"
+        or "portrait"][key]]
+end
 local has_clock = false
 for _, key in ipairs({ "A", "B", "C" }) do
-    local comp = instance:componentRegistry()[layout_now[orient_now][key]]
+    local comp = zone_component(key)
     if comp and comp.has_clock then has_clock = true end
 end
 if has_clock then
@@ -2146,6 +2234,152 @@ for _, orient in ipairs({ "portrait", "landscape" }) do
     end
 end
 EVENTS[#EVENTS + 1] = string.format("== 组件矩阵：%d 种组合逐一渲染不崩 ==", tried)
+
+-- ============ 倒数日 / 待办（v2.47）============
+-- 这一节只测数据层与菜单结构，不碰绘制：日期算法和输入解析是最容易写错、
+-- 又最不容易在画面上看出来的部分（差一天、认错日期都不会崩，只是显示不对）。
+-- 预览模式（STUB_AGENDA 注入了样例）跳过，免得把出图用的数据清掉。
+local function check_agenda()
+    local A = require("dashboard_agenda")
+    local now = instance:localNow()
+    local function fail(msg) print("[FAIL] " .. msg); os.exit(1) end
+
+    -- 1) civil-days：与已知日历对齐（含闰年、世纪年）
+    if A.daynum(1970, 1, 1) ~= 0 then fail("1970-01-01 不是第 0 天") end
+    if A.daynum(2000, 3, 1) - A.daynum(2000, 2, 28) ~= 2 then
+        fail("2000-02-28 → 03-01 应跨 2 天（2000 是闰年）")
+    end
+    if A.daynum(1900, 3, 1) - A.daynum(1900, 2, 28) ~= 1 then
+        fail("1900 不是闰年，02-28 → 03-01 应只有 1 天")
+    end
+    for _, d in ipairs({ { 1970, 1, 1 }, { 2000, 2, 29 }, { 2026, 11, 12 }, { 2038, 1, 19 } }) do
+        local y, m, dd = A.civilFromDays(A.daynum(d[1], d[2], d[3]))
+        if y ~= d[1] or m ~= d[2] or dd ~= d[3] then
+            fail(string.format("daynum/civil 往返不一致：%d-%d-%d", d[1], d[2], d[3]))
+        end
+    end
+    if A.parseDate("2026-02-30") then fail("2 月 30 日被当成了合法日期") end
+
+    -- 2) 输入解析（今天由时区决定，期望值也现算，不写死）
+    local today = A.today(now)
+    local ty, tm, td = A.parseDate(today)
+    local function d_plus(n)
+        local y, m, d = A.civilFromDays(A.daynum(ty, tm, td) + n)
+        return A.fmtDate(y, m, d)
+    end
+    local function parse_ok(text, want_date, want_rest)
+        local date, rest = A.parseEntry(text, now)
+        if date ~= want_date or (want_rest and rest ~= want_rest) then
+            fail(string.format("parseEntry(%q) = %s / %s，期望 %s / %s",
+                text, tostring(date), tostring(rest), tostring(want_date), tostring(want_rest)))
+        end
+    end
+    parse_ok("明天 交周报", d_plus(1), "交周报")
+    parse_ok("买牛奶", nil, "买牛奶")
+    parse_ok("12-25 买菜", string.format("%04d-12-25", ty), "买菜")
+    parse_ok("圣诞节 2026-12-25", "2026-12-25", "圣诞节")
+    parse_ok("2026年12月25日", "2026-12-25", "")
+    local name, date = A.parseEvent("2026-12-25 圣诞节", now)
+    if name ~= "圣诞节" or date ~= "2026-12-25" then fail("parseEvent 日期在前解析失败") end
+    name, date = A.parseEvent("圣诞节", now)
+    if name or date then fail("parseEvent 没有日期时不该硬猜") end
+
+    -- 3) 增删改 + 排序 + 存盘往返
+    local s = LuaSettings:open(DataStorage:getSettingsDir() .. "/dashboard_agenda.lua")
+    s:saveSetting("events", {})
+    s:saveSetting("todos", {})
+    s:saveSetting("seq", 0)
+    s:flush()
+    A.load(true)
+
+    A.addEvent("元旦", d_plus(20), false)
+    A.addEvent("圣诞", d_plus(43), true)
+    A.addEvent("年会", d_plus(10), false)
+    A.addEvent("春节", d_plus(80), false)
+    A.addEvent("已过的事", d_plus(-5), false)
+    A.load(true)                    -- 走一遍「写盘 → 再读回来」
+    local ev = A.eventsView(now)
+    if not ev.focus or ev.focus.name ~= "圣诞" or not ev.focus_pinned then
+        fail("置顶事件没有占据大字位")
+    end
+    if #ev.list ~= 3 or ev.list[1].name ~= "年会" or ev.list[3].name ~= "春节" then
+        fail("最近三条没有按日期升序取前三条")
+    end
+    if ev.past ~= 1 then fail("过期事件计数不对") end
+    -- 置顶单选：再置顶另一条，旧的那条必须自动取消
+    local want = nil
+    for _, e in ipairs(A.allEvents()) do if e.name == "年会" then want = e.id end end
+    A.pinEvent(want)
+    local pinned = 0
+    for _, e in ipairs(A.allEvents()) do if e.pinned then pinned = pinned + 1 end end
+    if pinned ~= 1 then fail("同时存在多条置顶（应该单选）") end
+
+    A.addTodo("买牛奶", today)
+    A.addTodo("交周报", d_plus(1))
+    A.addTodo("体检", d_plus(-1))
+    A.addTodo("过期但已完成", d_plus(-2))
+    local tv = A.todosView(now)
+    if #tv.today ~= 1 or tv.today[1].text ~= "买牛奶" then fail("今日待办筛选不对") end
+    if #tv.future ~= 1 or #tv.past ~= 2 then fail("未来 / 过期分桶不对") end
+    A.toggleTodo(tv.today[1].id)
+    tv = A.todosView(now)
+    if tv.done_today ~= 1 then fail("勾选完成后今日计数没变") end
+    -- 清除已完成：勾掉的今日项 + 过期已完成项，共 2 条
+    A.toggleTodo(tv.past[1].id)
+    local cleared = A.clearDone()
+    if cleared ~= 2 then fail("清除已完成条数不对：" .. tostring(cleared)) end
+    if #A.allTodos() ~= 2 then fail("清除后剩余条数不对") end
+
+    -- 5) 有数据时的装盒检查。矩阵那一轮跑的是空数据，空态只有两行灰字，
+    --    测不出「大字位 + 三条列表」的真实高度——而真机上恰好是这个状态常驻。
+    for _, orient2 in ipairs({ "portrait", "landscape" }) do
+        for _, id2 in ipairs({ "countdown", "todo" }) do
+            local comp2 = instance:componentRegistry()[id2]
+            for _, key2 in ipairs(comp2.zones[orient2] or {}) do
+                local _, box_h2, content_w2 = matrixBox(orient2, key2)
+                local fitted = false
+                for i = 1, #ladder do
+                    local c2 = instance[comp2.build](instance, ctx_m, content_w2, box_h2, ladder[i])
+                    local sz = c2:getSize()
+                    if sz.h <= box_h2 and sz.w <= content_w2 + 1 then
+                        fitted = true
+                        break
+                    end
+                end
+                if not fitted then
+                    fail(string.format("%s@%s/%s 有数据时最小档仍装不下", id2, orient2, key2))
+                end
+            end
+        end
+    end
+
+    -- 6) 菜单结构：两条顶级入口 + 逐条子菜单
+    local items = instance:genMenuItemTable()
+    local cd, td_menu
+    for _, it in ipairs(items) do
+        if it.text == T("倒数日") then cd = it end
+        if it.text == T("待办事项") then td_menu = it end
+    end
+    if not cd or not td_menu then fail("菜单里缺倒数日 / 待办事项入口") end
+    if #cd.sub_item_table ~= #A.allEvents() + 1 then
+        fail("倒数日菜单项数不对（应为 添加 + 每条事件）")
+    end
+    local has_sub = false
+    for _, it in ipairs(cd.sub_item_table) do
+        if it.sub_item_table then has_sub = true end
+    end
+    if not has_sub then fail("倒数日条目里没有置顶 / 删除子菜单") end
+
+    EVENTS[#EVENTS + 1] = string.format(
+        "== 倒数日 / 待办：日期往返、5 种输入解析、置顶单选、今日/未来/过期分桶、存盘往返（事件 %d / 待办 %d）==",
+        #A.allEvents(), #A.allTodos())
+end
+
+if _G.STUB_AGENDA then
+    EVENTS[#EVENTS + 1] = "== 预览模式：跳过倒数日 / 待办数据断言（STUB_AGENDA 已注入）=="
+else
+    check_agenda()
+end
 
 -- 4) 菜单入口存在且项数正确
 local menu_items = instance:genMenuItemTable()
