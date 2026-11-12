@@ -147,9 +147,9 @@ does not touch the Kindle framework, and modifies no system files.
 
 ## Supporting this project
 
-The dashboard is written in spare time: free, no ads, no data collection. If it saves you some
-trouble, you can buy me a cup of tea — **updates continue either way, and every feature is
-available to everyone**.
+If you find this project helpful, you are welcome to voluntarily tip the developer. Tipping is
+entirely voluntary: it comes with no extra services and no guarantee of priority maintenance. The
+project stays permanently open source and free.
 
 <img src="assets/wechat-reward.jpg" width="240" alt="WeChat reward QR code">
 
