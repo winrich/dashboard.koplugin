@@ -1,32 +1,107 @@
-# Kindle Dashboard
+# 🕰️ Kindle Dashboard · turn the screen your Kindle sleeps on into a quiet board
 
-[中文](README.md) · **English**
+[中文](README.md) · [English](README.en.md)
 
-Turn the picture your Kindle keeps while asleep — a book cover, or a plain "Sleep" notice — into a
-quiet board: time, Chinese lunar calendar and solar term, weather, the book you are reading, and
-the few dates you are counting down to.
+**Time · Chinese lunar calendar and solar terms · weather · the book you are reading · countdowns · to-dos — put the book down and they are all there.**
 
-It is a **screensaver plugin for KOReader**, not another app. While you read it is still your
-reader; put the book down and the screen becomes the board; touch it and you are back on the page.
+> A sleeping Kindle usually shows one book cover, or a plain "Sleep". Replace it, and that 300 ppi e-ink panel stops sitting idle.
 
-## What it looks like
+<p align="center">
+  <img src="https://img.shields.io/badge/version-2.50-blue.svg" alt="Version 2.50">
+  <img src="https://img.shields.io/badge/KOReader-plugin-blueviolet.svg" alt="KOReader plugin">
+  <img src="https://img.shields.io/badge/Kindle-jailbroken-lightgrey.svg" alt="Jailbroken Kindle">
+  <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
+  <img src="https://img.shields.io/badge/languages-zh%20%7C%20en-orange.svg" alt="中文 / English">
+</p>
 
-<img src="preview/en/portrait-1.png" width="240" alt="Portrait dashboard"> <img src="preview/en/landscape-1.png" width="430" alt="Landscape dashboard">
+<p align="center">
+  <a href="https://github.com/winrich/dashboard.koplugin" target="_blank">
+    <img src="https://img.shields.io/github/stars/winrich/dashboard.koplugin?style=social" alt="GitHub stars">
+  </a>
+  <a href="https://github.com/winrich/dashboard.koplugin/commits/master" target="_blank">
+    <img src="https://img.shields.io/github/last-commit/winrich/dashboard.koplugin" alt="Last commit">
+  </a>
+  <img src="https://img.shields.io/github/repo-size/winrich/dashboard.koplugin" alt="Repo size">
+</p>
 
-Rendered at exact device pixel size with demo data — these are not photos. The real panel is
-300 ppi e-ink, closer to print.
+<table align="center">
+  <tr>
+    <td align="center"><b>🧩 15 widgets</b><br/><sub>three boxes, mix freely</sub></td>
+    <td align="center"><b>🌍 34 cities · 10 zones</b><br/><sub>incl. HK / Macao / Taiwan</sub></td>
+    <td align="center"><b>⏱️ 5 minutes</b><br/><sub>default clock step</sub></td>
+    <td align="center"><b>🔋 ~288 refreshes</b><br/><sub>per day, by default</sub></td>
+  </tr>
+</table>
 
-The same machine can be arranged in many ways; switch from the menu at any time:
+> ⭐ **If this keeps a little less dust off your Kindle, please give it a star.**
 
-<img src="preview/en/overview.png" width="520" alt="Four layouts">
+---
 
-Left to right, top to bottom: clock and calendar · today and lunar · air and sun/moon ·
-countdown and to-do.
+## 🤔 What your Kindle does while it sleeps
 
-## What it can show
+The book goes down, the screen dims, and then it just lies there — most of the time that panel is idle.
 
-Portrait and landscape are both three boxes (top / middle / bottom), each taking one item from a
-list:
+- 😴 Want tomorrow's weather before bed? Wake it, leave the reader, find the app, come back
+- 😴 The built-in screensaver cycles through the same covers; after a while it may as well be blank
+- 😴 Want a clock and a temperature on the desk? That means buying another e-ink clock — another panel, another cable
+- 😴 The few dates you keep in mind (whose birthday, how long until the holiday) have nowhere to live
+- 😴 Leave it on all night and you worry about the battery
+
+**This plugin takes over the sleeping screen**: put the book down and the board appears; touch it and you are back on the page. No second app, no changes to the Kindle system — delete the folder and it is gone.
+
+---
+
+## 🆚 How it compares
+
+| Approach | What you get | What it costs |
+|---|---|---|
+| Built-in Kindle screensaver | One cover, or the word "Sleep" | A panel that sits idle most of the time |
+| A weather app on your phone | Weather and calendar | Unlock the phone, get past the lock screen and notifications |
+| A separate e-ink desk clock | Time and temperature | Another panel, another cable, another purchase |
+| **This plugin** | Time, lunar calendar, weather, the book you are reading, countdowns, to-dos — on the Kindle you already own | Install once, then it is there whenever you put the book down |
+
+One thing the alternatives cannot offer: **it is the reader itself**. The book, the page you reached, the cover — it already knows all of it, so you never type anything in.
+
+---
+
+## 🧠 The 30-second version
+
+```mermaid
+flowchart LR
+  A["Reading"] -->|put it down · press power · let it sleep| B["The board appears"]
+  B -->|one touch| C["Back on the same page"]
+  C --> A
+```
+
+```text
+board = time + lunar calendar + weather + current book + countdowns + to-dos
+```
+
+All of it lives in **three boxes** (top, middle, bottom). Five portrait presets and five landscape ones, switchable from the menu.
+
+---
+
+## 🖼️ What it looks like
+
+<p align="center">
+  <img src="preview/en/portrait-1.png" width="230" alt="Portrait dashboard">
+  &nbsp;&nbsp;&nbsp;
+  <img src="preview/en/landscape-1.png" width="410" alt="Landscape dashboard">
+</p>
+
+<p align="center"><sub>Rendered at exact device pixel size — these are not photos. The real panel is 300 ppi e-ink, closer to print.</sub></p>
+
+The same machine can be arranged in many ways:
+
+<p align="center"><img src="preview/en/overview.png" width="520" alt="Four layouts"></p>
+
+<p align="center"><sub>Left to right, top to bottom: clock and lunar · clock and month · air and sun/moon · countdown and to-do</sub></p>
+
+---
+
+## 🧩 Three boxes, fifteen things
+
+Portrait and landscape are both three boxes (top / middle / bottom), each taking one item from a list:
 
 | Useful ones | What they show |
 |---|---|
@@ -38,27 +113,27 @@ list:
 | Weather set | Big weather, today + 3 days, 7-day forecast, air quality detail, sun and moon |
 | Status set | Humidity / wind / AQI row, battery and WiFi, month calendar |
 
-Fifteen in total (grouped above) — fill the boxes however you like. Five portrait presets and five
-landscape ones, or build your own.
+Fifteen in total (grouped above) — fill the boxes however you like. Five portrait presets and five landscape ones, or build your own.
 
-34 cities (municipalities, provincial capitals, Hong Kong / Macao / Taiwan) and 10 time zones.
-Chinese and English, switchable in the menu.
+34 cities (municipalities, provincial capitals, Hong Kong / Macao / Taiwan) and 10 time zones. Chinese and English, switchable in the menu.
 
-## Installing
+---
 
-Requires a jailbroken Kindle with KOReader already installed (those two steps are outside this
-project).
+## 🚀 Installing on a Kindle
+
+Requires a jailbroken Kindle with KOReader already installed (those two steps are outside this project).
 
 1. Connect the Kindle by USB and open its storage.
 2. Copy the whole `dashboard.koplugin` folder into `koreader/plugins/`
    (the folder name must end in `.koplugin`, otherwise it is skipped).
-3. Eject safely, then **fully quit and reopen** KOReader — replaced Lua files are not reloaded
-   while it is running.
+3. Eject safely, then **fully quit and reopen** KOReader — replaced files are not reloaded while it is running.
 4. Menu → Settings → Screen → Screensaver → Dashboard → choose city and time zone → "Open dashboard".
 
 `dist/dashboard.koplugin.zip` is the same content; unzipping it into `plugins/` works too.
 
-## Using it
+---
+
+## 👆 Using it
 
 | Gesture | What happens |
 |---|---|
@@ -68,14 +143,13 @@ project).
 | Swipe down from the top edge | The board's own menu (city, time zone, layout, weather service, relayout, help) |
 | Swipe left or right | Portrait ↔ landscape (Kindle has no accelerometer, so this is manual) |
 
-A small hint line stays at the bottom. A tap wakes the screen while it is asleep, and refreshes
-while it is awake.
+A small hint line stays at the bottom. A tap wakes the screen while it is asleep, and refreshes while it is awake.
 
-The board is full-screen and covers KOReader's own menu, so the swipe-down menu is the board's;
-when the board is closed you can find the same settings at Settings → Screen → Screensaver →
-Dashboard.
+The board is full-screen and covers KOReader's own menu, so the swipe-down menu is the board's; when the board is closed you can find the same settings at Settings → Screen → Screensaver → Dashboard.
 
-## Adding a date or a to-do
+---
+
+## 📅 Adding a date or a to-do
 
 Menu → "Countdowns / To-dos" → Add, in **two steps**:
 
@@ -83,50 +157,39 @@ Menu → "Countdowns / To-dos" → Add, in **two steps**:
 2. Then pick the date: year, month and day are three columns you scroll, defaulting to today.
    No keyboard for the date part.
 
-Kindle has no usable Chinese IME, so dates are always picked and names should be short. If the
-name happens to contain a date (`Christmas 2026-12-25`), it is split out and used as the default
-for step 2.
+Kindle has no usable Chinese IME, so dates are always picked and names should be short. If the name happens to contain a date (`Christmas 2026-12-25`), it is split out and used as the default for step 2.
 
-The first countdown you add is pinned automatically; only one can be pinned. Finished to-dos are
-cleared after 30 days.
+The first countdown you add is pinned automatically; only one can be pinned. Finished to-dos are cleared after 30 days.
 
-## Weather: works without any API key
+---
 
-By default it uses Open-Meteo, which needs no account: temperature, condition, humidity, wind,
-sunrise and sunset are all fine. Only air quality is estimated from PM2.5/PM10 concentrations
-(the footer says "fallback").
+## 🌤️ Weather: works without any API key
 
-For the official Chinese AQI and more local detail, get a key from QWeather
-(<https://console.qweather.com>), then on the device: menu → "Weather service" → fill API Host and
-API Key → "Test connection". **No USB or file editing needed**; settings live in KOReader, so a
-key can be changed at any time. The free tier allows 50,000 calls a month; this plugin uses about
-48 refreshes a day across three endpoints — roughly 4,300 a month.
+By default it uses Open-Meteo, which needs no account: temperature, condition, humidity, wind, sunrise and sunset are all fine. Only air quality is estimated from PM2.5/PM10 concentrations (the footer says "fallback").
 
-## Why it feels "always on"
+For the official Chinese AQI and more local detail, get a key from QWeather (<https://console.qweather.com>), then on the device: menu → "Weather service" → fill API Host and API Key → "Test connection". **No USB or file editing needed**; settings live in KOReader, so a key can be changed at any time.
 
-Because it is the screensaver. Put the book down, let it sleep, or press the power button, and the
-screen stays on the board instead of jumping back to a cover. Menu → "Show dashboard when asleep
-(screensaver)" turns this off.
+The free tier allows 50,000 calls a month; this plugin uses about 48 refreshes a day across three endpoints — roughly 4,300 a month.
 
-One thing to know: e-ink stops its CPU while asleep, so the picture is static — **the clock shows
-the time it fell asleep**. Touch to wake and it corrects itself immediately. Keeping minutes
-ticking means staying awake on USB power, which is not recommended: a lithium battery held at full
-charge for months can swell.
+---
+
+## 🔋 Why it feels "always on"
+
+Because it is the screensaver. Put the book down, let it sleep, or press the power button, and the screen stays on the board instead of jumping back to a cover. Menu → "Show dashboard when asleep (screensaver)" turns this off.
+
+One thing to know: e-ink stops its CPU while asleep, so the picture is static — **the clock shows the time it fell asleep**. Touch to wake and it corrects itself immediately. Keeping minutes ticking means staying awake on USB power, which is not recommended: a lithium battery held at full charge for months can swell.
 
 ### Power
 
-When it stays on, the power goes mostly into how often the screen refreshes. Defaults: the clock
-updates every **5 minutes**, weather every **1 hour**, and the whole screen flashes once an hour to
-clear ghosting.
+When it stays on, the power goes mostly into how often the screen refreshes. Defaults: the clock updates every **5 minutes**, weather every **1 hour**, and the whole screen flashes once an hour to clear ghosting.
 
-All of it is adjustable under Menu → "Power saving". Push the clock to 10 or 30 minutes and the
-number of screen updates drops proportionally; pick "Only on touch" and it stops moving on its
-own — it corrects itself when you tap, and costs almost nothing.
+All of it is adjustable under Menu → "Power saving". Push the clock to 10 or 30 minutes and the number of screen updates drops proportionally; pick "Only on touch" and it stops moving on its own — it corrects itself when you tap, and costs almost nothing.
 
-Below 10% battery it throttles by itself (clock drops to a 30-minute step, weather and full
-refresh stop) until you plug in. That threshold can be turned off.
+Below 10% battery it throttles by itself (clock drops to a 30-minute step, weather and full refresh stop) until you plug in. That threshold can be turned off.
 
-## Troubleshooting
+---
+
+## ❓ Troubleshooting
 
 | Symptom | Check first |
 |---|---|
@@ -143,30 +206,34 @@ refresh stop) until you plug in. That threshold can be turned off.
 
 More, including exact log strings: [DEVELOPMENT.md](DEVELOPMENT.md) (Chinese).
 
-## Known limits
+---
+
+## ⚠️ Known limits
 
 - Minutes only: a seconds hand on e-ink leaves permanent ghosting.
 - Long names are truncated with an ellipsis, not wrapped (single-line widget).
 - Weather requests are synchronous: offline, a refresh can stall for up to 20 seconds.
-- With the screensaver hook active, KOReader's native slide-to-unlock no longer appears — wake by
-  touching the screen or pressing the power button.
-- Cover images are cached in `settings/dashboard_covers/` (latest 6 only); old ones are not
-  deleted immediately when you switch books.
-
-## Uninstalling
-
-Delete the `koreader/plugins/dashboard.koplugin` folder. The plugin writes no startup entries,
-does not touch the Kindle framework, and modifies no system files.
-
-## Supporting this project
-
-If you find this project helpful, you are welcome to voluntarily tip the developer. Tipping is
-entirely voluntary: it comes with no extra services and no guarantee of priority maintenance. The
-project stays permanently open source and free.
-
-<img src="assets/wechat-reward.jpg" width="240" alt="WeChat reward QR code">
+- With the screensaver hook active, KOReader's native slide-to-unlock no longer appears — wake by touching the screen or pressing the power button.
+- Cover images are cached in `settings/dashboard_covers/` (latest 6 only); old ones are not deleted immediately when you switch books.
 
 ---
 
-To read or modify the code, check layout metrics and algorithms, or reproduce the verification:
-see [DEVELOPMENT.md](DEVELOPMENT.md) (Chinese).
+## 🗑️ Uninstalling
+
+Delete the `koreader/plugins/dashboard.koplugin` folder. The plugin writes no startup entries, does not touch the Kindle framework, and modifies no system files.
+
+---
+
+## 💝 Supporting this project
+
+If you find this project helpful, you are welcome to voluntarily tip the developer. Tipping is entirely voluntary: it comes with no extra services and no guarantee of priority maintenance. The project stays permanently open source and free.
+
+<p align="center"><img src="assets/wechat-reward.jpg" width="240" alt="WeChat reward QR code"></p>
+
+---
+
+<p align="center">
+  ⭐ <b>If this project helps you, please give it a star.</b> ⭐
+</p>
+
+<p align="center"><sub>To read or modify the code, check layout metrics and algorithms, or reproduce the verification: see <a href="DEVELOPMENT.md">DEVELOPMENT.md</a> (Chinese)</sub></p>
