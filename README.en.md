@@ -113,6 +113,19 @@ the time it fell asleep**. Touch to wake and it corrects itself immediately. Kee
 ticking means staying awake on USB power, which is not recommended: a lithium battery held at full
 charge for months can swell.
 
+### Power
+
+When it stays on, the power goes mostly into how often the screen refreshes. Defaults: the clock
+updates every **5 minutes**, weather every **1 hour**, and the whole screen flashes once an hour to
+clear ghosting.
+
+All of it is adjustable under Menu → "Power saving". Push the clock to 10 or 30 minutes and the
+number of screen updates drops proportionally; pick "Only on touch" and it stops moving on its
+own — it corrects itself when you tap, and costs almost nothing.
+
+Below 10% battery it throttles by itself (clock drops to a 30-minute step, weather and full
+refresh stop) until you plug in. That threshold can be turned off.
+
 ## Troubleshooting
 
 | Symptom | Check first |
