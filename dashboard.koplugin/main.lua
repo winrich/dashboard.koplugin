@@ -35,7 +35,8 @@ dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host �
 
 看板打开之后的状态机（每一条都已按 KOReader 上游源码核对）：
   触摸            点按刷新天气；上划退出；左右滑切版式；上缘下滑开菜单
-  空闲但未超时      每分钟局部刷新时钟（只重画时钟那一块），每 30 分钟全刷一次清残影
+  空闲但未超时      按「时钟刷新」粒度只重画时钟那一块（默认 5 分钟），全刷按周期清残影
+                    （默认 60 分钟）；两项都可在菜单「省电设置」里改
   空闲超时 / 按电源键  powerd → Device:intoScreenSaver() → Screensaver.show 被我们接管
                      → 屏幕保持看板 → powerd:beforeSuspend() 真正挂起（CPU 停）
                      所以「按电源键屏幕没变化」是正常的：它本来就在显示看板
@@ -115,13 +116,28 @@ local PLUGIN_DIR = (function()
     return src:match("^(.*)[/\\][^/\\]+$") or "."
 end)()
 
-local UPDATE_INTERVAL = 30 * 60      -- 天气拉取间隔
-local FULL_REFRESH_PERIOD = 30       -- 每 30 分钟全刷一次清残影
+-- ------------------------------------------------------------------ 省电参数
+-- 全部可由用户覆盖（菜单「省电设置」），键名集中在这里，避免散落各处。
+-- 默认值偏省电，但界面看起来仍然「活着」：时钟 5 分钟一跳、天气 1 小时一拉。
+local POWER_KEYS = {
+    tick_step = "dashboard_tick_step",          -- 分钟；0 = 只在触摸/唤醒时刷新
+    weather = "dashboard_weather_interval",     -- 秒
+    full_refresh = "dashboard_full_refresh",    -- 分钟；0 = 关闭
+    low_battery = "dashboard_low_battery",      -- 百分比；0 = 关闭
+}
+
+local TICK_STEP = 5                  -- 时钟刷新粒度（分钟）
+local UPDATE_INTERVAL = 60 * 60      -- 天气拉取间隔（秒）
+local FULL_REFRESH_PERIOD = 60       -- 全刷周期（分钟），清残影
+local LOW_BATTERY_GUARD = 10         -- 电量低于此值：降频 + 停掉自动拉天气与全刷
+local LOW_BATTERY_TICK_STEP = 30     -- 低电时至少降到这么久一跳
+local FETCH_BACKOFF_MAX = 60 * 60    -- 无数据时重试退避的上限（秒）
+local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每拍都去 lipc 取
 
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.49"
+local DASHBOARD_VERSION = "2.50"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -587,6 +603,15 @@ function Dashboard:genMenuItemTable()
                 if G_reader_settings.flush then G_reader_settings:flush() end
             end,
         },
+        {
+            text = T("省电设置"),
+            help_text = TL(
+                "常开看板时，耗电主要来自「多久刷一次屏」和「多久拉一次天气」。\n"
+                .. "这里的四项都会立即生效，不需要重开看板。",
+                "When the board stays on, power is mostly spent on how often the screen\n"
+                .. "refreshes and how often weather is fetched. All four apply immediately."),
+            sub_item_table = self:genPowerMenu(),
+        },
     }
 
     local city_groups = {
@@ -685,7 +710,7 @@ function Dashboard:genMenuItemTable()
                     .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
                     .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
                     .. "空闲超时或按电源键休眠时，屏幕会停留在看板上（相当于屏保）。\n"
-                    .. "长时间显示建议接通电源；程序每 30 分钟自动全刷一次以清除电泳残影。\n\n"
+                    .. "长时间显示建议接通电源；全刷周期默认 60 分钟，可在「省电设置」里调。\n\n"
                     .. "看板版本 v" .. DASHBOARD_VERSION,
                     "Gestures: tap to refresh · swipe up to exit\n"
                     .. "Swipe down from the top edge: dashboard menu (city / time zone / layout)\n"
@@ -702,8 +727,8 @@ function Dashboard:genMenuItemTable()
                     .. "Weather comes from QWeather; if unavailable it falls back to Open-Meteo,\n"
                     .. "and the footer shows the current source.\n"
                     .. "On idle or power-button sleep the screen keeps the dashboard (acts as a\n"
-                    .. "screensaver). For long display, keep it plugged in; a full refresh runs\n"
-                    .. "every 30 minutes to clear e-ink ghosting.\n\n"
+                    .. "screensaver). For long display, keep it plugged in; full refresh\n"
+                    .. "defaults to every 60 minutes (Power saving menu).\n\n"
                     .. "Dashboard version v" .. DASHBOARD_VERSION),
             })
         end,
@@ -778,6 +803,80 @@ function Dashboard:genLangMenu()
         entry(T("跟随 KOReader"), "auto"),
         entry("中文", "zh"),
         entry("English", "en"),
+    }
+end
+
+-- ------------------------------------------------------------------ 省电菜单
+--- 「省电设置」：时钟刷新粒度 / 天气更新间隔 / 全刷周期 / 低电保护。
+--- 四项都写进 G_reader_settings，tick 每拍现读，改完立即生效。
+--- 为什么把「时钟刷新」放第一位：常开时它是最大的单项支出——
+--- 原来每分钟整屏刷新，一天 1440 次；提到 5 分钟后只剩 288 次。
+function Dashboard:genPowerMenu()
+    local function read(key, default)
+        local v = tonumber(G_reader_settings:readSetting(key))
+        if v == nil then return default end
+        return v
+    end
+    local function set_num(key, value)
+        G_reader_settings:saveSetting(key, value)
+        if G_reader_settings.flush then G_reader_settings:flush() end
+        -- 改完立刻按新参数重排下一次触发，否则要等旧的那一拍走完
+        if self.shown then self:scheduleTick() end
+    end
+    local function minutes(v)
+        return string.format(T("%d 分钟"), v)
+    end
+    local function pick(title, help, key, default, values, label)
+        local sub = {}
+        for _, v in ipairs(values) do
+            sub[#sub + 1] = {
+                text = label(v),
+                help_text = help,
+                checked_func = function() return read(key, default) == v end,
+                callback = function() set_num(key, v) end,
+            }
+        end
+        return { text = title, sub_item_table = sub }
+    end
+
+    return {
+        pick(T("时钟刷新"), TL(
+                "看板每隔多久重画一次时钟。这是常开时最大的耗电项。\n"
+                .. "选「只在触摸时刷新」就完全不自己走，碰一下屏幕才校正时间。",
+                "How often the clock is redrawn. This is the biggest drain when the board\n"
+                .. "stays on. \"Only on touch\" stops it entirely until you tap the screen."),
+            POWER_KEYS.tick_step, TICK_STEP, { 1, 2, 5, 10, 30, 0 },
+            function(v)
+                if v == 0 then return T("只在触摸时刷新") end
+                return minutes(v)
+            end),
+        pick(T("天气更新"), TL(
+                "多久拉一次天气。每次都要走三个接口，间隔越长越省电，电量也越省。\n"
+                .. "刚唤醒后的 25 秒内不会拉取，避免按电源键时卡住。",
+                "How often weather is fetched (three requests each time).\n"
+                .. "Longer is cheaper. Nothing is fetched in the first 25 s after wake."),
+            POWER_KEYS.weather, UPDATE_INTERVAL, { 15 * 60, 30 * 60, 60 * 60, 120 * 60 },
+            function(v) return minutes(math.floor(v / 60)) end),
+        pick(T("全刷周期"), TL(
+                "每隔多久整屏闪一次，用来清电泳残影。关掉以后画面更安静，\n"
+                .. "但长时间显示同一版式会留下淡淡的影子。",
+                "How often the whole screen flashes to clear e-ink ghosting.\n"
+                .. "Turning it off keeps the screen calm but may leave faint ghosts."),
+            POWER_KEYS.full_refresh, FULL_REFRESH_PERIOD, { 30, 60, 120, 240, 0 },
+            function(v)
+                if v == 0 then return T("关闭") end
+                return minutes(v)
+            end),
+        pick(T("低电保护"), TL(
+                "电量低于这个值时，时钟自动降到 30 分钟一跳，并停掉自动拉天气与全刷。\n"
+                .. "插上电或电量回升后自动恢复，不会一直卡在省电状态。",
+                "Below this level the clock drops to a 30-minute step and weather\n"
+                .. "and full refresh stop until you plug in or the level recovers."),
+            POWER_KEYS.low_battery, LOW_BATTERY_GUARD, { 0, 5, 10, 15, 20 },
+            function(v)
+                if v == 0 then return T("关闭") end
+                return string.format(T("电量 ≤ %d%%"), v)
+            end),
     }
 end
 
@@ -1204,6 +1303,11 @@ end
 
 --- 休眠瞬间：把看板画到屏幕上
 function Dashboard:onEnterScreenSaver()
+    -- 先停表。挂起时定时器本来就不走，但「刚好在挂起前一秒到点」的那一拍会多刷
+    -- 一次屏；唤醒时 onLeaveScreenSaver 又会整体重建，重复刷新没有意义。
+    if self._tick_fn then
+        UIManager:unschedule(self._tick_fn)
+    end
     -- 菜单开着的时候休眠是个坑：屏幕此刻停的是菜单，不是看板，
     -- 冻成屏保就变成一张「设置菜单截图」。先把菜单撤掉、把看板本体重画一次。
     -- 挂起的转屏请求直接丢弃：马上要挂起了，这时转屏既慢又容易刷不干净。
@@ -1318,20 +1422,84 @@ function Dashboard:installScreenSaverHook()
 end
 
 -- ------------------------------------------------------------------ 定时器
+--- 省电参数：每次都现读设置（而不是缓存），菜单改完立刻生效，不用重开看板。
+--- 越界值一律回落到默认，避免手改设置文件写进 0 秒把设备刷死。
+function Dashboard:powerConfig()
+    local function num(key, default, min, max)
+        local v = tonumber(G_reader_settings:readSetting(key))
+        if not v or v < min then v = default end
+        if max and v > max then v = max end
+        return v
+    end
+    return {
+        tick_step = num(POWER_KEYS.tick_step, TICK_STEP, 0, 60),
+        -- 天气间隔的优先级：菜单设置 > 配置文件 update_interval > 本文件常量，
+        -- 这样已经在自己配置里调过间隔的人不会被这次改动悄悄改掉
+        weather = num(POWER_KEYS.weather,
+            tonumber(self:getConfig().update_interval) or UPDATE_INTERVAL, 300, 6 * 3600),
+        full_refresh = num(POWER_KEYS.full_refresh, FULL_REFRESH_PERIOD, 0, 720),
+        low_battery = num(POWER_KEYS.low_battery, LOW_BATTERY_GUARD, 0, 50),
+    }
+end
+
+--- 带缓存地读电量。tick 的频率可能低到几十秒一次，每次都去 lipc 取
+--- （PowerD 每读一个属性都是一次外部进程）不划算，这里缓存 10 分钟。
+function Dashboard:quickBattery()
+    local now = os.time()
+    local c = self._batt_cache
+    if c and c.ts and now - c.ts >= 0 and now - c.ts < BATTERY_CACHE_TTL then
+        return c.cap, c.charging
+    end
+    local cap, charging = self:batteryInfo()
+    self._batt_cache = { ts = now, cap = cap, charging = charging }
+    return cap, charging
+end
+
+--- 电量低于阈值且没在充电。返回 false 表示不需要降频。
+function Dashboard:lowBatteryNow()
+    local pc = self:powerConfig()
+    if pc.low_battery <= 0 then return false end
+    local cap, charging = self:quickBattery()
+    return (cap ~= nil and not charging and cap <= pc.low_battery) and true or false
+end
+
+--- 实际使用的时钟粒度（分钟）。0 = 只在触摸/唤醒时校正。
+--- 低电时抬到 LOW_BATTERY_TICK_STEP，宁可时钟走得钝一点，也别把电池耗干。
+function Dashboard:tickStep()
+    local step = self:powerConfig().tick_step
+    if step > 0 and self:lowBatteryNow() then
+        step = math.max(step, LOW_BATTERY_TICK_STEP)
+    end
+    return step
+end
+
 function Dashboard:scheduleTick()
     if not self.shown then return end
     if not self._tick_fn then
         self._tick_fn = function() self:tick() end
     end
     UIManager:unschedule(self._tick_fn)
+    local step = self:tickStep()
+    -- 0 = 仅触摸模式：不排表。时钟停在上一次校正的时刻，碰一下屏幕才更新。
+    if step <= 0 then return end
     local now = self:localNow()
-    UIManager:scheduleIn(math.max(1, 60 - (tonumber(now.sec) or 0)), self._tick_fn)
+    local sec = tonumber(now.sec) or 0
+    local min = tonumber(now.min) or 0
+    -- step=1 对齐整分；step>1 对齐到整 step 边界（5 分钟粒度就落在 0/5/10… 分）
+    local remain = (step == 1) and (60 - sec) or ((step - (min % step)) * 60 - sec)
+    UIManager:scheduleIn(math.max(1, remain), self._tick_fn)
 end
 
 function Dashboard:tick()
     if not self.shown or not self.root then return end
+    -- 屏保态不干活：休眠时定时器本来就不会走，这里防的是挂起前刚好到点的那一拍，
+    -- 否则会在力尽的那一刻白白刷一次屏。这里刻意不重排表——唤醒时
+    -- onLeaveScreenSaver 会统一重建版面并重新排表，两边都排就会重建两次。
+    if Device.screen_saver_mode or self.screensaver_owned then return end
     local wall = os.time()
     local now = self:localNow()
+    local pc = self:powerConfig()
+    local low = self:lowBatteryNow()
 
     -- 睡眠/长时间中断后的自愈：两拍 tick 相隔过久，说明中间设备挂起过
     -- （或者被别的东西卡住了）。此时屏幕上的时钟、电量、日期全是旧的，
@@ -1347,37 +1515,50 @@ function Dashboard:tick()
     end
 
     -- 菜单盖在上面的时候不动画面：e-ink 上局部刷新会把菜单区域一起重画，
-    -- 每分钟闪一下很难看。菜单关掉后下一拍（≤60 秒）自然就补上了。
+    -- 每次跳字闪一下很难看。菜单关掉后下一拍自然就补上了。
     if self.menu_open then
         self:scheduleTick()
         return
     end
 
-    -- 分钟级：只改时钟文字，局部刷新
+    -- 分钟级：只改时钟文字，并且**只刷时钟那一块**。
+    -- 原来刷的是整棵树（整屏 1072×1448），每跳一次要驱动 150 万像素；
+    -- 缩到钟面区域后，同一次刷新的波形时间大约只要五分之一。
     local clock = string.format("%02d:%02d", now.hour, now.min)
     if self.clock_widget and clock ~= self.clock_text then
         self.clock_text = clock
         self.clock_widget:setText(clock)
-        UIManager:setDirty(self.root, "ui")
+        UIManager:setDirty(self.clock_widget, "ui")
     end
 
     -- 跨日：日期/农历/节气/月历全部要重算
     local day_key = string.format("%04d%02d%02d", now.year, now.month, now.day)
     if day_key ~= self.day_key then
         self:refreshLayout()
-    elseif now.min % FULL_REFRESH_PERIOD == 0 then
+    elseif not low and pc.full_refresh > 0 and now.min % pc.full_refresh == 0 then
+        -- 全刷是为了清电泳残影，纯消耗：低电时先让位，接上电就恢复
         UIManager:setDirty(self.root, "full")
     end
 
-    -- 定时拉取天气：已有数据时按配置间隔（默认 30 分钟）；还没有数据时 5 分钟重试
+    -- 定时拉取天气：有数据时按设置间隔，还没有数据时 5 分钟重试。
     -- 刚唤醒的宽限期内先不拉：请求是同步的（http.TIMEOUT=20），会正好卡在
-    -- 用户按电源键的那一刻，看起来就是「按了没反应」。
+    -- 用户按电源键的那一刻，看起来就是「按了没反应」。低电也不拉。
     local fresh = self._resume_ts and (wall - self._resume_ts < RESUME_FETCH_GRACE)
-    if not fresh then
-        local last = self.weather and self.weather.ts or 0
-        local interval = tonumber(self:getConfig().update_interval) or UPDATE_INTERVAL
+    if not fresh and not low then
+        -- 基准取「最近一次成功」与「最近一次尝试」的较新者。
+        -- 只用 weather.ts 的话，没有数据时它是 nil，基准恒为 0，
+        -- 于是每一拍都判定「过期」——原先是每分钟一轮请求，注释写的 5 分钟反而没生效。
+        local last = math.max(self.weather and self.weather.ts or 0,
+            self.last_fetch_ts or 0)
+        local interval = pc.weather
         if not self.weather then
             interval = 5 * 60
+        end
+        -- 连续失败必须退避：接口挂掉时固定 5 分钟重试，每轮三个接口、每个 20 秒
+        -- 超时，占空比能到两成，是这套代码里最费电的一种状态。
+        local fails = self.fetch_fails or 0
+        if fails > 0 then
+            interval = math.min(interval * 2 ^ math.min(fails, 4), FETCH_BACKOFF_MAX)
         end
         if wall - last >= interval then
             self:fetchWeather()
@@ -1662,7 +1843,12 @@ function Dashboard:updateLabel(ctx)
 end
 
 -- ------------------------------------------------------------------ 界面构建
-function Dashboard:refreshLayout()
+--- 重建版面并重绘。
+--- mode 决定刷新方式，默认 "full"（整屏闪一下，最干净）：
+---   "full" → 跨日、转屏、唤醒、首次打开，内容整体变了，值得闪一次
+---   "ui"   → 只是数值变了（天气拉到新数据），不闪、走局部刷新，残影交给定时全刷
+--- 这个区分能把「每拉一次天气就闪一次屏」消掉，一天少闪几十次。
+function Dashboard:refreshLayout(mode)
     if not self.shown then return end
     -- 菜单在屏幕上时重建会把它盖掉，先记下来等菜单关掉再重排
     if self.menu_open then
@@ -1675,7 +1861,7 @@ function Dashboard:refreshLayout()
     if old then
         UIManager:close(old)
     end
-    UIManager:setDirty(self.root, "full")
+    UIManager:setDirty(self.root, mode or "full")
 end
 
 --- 屏幕当前是否呈横向（像素宽 >= 高）
@@ -4111,6 +4297,8 @@ end
 function Dashboard:fetchWeather(manual)
     if self.fetching then return end
     self.fetching = true
+    -- 记录「尝试时刻」：tick 的间隔判断要用它，否则没有数据时会每拍都发起请求
+    self.last_fetch_ts = os.time()
 
     -- 离线时不走 runWhenOnline，避免 KOReader 弹出「连接 WiFi」对话框打断看板
     if NetworkMgr.isOnline then
@@ -4170,6 +4358,14 @@ function Dashboard:fetchWeather(manual)
         end
         self.cache:flush()
 
+        -- 失败计数喂给 tick 做退避：接口挂掉时不能仍按 5 分钟一轮猛冲
+        if weather or air then
+            self.fetch_fails = 0
+        else
+            self.fetch_fails = (self.fetch_fails or 0) + 1
+            logger.warn("dashboard: 天气连续失败", self.fetch_fails, "次，下次重试将退避")
+        end
+
         self.fetching = false
         if manual and not weather and not air then
             UIManager:show(InfoMessage:new{
@@ -4178,7 +4374,8 @@ function Dashboard:fetchWeather(manual)
             })
         end
         if self.shown then
-            self:refreshLayout()
+            -- 只是数值更新：局部刷新即可，不必整屏闪一下
+            self:refreshLayout("ui")
         end
     end)
 end

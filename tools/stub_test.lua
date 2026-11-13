@@ -1602,6 +1602,7 @@ end
 -- 唤醒宽限期：休眠之后天气必然过期，如果唤醒第一拍 tick 就去同步拉取，
 -- 正好卡在用户按电源键的那一刻（http.TIMEOUT = 20 秒，最坏能卡一分多钟）
 instance.weather.ts = 0                    -- 强制过期，正常逻辑一定会拉
+instance.last_fetch_ts = os.time() - 7200  -- 上次尝试是睡前（两小时前），不是刚刚
 instance._resume_ts = os.time()
 instance:tick()
 if instance.weather.ts ~= 0 then
@@ -1609,6 +1610,7 @@ if instance.weather.ts ~= 0 then
     os.exit(1)
 end
 instance.weather.ts = 0
+instance.last_fetch_ts = os.time() - 7200
 instance._resume_ts = os.time() - 3600     -- 宽限期过了
 instance:tick()
 if instance.weather.ts == 0 then
@@ -1627,6 +1629,94 @@ if instance.root == root_before_gap then
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = "== tick 间隔异常（休眠）后自动重建版面 =="
+
+-- 省电：时钟粒度 / 仅触摸 / 低电保护 / 失败退避。
+-- 用立即执行函数而不是 `local function`：主 chunk 的 local 已经贴着 200 上限，
+-- 再加一个顶层 local 会直接 "too many local variables"。
+;(function()
+    local function fail(msg)
+        print("[FAIL] " .. msg)
+        os.exit(1)
+    end
+
+    -- 1) 5 分钟粒度：下一拍要落在整 5 分边界，即 1..300 秒
+    G_reader_settings:saveSetting("dashboard_tick_step", 5)
+    timers = {}
+    instance:scheduleTick()
+    local d = timers[#timers] and timers[#timers].delay or -1
+    if d < 1 or d > 300 then
+        fail(string.format("5 分钟粒度排出的间隔是 %.1f 秒，应落在 1..300", d))
+    end
+
+    -- 2) 0 = 仅触摸：不该再排定时器
+    G_reader_settings:saveSetting("dashboard_tick_step", 0)
+    timers = {}
+    instance:scheduleTick()
+    if #timers > 0 then
+        fail("「只在触摸时刷新」仍然排了定时器")
+    end
+
+    -- 3) 低电：天气早已过期也不拉，且时钟粒度抬到 30 分钟
+    G_reader_settings:saveSetting("dashboard_tick_step", 5)
+    G_reader_settings:saveSetting("dashboard_low_battery", 10)
+    local orig_battery = instance.batteryInfo
+    instance.batteryInfo = function() return 8, false end
+    instance._batt_cache = nil
+    instance.weather.ts = 0
+    instance._resume_ts = nil
+    instance._last_tick_ts = os.time()
+    instance:tick()
+    if instance.weather.ts ~= 0 then
+        fail("电量 8% 时仍然去拉天气")
+    end
+    if instance:tickStep() < 30 then
+        fail("电量 8% 时时钟粒度没有降到 30 分钟")
+    end
+    instance.batteryInfo = function() return 8, true end
+    instance._batt_cache = nil
+    if instance.tickStep(instance) ~= 5 then
+        fail("充电状态下不该降频")
+    end
+    instance.batteryInfo = orig_battery
+    instance._batt_cache = nil
+    G_reader_settings:saveSetting("dashboard_low_battery", 0)
+
+    -- 4) 失败退避：无数据 + 连续失败 2 次 + 10 分钟前试过 → 不该再请求
+    --    （5 分钟基准 × 2^2 = 20 分钟，10 分钟还没到）
+    instance.weather = nil
+    instance.fetch_fails = 2
+    instance.last_fetch_ts = os.time() - 600
+    instance._resume_ts = nil
+    instance._last_tick_ts = os.time()
+    instance:tick()
+    if instance.weather ~= nil then
+        fail("连续失败 2 次后 10 分钟就重试，退避没生效")
+    end
+    -- 退避清零后，同样过了 10 分钟就该允许重试（门槛 5 分钟）
+    instance.fetch_fails = 0
+    instance.last_fetch_ts = os.time() - 600
+    instance:tick()
+    if instance.weather == nil then
+        fail("退避清零后仍不重试，天气会一直空着")
+    end
+
+    -- 5) 省电菜单结构：4 组，各自的选项数与预设一致
+    local pm = instance:genPowerMenu()
+    local want = { 6, 4, 5, 5 }
+    if #pm ~= 4 then
+        fail("省电菜单应有 4 组，实际 " .. #pm)
+    end
+    for i = 1, 4 do
+        local sub = pm[i] and pm[i].sub_item_table or {}
+        if #sub ~= want[i] then
+            fail(string.format("省电菜单第 %d 组应有 %d 个选项，实际 %d", i, want[i], #sub))
+        end
+    end
+
+    pcall(function() G_reader_settings:delSetting("dashboard_tick_step") end)
+    pcall(function() G_reader_settings:delSetting("dashboard_low_battery") end)
+end)()
+EVENTS[#EVENTS + 1] = "== 省电：5 分钟粒度 / 仅触摸 / 低电降频且不拉天气 / 失败退避 =="
 
 -- 模拟手动刷新
 ok, err = pcall(function() instance:fetchWeather(true) end)
