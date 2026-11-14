@@ -137,18 +137,20 @@ class Cover:
                 self.line(px_, py_, x, y, thick, cap=True)
             px_, py_ = x, y
 
-    def arc_dashed(self, cx, cy, r, a0, sweep, dashes, thick):
-        """虚线弧：把 sweep 均分成 2n-1 格，奇数格画、偶数格留空。
+    def arc_dashed(self, cx, cy, r, a0, sweep, dashes, thick, duty=0.4):
+        """虚线弧：把 sweep 均分成 n 段等长周期，每周期按 duty 画实、其余留空。
 
-        为什么不在弧线上按像素长度切：n 取 2/3/4 对应半径 4/8/12，
-        正好让每一段的**弧长**都在 2.4u 上下（换算到 57px 约 5.7px），
-        三段弧看起来是同一个笔触密度，而不是内圈碎成点、外圈连成线。
+        duty 0.4 是 53px 上比出来的：0.5 的断口和斜杠挖空带混在一起，
+        「未开启」和「未连接」几乎分不出；0.32 又碎成点阵，认不出是 WiFi。
+        相位让每段都居中在周期里，弧的首尾各留 0.3 周期空白，
+        不会和底下的圆点粘连。
         """
         n = max(1, dashes)
-        slot = abs(sweep) / (2 * n - 1)
+        period = abs(sweep) / n
+        d = period * duty
         for i in range(n):
-            s0 = a0 + (2 * i) * slot * (1 if sweep > 0 else -1)
-            self.arc(cx, cy, r, s0, slot, thick)
+            s0 = a0 + (i * period + (period - d) / 2.0) * (1 if sweep > 0 else -1)
+            self.arc(cx, cy, r, s0, d, thick)
 
     def alpha(self):
         """降采样：返回 size×size 的 0..255 alpha。"""
