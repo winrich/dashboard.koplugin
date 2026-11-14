@@ -50,6 +50,18 @@ def lua_files():
 CDATA_FIELDS = ("color", "fgcolor", "bgcolor", "background", "line_color")
 NIL_CMP = re.compile(r"\.(%s)\s*[=~]=\s*nil" % "|".join(CDATA_FIELDS))
 
+# 同一个坑的第二种长相：拿颜色**互相比较**（`opts.color == COLOR_BLACK`）。
+# 两侧只要有一侧是 cdata，LuaJIT 就走 ColorRGB32_mt.__eq，而该实现里
+# `self` / `color` 为 nil 时直接崩。2026-11-14 20:21 真机实测：
+#   ffi/blitbuffer.lua:602: attempt to index local 'self' (a nil value)
+#   <- main.lua:3783 iconBitmap <- icon <- buildZone <- buildPortrait <- open
+# 桩件里颜色是数字，`0x00 == 0x00` 永远是普通比较，测不出来。所以判「是不是黑墨」
+# 必须另外传显式标记（icon 的 opts.black），不能从颜色反推。
+COLOR_CONSTS = ("COLOR_BLACK", "COLOR_WHITE", "COLOR_LIGHT_GRAY", "COLOR_GRAY",
+                "COLOR_DARK_GRAY", "COLOR_GRAY_3", "COLOR_GRAY_6", "COLOR_GRAY_B",
+                "COLOR_GRAY_E", "INK1", "INK2", "INK3")
+COL_CMP = re.compile(r"[=~]=\s*(%s)\b" % "|".join(COLOR_CONSTS))
+
 
 def lint_cdata_compare():
     print("=========== 0) 颜色字段判空写法 ===========")
@@ -61,13 +73,15 @@ def lint_cdata_compare():
                 code = line.split("--", 1)[0]  # 去掉行尾注释，避免注释里的示例被误判
                 if NIL_CMP.search(code):
                     bad.append("%s:%d  %s" % (name, no, line.strip()))
+                elif COL_CMP.search(code):
+                    bad.append("%s:%d  %s" % (name, no, line.strip()))
     if bad:
-        print("[FAIL] 颜色字段不能直接与 nil 比较：真机上会触发 cdata __eq 崩溃，"
-              "判空请改用显式标记或 rawequal")
+        print("[FAIL] 颜色字段不能与 nil 或颜色常量比较：真机上会触发 cdata __eq 崩溃，"
+              "判空/null 请改用显式标记或 rawequal，判墨色请传 opts.black 之类的标记")
         for b in bad:
             print("   ", b)
         return False
-    print("[PASS] 未发现颜色字段与 nil 直接比较")
+    print("[PASS] 未发现颜色字段与 nil / 颜色常量直接比较")
     return True
 
 

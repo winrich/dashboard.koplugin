@@ -163,7 +163,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.58"
+local DASHBOARD_VERSION = "2.59"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -3523,16 +3523,19 @@ function Dashboard:buildHeader(ctx, pad_lr)
     -- 两处看到的图形语言是一个。
     local net = self:netInfo()
     if net.wifi_on ~= nil then
-        local opts = { color = INK2 }
-        if net.wifi_on and net.connected then
-            -- 满格三段
-        elseif net.wifi_on then
-            opts.slash = true
+        if net.wifi_on == false then
+            -- v2.59：未开启改用汉字。那套「只亮内段 + 斜杠」要跟"未连接"的
+            -- 「三段弧 + 斜杠」并排比才分得清；顶栏只出现一枚时两者看着是同一张图，
+            -- 图形反而比字模糊。三个汉字 17px 占 51px，比图标加间距的 74px 还窄。
+            right_items[#right_items + 1] = self:makeText(ctx, T("未开启"), 14,
+                { color = INK2 })
+            right_items[#right_items + 1] = mkPad(math.floor(12 * S), 1)
         else
-            opts.lit, opts.slash = 1, true
+            local opts = { color = INK2 }
+            if not net.connected then opts.slash = true end
+            right_items[#right_items + 1] = self:icon("wifi", math.floor(30 * S), opts)
+            right_items[#right_items + 1] = mkPad(math.floor(12 * S), 1)
         end
-        right_items[#right_items + 1] = self:icon("wifi", math.floor(30 * S), opts)
-        right_items[#right_items + 1] = mkPad(math.floor(12 * S), 1)
     end
     local cap, charging = self:batteryInfo()
     if cap then
@@ -3777,7 +3780,12 @@ function Dashboard:iconBitmap(name, px, opts)
     local rel = "ui/" .. key .. "-" .. px
     -- 位图是死色，不能像矢量那样运行时改 color：电量网络卡里"已连接"用纯黑、
     -- 其余用 0x66，所以黑墨那一份单独存（后缀 -b）。
-    if opts.color == COLOR_BLACK then rel = rel .. "-b" end
+    --
+    -- 用显式标记 opts.black，**不要**写 opts.color == COLOR_BLACK：真机上
+    -- COLOR_BLACK 是 ffi cdata，与另一个 cdata 比较会走 ColorRGB32_mt.__eq
+    -- （ffi/blitbuffer.lua:602 attempt to index local 'self'），桩件里是数字、永远测不出来。
+    -- v2.59 上机即崩在 buildZone → icon → iconBitmap 这条路上，就是这一行。
+    if opts.black then rel = rel .. "-b" end
     local cache = self._icon_bitmap_cache
     if not cache then
         cache = {}
@@ -4806,16 +4814,20 @@ function Dashboard:compBatteryNet(ctx, w, h, k)
     local net = self:netInfo()
     -- 网络这格原来在 38du 的大字位上写「未连接」三个汉字：占掉半个格宽，
     -- 而且"信号弱"和"没开 WiFi"看起来一模一样。改成状态图标 ——
-    --   已连接 = 三段弧 / 未连接 = 三段弧 + 斜杠 / 未开启 = 只亮内段 + 斜杠。
-    -- 图形本身分得出三种状态，标签「网络」两个字说明它是什么。
+    --   已连接 = 三段弧 / 未连接 = 三段弧 + 斜杠。
+    -- v2.59：未开启又改回汉字。它和"未连接"差的就是少亮两段弧，单看一枚
+    -- 图标分不出是哪个；而"没开 WiFi"是最需要一个动作的状态，宁可让它占宽。
     local wifi
     local wpx = math.floor(50 * S)
     if net.wifi_on == true and net.connected then
-        wifi = self:icon("wifi", wpx, { color = COLOR_BLACK })
+        wifi = self:icon("wifi", wpx, { color = COLOR_BLACK, black = true })
     elseif net.wifi_on == true then
         wifi = self:icon("wifi", wpx, { color = INK2, slash = true })
+    elseif net.wifi_on == false then
+        wifi = self:makeText(ctx, T("未开启"), 24, { color = INK2 })
     else
-        wifi = self:icon("wifi", wpx, { color = INK2, lit = 1, slash = true })
+        -- 取不到 NetworkMgr 的状态：不猜，留一个占位
+        wifi = self:makeText(ctx, "--", 24, { color = INK2 })
     end
 
     -- 电量：壳体本身就在编码百分比（填充比例），数字只做精确读数。
