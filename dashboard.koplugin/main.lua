@@ -166,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.61"
+local DASHBOARD_VERSION = "2.62"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -721,9 +721,14 @@ local ZONE_KEYS = { "A", "B", "C" }
 --- v2.53 改了竖屏 B 区：从"农历节气"换成"今日行动"。一屏最该回答的三件事是
 --- 现在几点 / 今天什么天 / 今天要做什么，农历只回答第二个的一半，
 --- 而它占的是面积最大的一块（37%）。
+--- v2.62 把横屏 C 区从"侧栏三合一"换成"在读卡"：C 区是下半区右侧那块 726×526，
+--- 高度够走「上封面下三栏」那档版式，是在读卡三种版式里信息最全的一种。
+--- 代价是横屏默认不再显示农历干支 / 节气进度 / 日出日落与 AQI——这四类都是
+--- "一天看一次就够"的信息，而读书进度是每次拿起设备都想知道的；要换回来在菜单里选。
+--- 注意：这里只影响**没有 dashboard_components 设置的设备**，已存过配置的不动。
 local ZONE_DEFAULT = {
     portrait  = { A = "clock_weather", B = "today_actions", C = "stats_cells" },
-    landscape = { A = "clock_weather", B = "today_actions", C = "side_panel" },
+    landscape = { A = "clock_weather", B = "today_actions", C = "reading_now" },
 }
 
 --- 组件注册表。zones 按方向分别声明白名单（同一个组件在竖屏能进的区

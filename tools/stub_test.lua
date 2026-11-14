@@ -2765,10 +2765,11 @@ EVENTS[#EVENTS + 1] = "== 未配置提示：缺凭据弹一次，配好后不再
 -- 1) 没有设置时，三区必须回落到默认组件
 -- v2.53 起 B 区默认是 today_actions（今日行动），不再是 lunar_term / calendar：
 -- 面积最大的一块留给「今天要做什么」，农历仍可在菜单里选回来。
+-- v2.62 起横屏 C 区默认是在读卡（原侧栏三合一）；侧栏仍可在菜单里选回来。
 local lay = instance:getZoneLayout()
 if lay.portrait.A ~= "clock_weather" or lay.portrait.B ~= "today_actions"
     or lay.portrait.C ~= "stats_cells" or lay.landscape.A ~= "clock_weather"
-    or lay.landscape.B ~= "today_actions" or lay.landscape.C ~= "side_panel" then
+    or lay.landscape.B ~= "today_actions" or lay.landscape.C ~= "reading_now" then
     print("[FAIL] 无设置时没有回落到默认分区")
     os.exit(1)
 end
@@ -2785,7 +2786,7 @@ if lay2.portrait.A ~= "clock_weather" or lay2.portrait.B ~= "today_actions"
         lay2.portrait.A, lay2.portrait.B, lay2.portrait.C))
     os.exit(1)
 end
-if lay2.landscape.A ~= "clock_weather" or lay2.landscape.C ~= "side_panel" then
+if lay2.landscape.A ~= "clock_weather" or lay2.landscape.C ~= "reading_now" then
     print("[FAIL] 横屏越区组件未回落默认")
     os.exit(1)
 end

@@ -455,6 +455,22 @@ v2.61 起额外带出 `partial_md5_checksum`（认书用）与 `summary.modified
 所以在读卡进 C 区后，多数时候只显示「封面 + 书名 + 已读 X/Y 页」，
 三栏要等统计积累起来才出现。这不是 bug，是 statistics 只记开统计之后的数据。
 
+### 默认分区（v2.62）
+
+v2.62 把横屏 C 区默认从「侧栏三合一」换成「在读卡」，`ZONE_DEFAULT` 现在这么写
+（竖屏 C 区默认仍是「三格状态」，没动）：
+
+```lua
+portrait  = { A = "clock_weather", B = "today_actions", C = "stats_cells" },
+landscape = { A = "clock_weather", B = "today_actions", C = "reading_now" },
+```
+
+横屏 C 是 726×526 的盒子，正好走「上封面 + 下三栏」那一档，是在读卡三种版式里
+信息最全的一种；代价是横屏默认不再显示侧栏三合一（农历干支 / 节气进度 / 日出日落与 AQI），
+这四类都是「一天看一次就够」的信息，要在菜单里选回来。
+`ZONE_DEFAULT` **只对没有 `dashboard_components` 设置的设备生效**，改过配置的用户不受影响
+（真机上验证这一点：改默认值后横屏 C 仍是用户存的旧值，得手动换一次才跟着变）。
+
 ---
 
 ## 倒数日与待办
