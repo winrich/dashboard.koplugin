@@ -183,13 +183,14 @@ def agenda_block(agenda):
             % (",".join(events), ",".join(todos)))
 
 
-def grab(w, h, rot, zones, lang, power, wifi, reading, agenda=""):
+def grab(w, h, rot, zones, lang, power, wifi, reading, agenda="",
+         extra_lua="", extra_env=None):
     lua = (
         "STUB_FRAME = true\n"
         f"STUB_W = {w}\nSTUB_H = {h}\nSTUB_START_ROTATION = {rot}\n"
         f"STUB_SETTINGS_DIR = [[{settings_dir()}]]\n"
         f'STUB_RUN_ID = "{uuid.uuid4().hex[:8]}"\n'
-        + agenda +
+        + agenda + extra_lua +
         f'arg = {{ [1] = [[{PLUGIN}]] }}\n'
         f'package.path = [[{PLUGIN}/?.lua;]] .. package.path\n'
         f'dofile([[{HERE}/stub_test.lua]])\n'
@@ -202,6 +203,7 @@ def grab(w, h, rot, zones, lang, power, wifi, reading, agenda=""):
                STUB_POWER=power,
                STUB_WIFI=wifi,
                STUB_READING=reading)
+    env.update(extra_env or {})
     out = subprocess.run([sys.executable, "-c", RUNNER], cwd=ROOT, input=lua,
                          capture_output=True, text=True, encoding="utf-8",
                          errors="replace", env=env)
@@ -224,23 +226,95 @@ def grab(w, h, rot, zones, lang, power, wifi, reading, agenda=""):
 
 
 # --------------------------------------------------------------------- 绘制
+def tail_params(tail):
+    """解析 B / D / K 的尾串：`bw=2;r=12` → {"bw": 2.0, "r": 12.0}。
+
+    帧格式是 5 个数值槽 + 一个尾串，各 tag 的槽位含义不同（以 stub_test.lua 的
+    emit_frame 为准）。数值槽不够用的参数（线宽、圆角半径）塞进尾串。
+    """
+    out = {}
+    for part in (tail or "").split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        try:
+            out[k.strip()] = float(v)
+        except ValueError:
+            continue
+    return out
+
+
 def draw_items(items, dw, dh):
     S = SCALE
     img = Image.new("L", (dw * S, dh * S), 255)
     d = ImageDraw.Draw(img)
 
     for tag, x, y, iw, ih, color, text in items:
+        ink = 255 - (color or 0)     # 桩件值域反向，任意墨阶都走这一条换算
         if tag == "R":
             if iw <= 0 or ih <= 0:
                 continue
             d.rectangle([x * S, y * S, (x + iw) * S - 1, (y + ih) * S - 1],
-                        fill=255 - (color or 0))
+                        fill=ink)
         elif tag == "B":
             if iw <= 0 or ih <= 0:
                 continue
-            bw = max(2, S)
-            d.rectangle([x * S, y * S, (x + iw) * S - 1, (y + ih) * S - 1],
-                        outline=255 - (color or 0), width=bw)
+            p = tail_params(text)
+            bw = max(1, int(round(p.get("bw", 1) * S)))
+            r = p.get("r", 0)
+            box = [x * S, y * S, (x + iw) * S - 1, (y + ih) * S - 1]
+            if r > 0:
+                # 半径超过半边长时夹住：Pillow 会画出畸形圆角。
+                # 已知与真机有一处偏差 —— 设备端 paintRoundedCorner 在
+                # 2r > h 或 2r > w 时直接 return，四角一个都不画（只剩四条直边，
+                # 看着像四个缺口）。C 实现是否同样处理未经验证，这里选夹住，
+                # 宁可预览偏乐观，也不要每次出图都报一个未必成立的假警。
+                rad = max(0, int(round(min(r * S, (box[2] - box[0]) / 2,
+                                           (box[3] - box[1]) / 2))))
+                d.rounded_rectangle(box, radius=rad, outline=ink, width=bw)
+            else:
+                d.rectangle(box, outline=ink, width=bw)
+        elif tag == "C":
+            # 槽位：cx cy r lw。lw >= r 即实心
+            cx, cy, r, lw = x, y, iw, ih
+            if r <= 0:
+                continue
+            half = (S - 1) / 2.0     # 1x 像素中心 → 2x 画布中心
+            mx, my = cx * S + half, cy * S + half
+            rr = r * S
+            box = [mx - rr, my - rr, mx + rr, my + rr]
+            if lw >= r:
+                d.ellipse(box, fill=ink)
+            else:
+                d.ellipse(box, outline=ink, width=max(1, int(round(lw * S))))
+        elif tag == "D":
+            # 槽位：x y w h；尾串 r=<半径>
+            if iw <= 0 or ih <= 0:
+                continue
+            r = tail_params(text).get("r", 0)
+            box = [x * S, y * S, (x + iw) * S - 1, (y + ih) * S - 1]
+            if r > 0:
+                rad = max(0, int(round(min(r * S, (box[2] - box[0]) / 2,
+                                           (box[3] - box[1]) / 2))))
+                d.rounded_rectangle(box, radius=rad, fill=ink)
+            else:
+                d.rectangle(box, fill=ink)
+        elif tag == "K":
+            # 只画四角圆弧、不含直边（真机 paintRoundedCorner 的语义）
+            if iw <= 0 or ih <= 0:
+                continue
+            p = tail_params(text)
+            bw = max(1, int(round(p.get("bw", 1) * S)))
+            r = int(round(p.get("r", 0) * S))
+            if r <= 0:
+                continue
+            r = min(r, (iw * S) // 2, (ih * S) // 2)
+            x0, y0 = x * S, y * S
+            x1, y1 = (x + iw) * S - 1, (y + ih) * S - 1
+            d.arc([x0, y0, x0 + 2 * r, y0 + 2 * r], 180, 270, fill=ink, width=bw)
+            d.arc([x1 - 2 * r, y0, x1, y0 + 2 * r], 270, 360, fill=ink, width=bw)
+            d.arc([x0, y1 - 2 * r, x0 + 2 * r, y1], 90, 180, fill=ink, width=bw)
+            d.arc([x1 - 2 * r, y1 - 2 * r, x1, y1], 0, 90, fill=ink, width=bw)
         elif tag == "I":
             path = text if os.path.isabs(text) else os.path.join(ROOT, text)
             if not (os.path.exists(path) and iw > 0 and ih > 0):

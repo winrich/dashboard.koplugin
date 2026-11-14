@@ -35,3 +35,10 @@ Thumbs.db
 desktop.ini
 *.swp
 *~
+
+# ── Python 字节码：tools/ 下的脚本会被 import，本机跑一次就生成 ──────
+__pycache__/
+*.pyc
+
+# ── 评审中间产物：对照版 / 概念图 / 原语自检页，都能由 tools/ 重出 ──
+preview/_review/

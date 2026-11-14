@@ -224,29 +224,182 @@ local stack = {}
 local timers = {}
 local standby = 0
 
+-- 绘制原语：与真机 ffi/blitbuffer.lua 的签名逐一对齐。
+--   paintRect(x, y, w, h, value)
+--   paintCircle(center_x, center_y, r, c, w)       w = 线宽，省略即实心
+--   paintBorder(x, y, w, h, bw, c, r, anti_alias)  r ≠ 0 时走四角圆弧
+--   paintRoundedRect(x, y, w, h, c, r)             实心圆角矩形
+--   paintRoundedCorner(x, y, w, h, bw, r, c, aa)   只画四角，不含直边
+-- 只记录参数、由渲染器还原，所以**参数必须一个不漏地记下来**：
+-- 旧版 paintBorder 把 bw 丢了，预览里 1px 和 3px 的边框被画成同一粗细。
 local fake_bb = {}
 function fake_bb:paintRect(x, y, w, h, color)
     RECORD[#RECORD + 1] = { kind = "rect", x = x, y = y, w = w, h = h, color = color }
 end
 
--- 机器可读的最终帧导出，供 tools/render_preview.py 还原版面
-local instance        -- 前置声明：dump_frame 是闭包，必须在此之前可见
-local function dump_frame()
-    RECORD = {}
-    instance.root:paintTo(fake_bb, 0, 0)
+function fake_bb:paintCircle(center_x, center_y, r, color, line_w)
+    if not r or r <= 0 then return end
+    local lw = line_w
+    if lw == nil or lw > r then lw = r end   -- 与真机一致：线宽大于半径按半径算
+    RECORD[#RECORD + 1] = { kind = "circle", cx = center_x, cy = center_y,
+                            r = r, lw = lw, color = color }
+end
+
+function fake_bb:paintBorder(x, y, w, h, bw, color, r, anti_alias)
+    RECORD[#RECORD + 1] = { kind = "border", x = x, y = y, w = w, h = h,
+                            bw = bw or 1, r = r or 0, color = color }
+end
+
+function fake_bb:paintRoundedRect(x, y, w, h, color, r)
+    RECORD[#RECORD + 1] = { kind = "roundrect", x = x, y = y, w = w, h = h,
+                            r = r or 0, color = color }
+end
+
+function fake_bb:paintRoundedCorner(x, y, w, h, bw, r, color, anti_alias)
+    RECORD[#RECORD + 1] = { kind = "corner", x = x, y = y, w = w, h = h,
+                            bw = bw or 1, r = r or 0, color = color }
+end
+
+-- 机器可读的最终帧导出，供 tools/render_board.py 还原版面。
+-- 每行 = 5 个数值槽 + 一个尾串，槽位含义按 tag 解释（渲染器里一一对应）：
+--   R 矩形      x  y  w  h  color
+--   B 边框      x  y  w  h  color    尾串 bw=<线宽>;r=<圆角半径>
+--   C 圆        cx cy r  lw color    尾串空；lw >= r 即实心
+--   D 圆角矩形  x  y  w  h  color    尾串 r=<半径>
+--   K 圆角四角  x  y  w  h  color    尾串 bw=<线宽>;r=<半径>
+--   T 文字      x  y  w  h  color    尾串 = 文本
+--   I 图片      x  y  w  h  color    尾串 = 路径
+local instance        -- 前置声明：dump 函数是闭包，必须在此之前可见
+
+-- 收进一张表而不是三个 local：主 chunk 已贴着 200 个局部变量的上限，
+-- 每多一个顶层 local 都可能让整个桩件编译失败（"too many local variables"）。
+local FRAME = {}
+
+function FRAME.emit()
     for _, r in ipairs(RECORD) do
-        local tag = ({ text = "T", rect = "R", border = "B", image = "I" })[r.kind]
+        local tag, x, y, w, h, tail
+        if r.kind == "text" then
+            tag, x, y, w, h, tail = "T", r.x, r.y, r.w, r.h, tostring(r.text or "")
+        elseif r.kind == "image" then
+            tag, x, y, w, h, tail = "I", r.x, r.y, r.w, r.h, tostring(r.text or "")
+        elseif r.kind == "rect" then
+            tag, x, y, w, h, tail = "R", r.x, r.y, r.w, r.h, ""
+        elseif r.kind == "border" then
+            tag, x, y, w, h = "B", r.x, r.y, r.w, r.h
+            tail = string.format("bw=%g;r=%g", r.bw or 1, r.r or 0)
+        elseif r.kind == "circle" then
+            tag, x, y, w, h, tail = "C", r.cx, r.cy, r.r, r.lw, ""
+        elseif r.kind == "roundrect" then
+            tag, x, y, w, h = "D", r.x, r.y, r.w, r.h
+            tail = string.format("r=%g", r.r or 0)
+        elseif r.kind == "corner" then
+            tag, x, y, w, h = "K", r.x, r.y, r.w, r.h
+            tail = string.format("bw=%g;r=%g", r.bw or 1, r.r or 0)
+        end
         if tag then
             print(string.format("FRAME|%s|%d|%d|%d|%d|%d|%s", tag,
-                math.floor(r.x or 0), math.floor(r.y or 0), math.floor(r.w or 0),
-                math.floor(r.h or 0), math.floor(r.color or 0), tostring(r.text or "")))
+                math.floor(x or 0), math.floor(y or 0), math.floor(w or 0),
+                math.floor(h or 0), math.floor(r.color or 0), tail))
         end
     end
     print("FRAME|END")
 end
--- 节气进度条的外框走 paintBorder
-function fake_bb:paintBorder(x, y, w, h, bw, color)
-    RECORD[#RECORD + 1] = { kind = "border", x = x, y = y, w = w, h = h, color = color }
+
+function FRAME.dump()
+    RECORD = {}
+    instance.root:paintTo(fake_bb, 0, 0)
+    FRAME.emit()
+end
+
+-- 原语自检页（STUB_PRIMITIVES=1）：只验证「桩件记录 → 渲染器还原」这条链，
+-- 与任何真实版式无关。P0 新增的四个原语必须先在真机同款参数下看一眼，
+-- 才敢往组件里用——否则圆角画歪、月牙缺口朝反都不会有人发现。
+function FRAME.primitives()
+    RECORD = {}
+    -- 桩件值域反向：屏幕灰度 g 对应的记录值 = 255 - g
+    local function ink(g) return 255 - g end
+    local I0, I1, I2, I3 = ink(0x00), ink(0x33), ink(0x66), ink(0x88)
+    local WHITE = ink(0xFF)
+
+    local function label(y, s, col)
+        RECORD[#RECORD + 1] = { kind = "text", text = s, x = 56, y = y,
+                                w = 960, h = 41, color = col or I1 }
+    end
+
+    RECORD[#RECORD + 1] = { kind = "text", text = "P0 绘制原语自检 · 1072x1448",
+                            x = 56, y = 30, w = 960, h = 52, color = I0 }
+
+    -- 1. 实心圆：看边缘会不会糊、最小能到几 px
+    label(100, "实心圆 r=8 / 16 / 32 / 56，墨阶 0x00 与 0x66")
+    for _, t in ipairs({ { 110, 8, I0 }, { 210, 16, I0 }, { 360, 32, I0 },
+                         { 560, 56, I0 }, { 690, 32, I2 }, { 800, 16, I2 },
+                         { 890, 8, I2 } }) do
+        fake_bb:paintCircle(t[1], 206, t[2], t[3])
+    end
+
+    -- 2. 圆环：线宽从 2 到 16，外加 6px 小点（电池触点、节气点的实际尺寸）
+    label(286, "圆环 r=40 线宽 2 / 4 / 8 / 16 / 40；小点 r=10、r=6")
+    for _, t in ipairs({ { 110, 40, 2 }, { 240, 40, 4 }, { 370, 40, 8 },
+                         { 500, 40, 16 }, { 630, 40, 40 },
+                         { 760, 10, 2 }, { 830, 10, 1 },
+                         { 900, 6, 2 }, { 950, 6, 1 } }) do
+        fake_bb:paintCircle(t[1], 372, t[2], I0, t[3])
+    end
+
+    -- 3. 月牙 = 两圆相减：给月相组件用，先确认缺口方向与留边
+    label(436, "月牙 = 两圆相减：开口朝右上 / 右下 / 正右，r=56 与 r=40")
+    fake_bb:paintCircle(150, 538, 56, I0)
+    fake_bb:paintCircle(178, 524, 56, WHITE)
+    fake_bb:paintCircle(330, 538, 56, I0)
+    fake_bb:paintCircle(302, 552, 56, WHITE)
+    fake_bb:paintCircle(520, 538, 56, I3)
+    fake_bb:paintCircle(548, 538, 56, WHITE)
+    fake_bb:paintCircle(680, 538, 40, I0)
+    fake_bb:paintCircle(696, 532, 40, WHITE)
+
+    -- 4. 实心圆角矩形：卡片底、按钮底
+    label(618, "圆角矩形填充 r=4 / 12 / 24 / 44（210x96）")
+    for i, r in ipairs({ 4, 12, 24, 44 }) do
+        fake_bb:paintRoundedRect(56 + (i - 1) * 244, 668, 210, 96, ink(0xCC), r)
+    end
+
+    -- 5. 圆角边框：1px 最轻、3px 最重，看圆角和直边接得顺不顺
+    label(788, "圆角边框 bw=1(0x99) / 1(0x33) / 2 / 3，r=12")
+    local bx = { 56, 306, 556, 806 }
+    fake_bb:paintBorder(bx[1], 838, 222, 110, 1, ink(0x99), 12)
+    fake_bb:paintBorder(bx[2], 838, 222, 110, 1, I1, 12)
+    fake_bb:paintBorder(bx[3], 838, 222, 110, 2, I1, 12)
+    fake_bb:paintBorder(bx[4], 838, 222, 110, 3, I0, 12)
+
+    -- 6. 1px 线径：直角 vs 圆角，0x99 与 0xDD 两档
+    label(972, "1px 线径：直角 vs r=10（上 0x99 / 下 0xDD）")
+    fake_bb:paintBorder(56, 1022, 460, 46, 1, ink(0x99), 0)
+    fake_bb:paintBorder(556, 1022, 460, 46, 1, ink(0x99), 10)
+    fake_bb:paintBorder(56, 1078, 460, 46, 1, ink(0xDD), 0)
+    fake_bb:paintBorder(556, 1078, 460, 46, 1, ink(0xDD), 10)
+
+    -- 7. 进度槽：细线槽 + 圆角填充，两种墨阶配比
+    label(1148, "进度槽 r=17：0xCC 槽 + 0x33 填 / 0xDD 槽 + 0x66 填")
+    fake_bb:paintRoundedRect(56, 1198, 960, 34, ink(0xCC), 17)
+    fake_bb:paintRoundedRect(56, 1198, 600, 34, I1, 17)
+    fake_bb:paintRoundedRect(56, 1242, 960, 34, ink(0xDD), 17)
+    fake_bb:paintRoundedRect(56, 1242, 380, 34, I2, 17)
+
+    -- 8. 合成示例：圆角卡片 + 双色图标 + 进度槽，这才是这些原语的真实用法
+    label(1300, "合成：1px 0x99 圆角卡片 + 双色图标 + 内嵌进度槽")
+    fake_bb:paintBorder(56, 1350, 460, 66, 1, ink(0x99), 12)
+    fake_bb:paintCircle(104, 1383, 21, I2, 3)      -- 光晕（次要墨）
+    fake_bb:paintCircle(104, 1383, 13, I0)         -- 太阳本体（主墨）
+    fake_bb:paintRoundedRect(150, 1374, 330, 18, ink(0xDD), 9)
+    fake_bb:paintRoundedRect(150, 1374, 198, 18, I1, 9)
+
+    fake_bb:paintBorder(556, 1350, 460, 66, 1, ink(0x99), 12)
+    fake_bb:paintCircle(600, 1383, 20, I0)
+    fake_bb:paintCircle(610, 1377, 20, WHITE)
+    fake_bb:paintRoundedRect(650, 1374, 330, 18, ink(0xDD), 9)
+    fake_bb:paintRoundedRect(650, 1374, 120, 18, I2, 9)
+
+    FRAME.emit()
 end
 
 function UIManager:show(widget)
@@ -2015,7 +2168,12 @@ if _G.STUB_FRAME then
         pcall(function() instance:fetchWeather(true) end)
         if instance.shown then pcall(function() instance:refreshLayout() end) end
     end
-    dump_frame()
+    -- 原语自检页替换掉真实版面，只走「记录 → 出图」这一条链
+    if _G.STUB_PRIMITIVES then
+        FRAME.primitives()
+    else
+        FRAME.dump()
+    end
 end
 -- 渲染开关只在上面那次 dump 时有效：撤掉它，否则后面的「无设置应回落默认」
 -- 与中文文案断言会全部失败（这两个断言正是用来防止配置被悄悄改坏的）
