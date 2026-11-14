@@ -163,7 +163,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.56"
+local DASHBOARD_VERSION = "2.57"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -825,8 +825,12 @@ local K_LADDER = { 1, 0.94, 0.88, 0.82, 0.76 }
 -- 月历的横向铺排参数：
 --   列距 = 格宽 × CAL_GAP_RATIO（看起来是列与列之间透气，而不是把格子拉扁）
 --   格宽上限 = 行高 × CAL_ASPECT_MAX（再宽日号就在格子里浮起来了）
+-- v2.57：1.62 → 1.95。竖屏 B 区的内容列是 966px，而 1.62 把格宽压在 90px，
+-- 7 列只铺到 798px——左右各空 86px，最后一周又只有 6 个数字（周日那列还都是
+-- 个位数），墨迹重心整块偏左，看着就是"月历贴在左边"。放到 1.95 之后格宽由
+-- 可用宽度反算（约 108px），7 列正好铺满内容列，左右两条边与上下的卡片对齐。
 local CAL_GAP_RATIO = 0.32
-local CAL_ASPECT_MAX = 1.62
+local CAL_ASPECT_MAX = 1.95
 
 --- 文本行高。与 TextWidget 的 1.363 同一条公式，桩件与真机一致。
 local function textLineH(px, S, k)
@@ -1666,18 +1670,30 @@ function Dashboard:open()
     end
     -- 菜单里的「（当前）」标记要用它；没有存过配置就按屏幕实际方向
     self.orientation_mode = mode or self:getOrientation()
-    if mode then
-        if self:rotateScreen(mode) then
+    -- 先转屏、后建 root：转屏期间画面上不能有我们的全屏窗口。
+    -- 实测顺序反了就会失败——先 show(root) 再转屏，Screen 重建完 blitbuffer
+    -- 立刻被按旧方向重画一次，rotation 复位成竖屏，最后开出来还是竖版。
+    -- 只有「屏幕上还是文件管理器」的时候转屏才真的生效（devbridge 手动切过一次验证）。
+    local want_rotate = mode
+    if want_rotate then
+        if self:rotateScreen(want_rotate) then
             -- 转成了：版式由屏幕尺寸自然判定，清掉上一轮留下的强制标记
             self.force_landscape = nil
             self.rotation_changed = (screen_rotation() ~= self.base_rotation)
         else
-            -- 转不了就按要的方向排（画面方向不变，至少排版是另一套）。
-            -- 注意「竖屏」也要显式写 false，否则上一轮遗留的 true 会让它一直排横屏。
-            self.force_landscape = (mode ~= "portrait")
+            -- 转不了就按要的方向排（画面方向不变，至少排版是另一套）
+            self.force_landscape = (want_rotate ~= "portrait")
         end
+        -- 尺寸要等 buffer 重建完才互换，隔一拍再建版式
+        -- 1.2s：实测转屏后 Screen 的宽高要到 1 秒左右才互换，
+        -- 太早重排读到的还是旧尺寸，画出来就是「横屏版式装在竖屏画布里」。
+        UIManager:scheduleIn(1.2, function()
+            if self.shown then self:refreshLayout() end
+        end)
+    else
+        self.force_landscape = nil
+        self:refreshLayout()
     end
-    self:refreshLayout()
     self:fetchWeather()
     self:scheduleTick()
     self:maybeShowSetupHint()
@@ -2367,7 +2383,12 @@ function Dashboard:refreshLayout(mode)
     if old then
         UIManager:close(old)
     end
-    UIManager:setDirty(self.root, mode or "full")
+    -- 传 nil 而不是 self.root：让**整块屏幕**进脏区。
+    -- 看板是盖在 KOReader 界面上的全屏窗口，只脏自己的话，底层那一层探出边界
+    -- 的旧像素洗不掉——真机上表现为顶栏左边压着上一屏文件管理器的时刻、
+    -- 三格之间的缝里留着上一版的残笔。整屏重画时底层先画、看板后画，
+    -- 边界之外也一并盖住。
+    UIManager:setDirty(nil, mode or "full")
 end
 
 --- 屏幕当前是否呈横向（像素宽 >= 高）
@@ -2377,13 +2398,31 @@ end
 
 --- 旋转屏幕到指定方向，返回 true 表示旋转真的生效。
 --- 转完 Screen:getWidth()/getHeight() 会互换，版式随尺寸自动切换，不用另加强制标志。
+---
+--- v2.57：改成走 KOReader 自己的旋转入口。只调 Screen:setRotationMode 是**不够**的——
+--- 那一步只改内部的 rotation 计数，Kindle 上真正换方向要重建 blitbuffer，
+--- 这一步由 FileManager / ReaderView 的 onSetRotationMode 负责（它们会接着调 rotate()
+--- 重排整棵树）。真机实测：单独调 setRotationMode，getSize 立刻变 1448×1072，
+--- 但下一次 refresh 就按旧方向画回去，看板 refreshLayout 时已经复位，
+--- 于是永远排成竖屏。委托给 ui:onSetRotationMode 之后画面才真的转过来。
+--- 顺序不能反：先自己 set 再调它，它判定「方向没变」就跳过重排（踩过）。
 function Dashboard:rotateScreen(mode)
     if mode ~= "portrait" and mode ~= "landscape" and mode ~= "landscape_ccw" then
         return false
     end
     if not (Screen.setRotationMode and Screen.getRotationMode) then return false end
     local target = target_rotation(self.base_rotation or 0, mode)
-    local ok, err = pcall(function() Screen:setRotationMode(target) end)
+    local ui = self.ui
+    local ok, err = pcall(function()
+        if ui and ui.onSetRotationMode then
+            -- FileManager 的模式：内部判 mode ~= 当前值，再 Screen:setRotationMode + rotate()
+            ui:onSetRotationMode(target)
+        elseif ui and ui.view and ui.view.onSetRotationMode then
+            ui.view:onSetRotationMode(target)
+        else
+            Screen:setRotationMode(target)
+        end
+    end)
     if not ok then
         logger.warn("dashboard: 屏幕旋转失败", tostring(err))
         return false
@@ -2452,6 +2491,14 @@ function Dashboard:setOrientation(mode)
     self:refreshLayout()
     -- 旋转改的是整块画面的方向，必须整屏重画，否则会留下上一方向的残影
     UIManager:setDirty(nil, "full")
+    -- 与 open 同一个原因：转屏后尺寸要晚一拍才互换，这里再补排一次，
+    -- 否则从菜单切横屏时画出来的还是竖屏版式。
+    if rotated then
+        -- 1.2s：与 open 同一个理由，转屏后尺寸互换需要时间
+        UIManager:scheduleIn(1.2, function()
+            if self.shown and not self.menu_open then self:refreshLayout() end
+        end)
+    end
     return rotated
 end
 
