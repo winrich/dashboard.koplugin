@@ -228,6 +228,9 @@ end
 local UIManager = {}
 local stack = {}
 local timers = {}
+-- setDirty 调用记录：用来钉住「转一次方向只整屏刷一次」。
+-- 故意用全局：主 chunk 的 200 个 local 槽位已经用满了，再加一个 local 就编译不过。
+STUB_DIRTY_CALLS = {}
 local standby = 0
 
 -- 绘制原语：与真机 ffi/blitbuffer.lua 的签名逐一对齐。
@@ -435,6 +438,7 @@ function UIManager:close(widget)
 end
 
 function UIManager:setDirty(widget, mode)
+    STUB_DIRTY_CALLS[#STUB_DIRTY_CALLS + 1] = tostring(mode)
     log("setDirty mode=%s", tostring(mode))
     if widget and widget.paintTo then widget:paintTo(fake_bb, 0, 0) end
 end
@@ -1715,6 +1719,7 @@ end
 -- 左右滑动必须真的换到「另一种」版式：以前只是把版面重建一次，
 -- Kindle 没有重力感应、Screen 尺寸不变，所以滑完还是原来那套（提示恒为「竖屏」）
 local layout_before = instance.layout_landscape
+STUB_DIRTY_BEFORE = #STUB_DIRTY_CALLS
 if side_zone.handler({ direction = "east" }) ~= true then
     print("[FAIL] 左右滑动没有响应")
     os.exit(1)
@@ -1736,6 +1741,29 @@ if not _G.STUB_NO_ROTATION then
         os.exit(1)
     end
 end
+-- v2.64：转一次方向只许整屏刷一次。
+-- 旧实现是 refreshLayout() 画一遍、scheduleIn(1.2) 再补排一遍，两次都是 full，
+-- e-ink 上就是转一次黑闪两下。这里把「1.2 秒那档补排」真的执行掉，再数 full 的次数
+-- （桩件不会自己跑 timers，不主动执行就抓不到这个回归）。
+-- 写成全局函数而不是 local：主 chunk 的 200 个 local 槽位已经很紧张了。
+STUB_CHECK_ONE_FULL = function(before)
+    for i = #timers, 1, -1 do
+        local t = timers[i]
+        if t.delay > 1.0 and t.delay < 1.5 then
+            table.remove(timers, i)
+            t.fn()
+        end
+    end
+    local full_count = 0
+    for i = before + 1, #STUB_DIRTY_CALLS do
+        if STUB_DIRTY_CALLS[i] == "full" then full_count = full_count + 1 end
+    end
+    if full_count ~= 1 then
+        print(string.format("[FAIL] 切换方向后整屏刷新了 %d 次（应为 1 次，多了就是黑闪多次）", full_count))
+        os.exit(1)
+    end
+end
+STUB_CHECK_ONE_FULL(STUB_DIRTY_BEFORE or 0)
 -- 切换之后立刻校验：新版的画面必须仍然装得进当前屏幕
 local w_after, h_after = screen.getWidth(), screen.getHeight()
 local g_after = instance.root[1][1]:getSize()

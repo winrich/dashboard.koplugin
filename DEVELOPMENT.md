@@ -81,6 +81,17 @@ python tools/secret_check.py --history  # 审计全部历史（慢，改完历�
 - **左右滑动切换方向**：Kindle 没有重力感应，机器横过来像素方向不会变，所以切换时会真的
   旋转 framebuffer（`Screen:setRotationMode`，与阅读界面「旋转 90°」同一套），退出看板时转回。
   若某个固件转不动，会退化成「只换排版、不转屏」并提示一句。
+- **转屏只刷一次**（v2.64）：`fb:setRotationMode` 里 `bb:rotateAbsolute` 是同步的，
+  `getWidth/getHeight` 在它返回时就已经互换，所以转完立刻重排一次即可。
+  v2.63 及以前是「先画一遍、`scheduleIn(1.2)` 再补排一遍」，两次都是整屏 full，
+  e-ink 上表现为转一次方向黑闪两下。现在 `relayoutAfterRotate()` 先比一次尺寸，
+  对得上就直接画；只有个别异步机型才会 60ms 轮询（最多 1.2 秒兜底，仍只画一遍）。
+- **转屏时静音底层刷新**（v2.64）：`ui:onSetRotationMode()` 会连带底下那个界面重排，
+  重排完它自己 `setDirty(nil, "full")` 整屏刷一次 —— 可看板全屏盖着，那一次用户根本
+  看不见，只贡献一下黑闪。`beginRotateMute()` 临时接管 `UIManager._refresh`，
+  在窗口内丢弃「覆盖整屏的 full」（`partial`/`ui` 放行），看板自己的那一次用
+  `_own_full` 标记放行；窗口在画完后 1.2 秒解除，另有 2 秒兜底，`close()` 里也会解。
+  真机日志（`/tmp/dash_stack.log`）验证：切换前后各只剩 1 条整屏 full，来自看板。
 - 月历默认在横屏 B 区：周一起始、跨月补位（灰字）、今天反白、节气日带点。竖屏 B 区也能装，
   格宽按盒宽自适应。
 

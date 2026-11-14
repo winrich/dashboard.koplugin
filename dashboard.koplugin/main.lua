@@ -166,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.63"
+local DASHBOARD_VERSION = "2.64"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -1768,7 +1768,11 @@ function Dashboard:open()
     -- 只有「屏幕上还是文件管理器」的时候转屏才真的生效（devbridge 手动切过一次验证）。
     local want_rotate = mode
     if want_rotate then
-        if self:rotateScreen(want_rotate) then
+        -- 打开时转屏同样会惊动底下的界面（在书架里是 FileManager，在看书时是 ReaderView），
+        -- 它们重排完各自整屏刷一次；紧跟着看板再刷一次就又是两下黑闪。
+        self:beginRotateMute()
+        local rotated = self:rotateScreen(want_rotate)
+        if rotated then
             -- 转成了：版式由屏幕尺寸自然判定，清掉上一轮留下的强制标记
             self.force_landscape = nil
             self.rotation_changed = (screen_rotation() ~= self.base_rotation)
@@ -1776,12 +1780,10 @@ function Dashboard:open()
             -- 转不了就按要的方向排（画面方向不变，至少排版是另一套）
             self.force_landscape = (want_rotate ~= "portrait")
         end
-        -- 尺寸要等 buffer 重建完才互换，隔一拍再建版式
-        -- 1.2s：实测转屏后 Screen 的宽高要到 1 秒左右才互换，
-        -- 太早重排读到的还是旧尺寸，画出来就是「横屏版式装在竖屏画布里」。
-        UIManager:scheduleIn(1.2, function()
-            if self.shown then self:refreshLayout() end
-        end)
+        -- v2.64：原来是固定等 1.2 秒再建版式，理由是「转屏后宽高要等一拍才互换」。
+        -- 实测是同步互换的，那 1.2 秒纯粹是让用户多盯着歪掉的文件管理器看一秒。
+        -- 现在尺寸对得上就立刻建，只有异步机型才轮询等。
+        self:relayoutAfterRotate(rotated)
     else
         self.force_landscape = nil
         self:refreshLayout()
@@ -1832,6 +1834,9 @@ end
 
 function Dashboard:close()
     if not self.shown then return end
+    -- 万一是在转屏静音窗口里被关掉（用户滑完立刻按返回），必须先把静音解掉，
+    -- 否则底层界面以后所有整屏刷新都会被吞，屏幕就再也不全刷了。
+    self:endRotateMute()
     self.shown = false
     -- 万一是菜单开着的时候被关掉，别让标记卡住导致以后再也不重排；
     -- 菜单控件本身也要撤，否则屏幕上会留一个没人管的孤儿菜单。
@@ -2694,7 +2699,99 @@ function Dashboard:refreshLayout(mode)
     -- 的旧像素洗不掉——真机上表现为顶栏左边压着上一屏文件管理器的时刻、
     -- 三格之间的缝里留着上一版的残笔。整屏重画时底层先画、看板后画，
     -- 边界之外也一并盖住。
+    -- _own_full：转屏静音窗口里也放行这一次，那是看板唯一该刷的那一刷。
+    self._own_full = true
     UIManager:setDirty(nil, mode or "full")
+    self._own_full = nil
+end
+
+--- 转屏期间把**底层界面**的整屏 full 刷新吞掉，只让看板自己刷一次。
+---
+--- 为什么需要：`ui:onSetRotationMode()` 不只是转 framebuffer，它还会让底下的那个界面
+--- （ReaderView / FileManager）重排自己，重排完各自 `setDirty(nil, "full")` 整屏刷一次。
+--- 可看板是盖在最上面的全屏窗口，底层重排的结果用户根本看不见——那次整屏刷新换来的
+--- 只有屏幕黑闪一下。真机打点（/tmp/dash_stack.log）看得很清楚：
+---   ReaderView:onSetRotationMode -> rotate() -> setDirty(nil,"full")   ← 黑闪一
+---   看板 refreshLayout()          -> setDirty(nil,"full")              ← 黑闪二
+--- 两次相隔不到一秒，这就是「转一次方向闪两下」。
+---
+--- 做法：临时接管 UIManager._refresh，丢弃「覆盖整屏的 full」，partial / ui 一律放行；
+--- 看板自己那一次用 _own_full 标记放行。窗口从转屏开始到看板画完，另挂 2 秒兜底——
+--- 静音状态绝不能留到下一次（留着的话整机以后所有整屏刷新都会被吞掉）。
+function Dashboard:beginRotateMute()
+    if self._mute_full then return end
+    local orig = UIManager._refresh
+    if not orig then return end       -- 桩件里没有这个内部入口，直接跳过
+    self._mute_full = true
+    self._orig_refresh = orig
+    UIManager._refresh = function(mgr, mode, region, dither)
+        if self._mute_full and not self._own_full and mode == "full" then
+            local covers = (region == nil)
+            if not covers and region then
+                covers = region.w >= Screen:getWidth() and region.h >= Screen:getHeight()
+            end
+            if covers then
+                logger.dbg("dashboard: 转屏期间丢弃底层整屏刷新")
+                return
+            end
+        end
+        return orig(mgr, mode, region, dither)
+    end
+    self._mute_guard = function() self:endRotateMute() end
+    UIManager:scheduleIn(2, self._mute_guard)
+end
+
+--- 解除静音。调用是幂等的，正常路径在 relayoutAfterRotate 画完后 1.2 秒，
+--- 兜底是 beginRotateMute 里那两个秒的定时器。
+function Dashboard:endRotateMute()
+    if not self._mute_full then return end
+    if self._orig_refresh then UIManager._refresh = self._orig_refresh end
+    self._mute_full = false
+    self._orig_refresh = nil
+    self._own_full = nil
+    if self._mute_guard then
+        UIManager:unschedule(self._mute_guard)
+        self._mute_guard = nil
+    end
+end
+
+--- 转屏之后重排一次版面，**只画一遍**。
+---
+--- v2.64 之前这里是「先 refreshLayout() 画一次，再 scheduleIn(1.2) 补排一次」，
+--- 两次都是整屏 full 刷新 —— 真机上就是转一次方向黑闪两下，间隔约 1 秒。
+--- 那 1.2 秒是当初以为「转屏后 Screen 的宽高要等一拍才互换」才加的，
+--- 实测（/tmp/dash_paint.log 打点 + ffi/framebuffer.lua:454）不是这样：
+--- fb:setRotationMode 里 bb:rotateAbsolute 是同步的，getWidth/getHeight
+--- 在 setRotationMode 返回时就已经互换了，第二次补排画的跟第一次一模一样。
+---
+--- 现在改成：尺寸已经跟旋转模式对得上就立刻画一次；万一个别机型是异步的，
+--- 用 60ms 轮询等尺寸跟上，最多 1.2 秒兜底（只有这一种情况才会多等，不会多刷）。
+--- rotated 为 false（本机转不了屏、退化成只换版式）时尺寸本来就不变，直接画。
+function Dashboard:relayoutAfterRotate(rotated)
+    if not self.shown then return end
+    if not rotated then
+        self:refreshLayout()
+        UIManager:scheduleIn(1.2, function() self:endRotateMute() end)
+        return
+    end
+    -- 奇数旋转模式在 LinuxFB 里就是横屏（ffi/framebuffer.lua:442 getScreenOrientation）
+    local now = screen_rotation()
+    local expect_landscape = (now ~= nil) and (now % 2 == 1) or self:screenIsLandscape()
+    local tries = 0
+    local function attempt()
+        if not self.shown then return end
+        tries = tries + 1
+        if self:screenIsLandscape() == expect_landscape or tries > 20 then
+            self:refreshLayout()
+            -- 再等 1.2 秒才解除静音：底层界面迟到的整屏刷新（readerrolling 的
+            -- handleRenderingDelayed、readerview 的第二次 recalculate）会在转屏后
+            -- 半秒到一秒才到，窗口开小了照样补一次黑闪。真机上 SWITCH-2 就是这么漏的。
+            UIManager:scheduleIn(1.2, function() self:endRotateMute() end)
+        else
+            UIManager:scheduleIn(0.06, attempt)
+        end
+    end
+    attempt()
 end
 
 --- 屏幕当前是否呈横向（像素宽 >= 高）
@@ -2782,6 +2879,9 @@ function Dashboard:setOrientation(mode)
         if G_reader_settings.flush then G_reader_settings:flush() end
         return false
     end
+    -- 转屏会连带底下那个界面重排并整屏刷一次（ReaderView:rotate / FileManager:reinit），
+    -- 那一次用户看不见（看板全屏盖着），只贡献一下黑闪——静音掉，只留看板自己那一刷。
+    self:beginRotateMute()
     local rotated = self:rotateScreen(mode)
     if rotated then
         -- 旋转后版式由屏幕尺寸自然判定，不需要再强制
@@ -2794,17 +2894,10 @@ function Dashboard:setOrientation(mode)
     end
     G_reader_settings:saveSetting("dashboard_orientation", mode)
     if G_reader_settings.flush then G_reader_settings:flush() end
-    self:refreshLayout()
-    -- 旋转改的是整块画面的方向，必须整屏重画，否则会留下上一方向的残影
-    UIManager:setDirty(nil, "full")
-    -- 与 open 同一个原因：转屏后尺寸要晚一拍才互换，这里再补排一次，
-    -- 否则从菜单切横屏时画出来的还是竖屏版式。
-    if rotated then
-        -- 1.2s：与 open 同一个理由，转屏后尺寸互换需要时间
-        UIManager:scheduleIn(1.2, function()
-            if self.shown and not self.menu_open then self:refreshLayout() end
-        end)
-    end
+    -- v2.64：转屏后只画一遍（原来这里 refreshLayout + setDirty 又补排一次，
+    -- 整屏 full 刷两回 = 转一次方向黑闪两下）。
+    -- refreshLayout 内部已经是 setDirty(nil, "full")，外面不用再补一次。
+    self:relayoutAfterRotate(rotated)
     return rotated
 end
 
