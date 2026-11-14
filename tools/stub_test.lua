@@ -1720,6 +1720,7 @@ end
 -- Kindle 没有重力感应、Screen 尺寸不变，所以滑完还是原来那套（提示恒为「竖屏」）
 local layout_before = instance.layout_landscape
 STUB_DIRTY_BEFORE = #STUB_DIRTY_CALLS
+STUB_STACK_BEFORE = #UIManager._window_stack
 if side_zone.handler({ direction = "east" }) ~= true then
     print("[FAIL] 左右滑动没有响应")
     os.exit(1)
@@ -1766,6 +1767,19 @@ STUB_CHECK_ONE_FULL = function(before)
     end
 end
 STUB_CHECK_ONE_FULL(STUB_DIRTY_BEFORE or 0)
+
+-- v2.66：转成了就别再弹提示文字。
+-- 「已转为横屏」这种 InfoMessage 是盖满全屏的控件：既说了句废话（画面方向
+-- 本身就变了、版式也换了一套），又要自己刷一次，把前一版刚省下的「多刷一下」
+-- 请回来。只有转不动、退化成纯版式切换时才该提示——那种情况画面方向不变，
+-- 用户判断不出是没反应还是生效了。
+if not _G.STUB_NO_ROTATION then
+    if #UIManager._window_stack ~= (STUB_STACK_BEFORE or 0) then
+        print(string.format("[FAIL] 切换方向时弹了提示窗（%d -> %d）",
+            STUB_STACK_BEFORE or 0, #UIManager._window_stack))
+        os.exit(1)
+    end
+end
 
 -- v2.65：转屏静音必须把「整屏 partial」也吞掉。
 -- 真机上黑闪没了但只显示一部分画面，就是这些 partial 干的：

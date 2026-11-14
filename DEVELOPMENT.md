@@ -81,6 +81,12 @@ python tools/secret_check.py --history  # 审计全部历史（慢，改完历�
 - **左右滑动切换方向**：Kindle 没有重力感应，机器横过来像素方向不会变，所以切换时会真的
   旋转 framebuffer（`Screen:setRotationMode`，与阅读界面「旋转 90°」同一套），退出看板时转回。
   若某个固件转不动，会退化成「只换排版、不转屏」并提示一句。
+- **转屏成功不弹提示**（v2.66）：`relayoutFromGesture()` 原来每次切完都弹一条
+  `InfoMessage`（「已转为横屏，请把设备横着拿」/「已转回竖屏」）。画面方向本身就变了、
+  版式也换了一套，这句话是废话；而 `InfoMessage` 是盖满全屏的控件，它自己要刷一次，
+  刚好把前一版（v2.64/v2.65）省下来的「多刷一下」从这儿请回来。现在只有
+  `rotated == false`（转不动、退化成纯版式切换）才提示——那种情况画面方向不变，
+  用户判断不出是没反应还是生效了，得给个交代。
 - **转屏只刷一次**（v2.64）：`fb:setRotationMode` 里 `bb:rotateAbsolute` 是同步的，
   `getWidth/getHeight` 在它返回时就已经互换，所以转完立刻重排一次即可。
   v2.63 及以前是「先画一遍、`scheduleIn(1.2)` 再补排一遍」，两次都是整屏 full，

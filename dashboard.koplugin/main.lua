@@ -166,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.65"
+local DASHBOARD_VERSION = "2.66"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -2946,14 +2946,18 @@ function Dashboard:relayoutFromGesture()
         to_landscape = not self:screenIsLandscape()
     end
     local rotated = self:setOrientation(to_landscape and "landscape" or "portrait")
-    local text
-    if to_landscape then
-        text = rotated and T("已转为横屏，请把设备横着拿（再左右滑一下可转回竖屏）")
-            or T("已切换为横屏版式（本机不支持转屏）")
-    else
-        text = T("已转回竖屏")
+    -- v2.66：转成了就不再弹提示。滑一下，屏幕本身就是回执——画面方向变了、版式
+    -- 换了一套，再补一句「已转为横屏」属于废话；而且 InfoMessage 是盖满全屏的控件，
+    -- 它自己要刷一次，刚在前一版省下来的「多刷一下」正好从这儿又回来了。
+    -- 只有「转不动、退化成只换版式」才提示：那种情况画面方向不变，用户判断不出
+    -- 到底是没反应还是生效了。
+    if not rotated then
+        UIManager:show(InfoMessage:new{
+            text = to_landscape and T("已切换为横屏版式（本机不支持转屏）")
+                or T("已切换为竖屏版式（本机不支持转屏）"),
+            timeout = 2,
+        })
     end
-    UIManager:show(InfoMessage:new{ text = text, timeout = 2 })
 end
 
 --- 屏幕上缘下滑：打开看板自己的菜单。看板是全屏控件，KOReader 主菜单只在

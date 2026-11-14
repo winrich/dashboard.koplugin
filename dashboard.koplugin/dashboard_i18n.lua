@@ -199,9 +199,9 @@ local EN = {
     ["已清除。凭据改由插件目录下的配置文件提供。"] = "Cleared. Credentials now come from the plugin config file.",
     ["已记住，下次打开看板时按这个方向显示"] = "Saved. Applied next time the dashboard opens.",
     ["已切换为横屏版式（本机不支持转屏）"] = "Landscape layout (this device cannot rotate).",
-    ["已转为横屏，请把设备横着拿（再左右滑一下可转回竖屏）"] =
-        "Rotated to landscape — hold the device sideways (swipe to go back).",
-    ["已转回竖屏"] = "Back to portrait.",
+    -- v2.66 起转屏成功不再弹提示，这两条只剩「转不动」的退化路径用得上
+    -- （双向都要能说明白，否则用户分不清是没反应还是生效了）
+    ["已切换为竖屏版式（本机不支持转屏）"] = "Portrait layout (this device cannot rotate).",
 
     -- 页脚与提示
     -- 英文必须比中文更短：中文 32 个字在 13 号字下已经占满 918/920，英文按字符数
