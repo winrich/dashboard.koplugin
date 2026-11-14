@@ -463,10 +463,11 @@ PRESETS = [
     dict(id="landscape-1", orient="landscape", title="经典 · 时钟天气 / 月历 / 侧栏",
          zones=["clock_weather", "calendar", "side_panel",
                 "clock_weather", "calendar", "side_panel"]),
-    # 同理：A 区已有今日+三日，左下就不再排一周预报，改放农历节气。
-    dict(id="landscape-2", orient="landscape", title="今日与空气 · 今日+三日 / 农历节气 / 空气明细",
-         zones=["weather_today_3d", "lunar_term", "air_detail",
-                "weather_today_3d", "lunar_term", "air_detail"]),
+    # 同理：A 区已有今日+三日，左下就不再排一周预报。
+    # 左下改放日月：农历在 v2.53 已退出横屏 B（窄屏下只有 370px，那一行要 411px）。
+    dict(id="landscape-2", orient="landscape", title="今日与空气 · 今日+三日 / 日月 / 空气明细",
+         zones=["weather_today_3d", "sun_moon", "air_detail",
+                "weather_today_3d", "sun_moon", "air_detail"]),
     dict(id="landscape-3", orient="landscape", title="一周与日月 · 一周预报 / 日月 / 在读卡",
          zones=["forecast_week", "sun_moon", "reading_now",
                 "forecast_week", "sun_moon", "reading_now"]),
