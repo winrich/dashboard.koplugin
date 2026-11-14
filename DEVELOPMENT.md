@@ -20,7 +20,8 @@ kindle-dashboard/
 │  ├─ dashboard_cover.lua       在读卡封面：取位图 → 缩图 → PNG 缓存
 │  ├─ dashboard_agenda.lua      倒数日 / 待办：存盘、日期运算、输入解析
 │  ├─ dashboard_i18n.lua        中英文案表（键为中文原文）
-│  ├─ dashboard_cities.lua      34 个城市坐标 + 10 个时区
+│  ├─ dashboard_cities.lua      81 个城市坐标 + 43 个时区 + 夏令时规则
+│  ├─ dashboard_geo.lua         按 IP 粗略定位（仅菜单里主动触发）
 │  ├─ _meta.lua                 插件元信息
 │  └─ icons/                    12 个单色天气图标
 ├─ preview/                     预览图；en/ 下是英文版
@@ -285,7 +286,7 @@ python tools/secret_check.py --history  # 审计全部历史（慢，改完历�
 
 | 位置 | 中文 | English |
 |---|---|---|
-| 顶栏城市 | 北京 · Asia/Shanghai | Beijing · **UTC+8**（时区名太长会折行，改偏移） |
+| 顶栏城市 | 北京 · **UTC+8** | Beijing · **UTC+8** |
 | 天气现象 | 雾 / 霾 / 雷阵雨伴冰雹 | Fog / Haze / Thunderstorm with hail |
 | 月历标题 | 2026年11月 | November 2026 |
 | 星期表头 | 一 二 三 … | Mo Tu We … |
@@ -296,6 +297,14 @@ python tools/secret_check.py --history  # 审计全部历史（慢，改完历�
 | 页脚提示 | 上划退出 · 下滑菜单 · 左右滑换版式 | Tap: refresh · Swipe up/down/side: exit/menu/layout |
 
 城市名与时区名在 `dashboard_cities.lua` 的 `en` 字段里，`name` 仍是设置键，**切语言不会丢配置**。
+
+顶栏两种语言都显示 `UTC±N`：IANA 名最长可到 30 个字符（`America/Argentina/Buenos_Aires`），
+顶栏左侧会被省略号截成半截，看不出是哪个时区；`UTC±N` 最长 9 个字符，任何城市都放得下。
+显示的是**当前生效**的偏移，夏令时期间就是拨快后的那个值。
+
+菜单分组名（直辖市 / 亚洲 / 欧洲 …）走的是 `T(g.text)`，`g` 来自 `dashboard_cities.lua` 的
+`city_groups` / `tz_groups`，静态扫描看不到这类调用。`i18n_check.py` 因此额外把数据文件里
+`group = "…"` 与 `text = "…"` 的字面量算作「已使用」，否则分组名会被整片误报成未使用词条。
 
 ---
 
@@ -346,6 +355,14 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。凭�
 - **污染物单位**：和风 `subIndexes` 给的浓度是 `mg/m³`，解析时统一归一到 `mg/m³` 保留一位小数；
   其余五项按 μg/m³ 取整。
 - **时钟与时区**：本地时间由 `os.time() + 时区偏移` 推算，不依赖设备系统时区设置。
+  偏移不是表里的固定值，而是 `CityData.offsetAt(tz, os.time())` 按日期算出的**实际生效**偏移：
+  伦敦/巴黎/纽约/洛杉矶/悉尼/奥克兰等按 EU/US/AU/NZ/CL 规则在夏令时期间 +60，
+  墨西哥与巴西已取消 DST、埃及与摩洛哥规则特殊，一律按固定偏移。
+- **海外城市的数据源**：城市项带 `global = true` 时跳过和风，直接走 Open-Meteo。
+  和风的空气质量接口只覆盖国内站点，海外坐标拿不到 AQI，去问主源是白跑一趟。
+- **IP 定位**：`dashboard_geo.lua` 请求 `ip-api.com`（免注册，免费版仅 http），
+  取回经纬度与 IANA 时区后交给 `CityData.nearest()` 选最近城市。只在菜单里点「自动检测」
+  时发一次请求，缓存、不参与天气刷新；失败只弹提示，不动已有设置。
 - **额度**：免费订阅 5 万次/月；本插件每天约 48 次刷新 × 3 个接口 ≈ 4300 次/月。
 - **降级**：和风拿不到数据（没配凭据、凭据失效、超时、解压失败）时自动改走 Open-Meteo
   （免凭据、明文 JSON），WMO 现象代码映射成和风编号以复用同一套图标。页脚会显示降级来源。
@@ -356,7 +373,7 @@ API Host 在「设置」页，API Key 在「项目管理 → 凭据」）。凭�
 ## 验证
 
 ```
-python tools/verify_lua.py     # 语法 + 农历/节气算法回归
+python tools/verify_lua.py     # 语法 + 农历/节气算法回归 + 城市时区一致性/夏令时
 python tools/run_stub.py       # 7 种尺寸/方向的桩件冒烟
 python tools/i18n_check.py     # 中英词条覆盖
 python tools/moon_check.py     # 月相自洽性
@@ -366,7 +383,7 @@ python tools/moon_check.py     # 月相自洽性
 
 | 项目 | 结果 |
 |---|---|
-| 语法 | 十个 Lua 源文件全部通过 `load` |
+| 语法 | 十一个 Lua 源文件全部通过 `load` |
 | 农历 / 节气 | 2020–2035 抽样 1948 个日期、2021–2034 抽样 341 个日期，与 Python 参考实现完全一致 |
 | 月相 | 与和风 10 天逐日 10/10 一致；7 个食相锚点偏差 0.03°~0.13°；400 天自洽无异常 |
 | 接口 | 真实凭据实测三接口 HTTP 200、响应确为 gzip；桩件比对解压后逐字段一致 |
@@ -378,6 +395,9 @@ python tools/moon_check.py     # 月相自洽性
 | 两步录入 | 真按一遍保存与日期选择：默认今天、名称夹日期预填、空名称被挡下 |
 | 在读卡 | 三种书型（活文档 / 缺进度 / 仅侧车）；封面缓存首次开书 1 次、二次不再开 |
 | 生命周期 | 7 种尺寸方向组合下控件栈、定时器、待机抑制计数全部归零 |
+| 城市与时区数据 | 81 个城市名唯一、坐标未越界、group 均在分组表中；47 个海外城市的 `tz` 全部能在 43 个时区里查到（查不到会静默回落成北京时间） |
+| 夏令时 | EU/US/AU/NZ/CL 各取冬夏两天的偏移，12 个时刻全部吻合 |
+| 海外与定位 | 选伦敦自动带 `Europe/London`、选北京不覆盖已选时区；定位失败不动设置、成功选中纽约并同步 `America/New_York` |
 
 尚未上机确认的只有三条：`lipc-set-prop` 是否在 KOReader 进程 PATH 内、`ffi` 能否加载 libz
 成功解压、转屏的实际刷新观感。三者失败都有明确降级，不会连带把看板弄崩。

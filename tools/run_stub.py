@@ -34,6 +34,7 @@ SYNTAX_FILES = [
     f"{PLUGIN_DIR}/dashboard_cover.lua",
     f"{PLUGIN_DIR}/dashboard_agenda.lua",
     f"{PLUGIN_DIR}/dashboard_config.lua",
+    f"{PLUGIN_DIR}/dashboard_geo.lua",
 ]
 
 # 含真实凭据、被 .gitignore 排除。git clone 下来没有它是正常状态，

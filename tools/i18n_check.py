@@ -105,11 +105,13 @@ def en_keys(path):
 def dynamic_keys():
     """运行时才拼出来的键：静态扫不到 T("…")，但确实是按词表翻译的。
 
-    三类：
+    四类：
       1. 天气现象 —— `T(meta[1])`，meta 来自 QWeather.CONDITIONS / OpenMeteo.CODES
          的**第一个**字符串（两张表都长这样：{ "晴", "clear" } / { "晴", 100 }）；
       2. 组件名 —— 菜单里 `T(c.label)`，label 写在 main.lua 的 COMPONENTS 表；
-      3. 凭据来源 —— `T(SOURCE_NAMES[key])`，值写在 main.lua 的 SOURCE_NAMES 表。
+      3. 凭据来源 —— `T(SOURCE_NAMES[key])`，值写在 main.lua 的 SOURCE_NAMES 表；
+      4. 城市/时区分组名 —— 菜单里 `T(g.text)`，g 来自 dashboard_cities.lua 的
+         city_groups / tz_groups；城市表自带的 group 字段也是同一批字面量。
 
     不把这些算进来，条件词条会被整片误报成「表内未使用」，
     真正的死词条就淹在噪声里看不出来了。
@@ -127,6 +129,10 @@ def dynamic_keys():
     # 不写成 [N] = {...}，上面两条正则漏掉，单独补一条。
     text = open(os.path.join(PLUGIN, "dashboard_qweather.lua"), encoding="utf-8").read()
     keys.update(re.findall(r'\bor\s*\{\s*"((?:[^"\\]|\\.)*)"\s*,', text))
+
+    cities = open(os.path.join(PLUGIN, "dashboard_cities.lua"), encoding="utf-8").read()
+    keys.update(re.findall(r'group\s*=\s*"((?:[^"\\]|\\.)*)"', cities))
+    keys.update(re.findall(r'\btext\s*=\s*"((?:[^"\\]|\\.)*)"', cities))
 
     main = open(os.path.join(PLUGIN, "main.lua"), encoding="utf-8").read()
     for block, pat in (
@@ -149,7 +155,7 @@ def main():
     unused = sorted(have - used - dyn)
 
     print(f"代码里 T() 字面量 : {len(used)}")
-    print(f"运行时动态键      : {len(dyn)}（天气现象、组件名、凭据来源）")
+    print(f"运行时动态键      : {len(dyn)}（天气现象、组件名、凭据来源、城市分组）")
     print(f"英文词条          : {len(have)}")
     print(f"缺英文            : {len(missing)}")
     print(f"表内未使用        : {len(unused)}")

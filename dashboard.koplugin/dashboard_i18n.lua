@@ -143,6 +143,26 @@ local EN = {
     ["直辖市"] = "Municipalities",
     ["省会与首府"] = "Provincial capitals",
     ["港澳台"] = "HK / Macao / Taiwan",
+    -- 海外城市分组（键与 dashboard_cities.lua 的 group 字段一致）
+    ["亚洲"] = "Asia",
+    ["欧洲"] = "Europe",
+    ["北美洲"] = "North America",
+    ["南美洲"] = "South America",
+    ["大洋洲"] = "Oceania",
+    ["非洲"] = "Africa",
+    -- 时区菜单的分组：北美与南美同属一个「美洲」组，避免两组都是三四项
+    ["美洲"] = "Americas",
+    ["自动检测我的位置（按 IP）"] = "Detect my location (by IP)",
+    ["已定位到：%s"] = "Located: %s",
+    ["时区：%s"] = "Time zone: %s",
+    ["定位失败：%s"] = "Location lookup failed: %s",
+    ["没有可用的城市数据"] = "No city data available",
+    ["附近没有更近的收录城市，已选 %s（约 %d 公里）"] =
+        "No closer city in the list; using %s (about %d km away)",
+    ["网络请求失败（%s）"] = "Network request failed (%s)",
+    ["返回内容无法解析"] = "Response could not be parsed",
+    ["返回内容缺少坐标"] = "Response has no coordinates",
+    ["服务拒绝了这次查询"] = "The lookup service refused this query",
     ["版式（竖屏 / 横屏）"] = "Layout (portrait / landscape)",
     ["竖屏"] = "Portrait",
     ["横屏（向右转 90°）"] = "Landscape (rotate right)",
@@ -475,12 +495,13 @@ function M.zodiacYear(name)
     return name .. "年"
 end
 
---- 顶栏的时区标注：中文用 IANA 名（与设备设置里看到的一致，便于核对）；
---- 英文用 UTC±N——英文用户看偏移比看 "Asia/Shanghai" 直观，而且短得多，
---- 顶栏放得下才不会折成两行（折行会把 header 顶高，挤掉下面的内容）。
+--- 顶栏的时区标注：中英统一用 UTC±N。
+--- 之前中文显示 IANA 名（与设备设置里看到的一致，便于核对），但海外时区名可以长到
+--- 30 个字符（America/Argentina/Buenos_Aires），顶栏左侧会被省略号截成半截，
+--- 反而看不出是哪个时区；UTC±N 最长 9 个字符，任何城市都放得下。
+--- offset 取的是**当前生效**的偏移（夏令时期间已含 +60），不是表里的标准偏移。
 function M.headerTz(t)
     if type(t) ~= "table" then return "" end
-    if M.lang() ~= "en" then return t.iana or "" end
     local off = tonumber(t.offset) or 0
     local sign = off < 0 and "-" or "+"
     off = math.abs(off)

@@ -127,7 +127,8 @@ Requires a jailbroken Kindle with KOReader already installed (those two steps ar
 2. Copy the whole `dashboard.koplugin` folder into `koreader/plugins/`
    (the folder name must end in `.koplugin`, otherwise it is skipped).
 3. Eject safely, then **fully quit and reopen** KOReader — replaced files are not reloaded while it is running.
-4. Menu → Settings → Screen → Screensaver → Dashboard → choose city and time zone → "Open dashboard".
+4. Menu → Settings → Screen → Screensaver → Dashboard → "Open dashboard".
+   City and time zone are guessed from the device time zone first; change them under "City" if wrong.
 
 `dist/dashboard.koplugin.zip` is the same content; unzipping it into `plugins/` works too.
 
@@ -160,6 +161,20 @@ Menu → "Countdowns / To-dos" → Add, in **two steps**:
 Kindle has no usable Chinese IME, so dates are always picked and names should be short. If the name happens to contain a date (`Christmas 2026-12-25`), it is split out and used as the default for step 2.
 
 The first countdown you add is pinned automatically; only one can be pinned. Finished to-dos are cleared after 30 days.
+
+---
+
+## 🌍 Outside China
+
+The city list covers 33 cities in China and 47 major cities elsewhere, grouped as municipalities, provincial capitals, HK/Macao/Taiwan, Asia, Europe, North America, South America, Oceania and Africa. The interface itself is bilingual.
+
+- **Picking an overseas city also sets its time zone.** Choose "New York" and the zone becomes `America/New_York` in the same tap. Cities in China leave the zone alone — mainland China has both Beijing time and Xinjiang time, so choosing a city never overrides a zone you picked yourself.
+- **Don't want to hunt through the list**: menu → "City" → the first entry, "Detect my location (by IP)". It looks up the approximate location of your network once and picks the nearest city. If it fails it shows why and leaves your settings untouched.
+- **Daylight saving is handled.** London, Paris, New York, Los Angeles, Sydney, Auckland and others shift by an hour under their local rules; Mexico and Brazil have abolished DST and use a fixed offset; Egypt and Morocco have irregular rules and are also fixed.
+- **Overseas cities use Open-Meteo for weather.** QWeather's air-quality endpoint only covers stations in China, so overseas coordinates get no AQI; those cities go straight to Open-Meteo (no key required) and the footer still names the source.
+- The header shows a plain offset such as `UTC+8` / `UTC-5`, and during DST it shows the offset actually in effect.
+
+On first run, before you have picked a city, the board guesses one from the device time zone (a UTC+9 device gets Tokyo), so there is nothing to configure before it works.
 
 ---
 
@@ -215,6 +230,7 @@ More, including exact log strings: [DEVELOPMENT.md](DEVELOPMENT.md) (Chinese).
 - Weather requests are synchronous: offline, a refresh can stall for up to 20 seconds.
 - With the screensaver hook active, KOReader's native slide-to-unlock no longer appears — wake by touching the screen or pressing the power button.
 - Cover images are cached in `settings/dashboard_covers/` (latest 6 only); old ones are not deleted immediately when you switch books.
+- IP lookup is city-level and may land on a neighbouring city; fix it once by hand and it will not be changed again.
 
 ---
 

@@ -419,7 +419,14 @@ local http = {}
 function http.request(req)
     local url = req.url or ""
     local body, plain
-    if url:find("air%-quality%-api%.") then
+    if url:find("ip%-api%.com") then
+        -- 定位样本：纽约曼哈顿附近。STUB_GEO_FAIL 用来验证失败分支不动已有设置。
+        body = _G.STUB_GEO_FAIL
+            and '{"status":"fail","message":"private range"}'
+            or ('{"status":"success","country":"United States","city":"New York",'
+                .. '"lat":40.7143,"lon":-74.006,"timezone":"America/New_York"}')
+        plain = true
+    elseif url:find("air%-quality%-api%.") then
         body, plain = OM_SAMPLES.air, true
     elseif url:find("api%.open%-meteo%.") then
         body, plain = OM_SAMPLES.forecast, true
@@ -916,18 +923,123 @@ for _, item in ipairs(desk.sub_item_table) do
     if item.text == T("选择时区") then tz_menu = item end
     if item.text == T("天气服务") then weather_menu = item end
 end
-local city_count = 0
-for _, g in ipairs(city_menu.sub_item_table) do
-    city_count = city_count + #g.sub_item_table
-end
 if not weather_menu then
     print("[FAIL] 菜单里没有「天气服务」入口")
     os.exit(1)
 end
-EVENTS[#EVENTS + 1] = string.format(
-    "== 菜单：城市 %d 个（分组 %d），时区 %d 个，天气服务 %d 项 ==",
-    city_count, #city_menu.sub_item_table, #tz_menu.sub_item_table,
-    #weather_menu.sub_item_table)
+-- 分组菜单的叶子总数：城市菜单第一项是「自动检测」叶子项，时区菜单全是分组，
+-- 直接取 #sub_item_table 只会得到分组数，必须逐组累加并跳过叶子项。
+--
+-- 用立即执行的匿名函数而不是新增顶层 local：本文件已经贴着 Lua 单 chunk
+-- 最多 200 个局部变量的上限，再多声明两个就会 "too many local variables"。
+EVENTS[#EVENTS + 1] = (function()
+    local function count(menu)
+        local n = 0
+        for _, g in ipairs(menu.sub_item_table) do
+            if g.sub_item_table then n = n + #g.sub_item_table end
+        end
+        return n
+    end
+    return string.format(
+        "== 菜单：城市 %d 个（分组 %d），时区 %d 个（分组 %d），天气服务 %d 项 ==",
+        count(city_menu), #city_menu.sub_item_table - 1,
+        count(tz_menu), #tz_menu.sub_item_table, #weather_menu.sub_item_table)
+end)()
+
+-- ============ 海外城市 / 自动定位 ============
+-- 城市菜单第一项是「自动检测」，其后才是手动分组；海外分组必须真的挂进菜单，
+-- 否则数据表里加了城市却在界面上看不到（最容易漏的一环）。
+-- 同样用匿名函数包住：do…end 不隔开寄存器，顶层局部变量照样计入 200 上限。
+-- 行首的分号必须有：上一行结尾是 `end)()`，不加分号时 Lua 会把这里的 `(`
+-- 当成「调用上一个表达式的结果」，报 "attempt to call a string value"。
+;(function()
+    local first = city_menu.sub_item_table[1]
+    if not first or first.text ~= T("自动检测我的位置（按 IP）") then
+        print("[FAIL] 城市菜单第一项应为「自动检测我的位置（按 IP）」，实际 "
+            .. tostring(first and first.text))
+        os.exit(1)
+    end
+    local want = { T("直辖市"), T("省会与首府"), T("港澳台"),
+                   T("亚洲"), T("欧洲"), T("北美洲"), T("南美洲"),
+                   T("大洋洲"), T("非洲") }
+    local seen = {}
+    for i = 2, #city_menu.sub_item_table do
+        seen[city_menu.sub_item_table[i].text] = true
+    end
+    for _, name in ipairs(want) do
+        if not seen[name] then
+            print("[FAIL] 城市菜单缺少分组：" .. name)
+            os.exit(1)
+        end
+    end
+
+    -- 海外城市必须自带 tz，且该 tz 能在时区表里查到（查不到会回落成北京时间）
+    local CD = package.loaded["dashboard_cities"]
+    local overseas, has_tz = 0, 0
+    for _, c in ipairs(CD.cities) do
+        if c.group ~= "直辖市" and c.group ~= "省会" and c.group ~= "港澳台" then
+            overseas = overseas + 1
+            if c.tz and CD.tzByIana(c.tz) then has_tz = has_tz + 1 end
+        end
+    end
+    if overseas == 0 or has_tz ~= overseas then
+        print(string.format("[FAIL] 海外城市 %d 个，其中时区可查的只有 %d 个", overseas, has_tz))
+        os.exit(1)
+    end
+    EVENTS[#EVENTS + 1] = string.format("== 海外城市 %d 个，时区全部可查 ==", overseas)
+
+    -- 选海外城市要自动改时区；选国内城市不能覆盖用户手选的时区
+    instance:setCity("伦敦")
+    if instance:getTzIana() ~= "Europe/London" then
+        print("[FAIL] 选伦敦后时区没跟着变成 Europe/London，实际 " .. tostring(instance:getTzIana()))
+        os.exit(1)
+    end
+    instance:setCity("北京")
+    if instance:getTzIana() ~= "Europe/London" then
+        print("[FAIL] 选国内城市不应覆盖已选时区")
+        os.exit(1)
+    end
+
+    -- 定位失败：已有设置不能被动过
+    local before_city, before_tz = instance:getCityName(), instance:getTzIana()
+    _G.STUB_GEO_FAIL = true
+    instance:autoLocateCity()
+    local fail_msg = UIManager:_top() and UIManager:_top().text or ""
+    UIManager:close(UIManager:_top())
+    if instance:getCityName() ~= before_city or instance:getTzIana() ~= before_tz then
+        print("[FAIL] 定位失败时改动了已有城市/时区")
+        os.exit(1)
+    end
+    -- 断言查桩件返回的 message 原文：中英文界面下前缀不同，但这条 message 会原样带回
+    if not fail_msg:find("private range", 1, true) then
+        print("[FAIL] 定位失败没有把服务端原因带进提示：" .. tostring(fail_msg))
+        os.exit(1)
+    end
+
+    -- 定位成功：样本在纽约，应选中纽约并把时区带到 America/New_York
+    _G.STUB_GEO_FAIL = nil
+    instance:autoLocateCity()
+    local ok_msg = UIManager:_top() and UIManager:_top().text or ""
+    UIManager:close(UIManager:_top())
+    if instance:getCityName() ~= "纽约" then
+        print("[FAIL] 自动定位没选到纽约，实际 " .. tostring(instance:getCityName()))
+        os.exit(1)
+    end
+    if instance:getTzIana() ~= "America/New_York" then
+        print("[FAIL] 自动定位没同步时区，实际 " .. tostring(instance:getTzIana()))
+        os.exit(1)
+    end
+    -- 城市名按当前界面语言本地化，英文模式下是 New York，所以要用 I18n.city 取期望值
+    if not ok_msg:find(I18n.city(instance:getCity()), 1, true) then
+        print("[FAIL] 定位成功提示里没有城市名：" .. tostring(ok_msg))
+        os.exit(1)
+    end
+    EVENTS[#EVENTS + 1] = "== 自动定位：成功选中纽约 + America/New_York，失败不动设置 =="
+
+    -- 恢复默认，后面的中英文断言与出图用例都假定是北京
+    instance:setTz("Asia/Shanghai")
+    instance:setCity("北京")
+end)()
 
 -- 凭据来源与脱敏显示
 --

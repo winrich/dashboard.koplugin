@@ -22,7 +22,8 @@ PLUGIN = os.path.join(ROOT, "dashboard.koplugin")
 # 必须随仓库分发的文件，缺一个就是错误
 LUA_FILES = ["main.lua", "_meta.lua", "dashboard_lunar.lua", "dashboard_cities.lua",
              "dashboard_qweather.lua", "dashboard_openmeteo.lua",
-             "dashboard_i18n.lua", "dashboard_agenda.lua", "dashboard_config.lua"]
+             "dashboard_i18n.lua", "dashboard_agenda.lua", "dashboard_config.lua",
+             "dashboard_geo.lua"]
 
 # 内含真实凭据，被 .gitignore 排除。git clone 下来没有它是**正常状态**——插件会
 # 自动降级到 Open-Meteo。所以这里只在文件存在时才检查，缺失只提示、不算失败，
@@ -197,13 +198,108 @@ def algo_check(lua):
     return (not bad) and (not bad2)
 
 
+def city_check(lua):
+    """城市/时区数据的一致性校验。
+
+    这些错误在真机上的表现都是「静默错误」——菜单照常显示、看板照常出图，只是
+    城市列表里少一个、或者时区悄悄回落到北京时间，肉眼很难发现。所以必须在
+    改数据时就用工具拦住：
+
+      1. 城市 tz 必须能在 timezones 里查到（查不到 getTz 会回落成北京时间）
+      2. 城市 name 必须唯一（它是设置里 dashboard_city 的键）
+      3. group 必须在分组表里存在，否则该城市在菜单里永远不显示
+      4. 海外城市必须带 tz + global，国内城市不能带 tz（选城市不该覆盖用户选的时区）
+      5. 夏令时规则抽查几个已知的切换前后时刻
+    """
+    print("=========== 3) 城市与时区数据 ===========")
+    path = os.path.join(PLUGIN, "dashboard_cities.lua").replace("\\", "/")
+    M = lua.execute('return dofile([==[%s]==])' % path)
+
+    cities = list(M.cities.values())
+    zones = list(M.timezones.values())
+    city_groups = {g["key"] for g in M.city_groups.values()}
+    tz_groups = {g["key"] for g in M.tz_groups.values()}
+    by_iana = {z["iana"]: z for z in zones}
+
+    bad = []
+    names = set()
+    for c in cities:
+        name = c["name"]
+        if name in names:
+            bad.append(f"城市名重复：{name}（它是设置键，必须唯一）")
+        names.add(name)
+        for field in ("en", "group", "lat", "lon"):
+            if c[field] is None:
+                bad.append(f"{name} 缺少字段 {field}")
+        if not (-90 <= c["lat"] <= 90 and -180 <= c["lon"] <= 180):
+            bad.append(f"{name} 坐标越界：{c['lat']},{c['lon']}")
+        if c["group"] not in city_groups:
+            bad.append(f"{name} 的 group「{c['group']}」不在 city_groups 里，菜单里不会出现")
+        tz = c["tz"]
+        if tz is not None:
+            if tz not in by_iana:
+                bad.append(f"{name} 的 tz「{tz}」不在 timezones 里，getTz 会回落到北京时间")
+            if not c["global"]:
+                bad.append(f"{name} 有 tz 却没标 global，天气仍会去问和风")
+        else:
+            if c["global"]:
+                bad.append(f"{name} 标了 global 却没有 tz，时区无法自动跟随")
+
+    for z in zones:
+        if z["group"] not in tz_groups:
+            bad.append(f"时区 {z['iana']} 的 group「{z['group']}」不在 tz_groups 里")
+        if z["dst"] is not None and z["dst"] not in ("EU", "US", "AU", "NZ", "CL"):
+            bad.append(f"时区 {z['iana']} 的 dst 规则「{z['dst']}」未定义")
+        if not (-720 <= z["offset"] <= 780):
+            bad.append(f"时区 {z['iana']} 偏移越界：{z['offset']}")
+
+    if bad:
+        print(f"[FAIL] 城市/时区数据 {len(bad)} 处问题：")
+        for b in bad[:10]:
+            print("   ", b)
+    else:
+        overseas = sum(1 for c in cities if c["tz"] is not None)
+        print(f"[PASS] {len(cities)} 个城市（海外 {overseas}）、{len(zones)} 个时区，字段与引用全部自洽")
+
+    # 夏令时抽查：挑切换前后的典型时刻，错了就是真机上差一小时
+    cases = [
+        ("Europe/London", "2026-01-15", 0), ("Europe/London", "2026-07-01", 60),
+        ("America/New_York", "2026-01-15", -300), ("America/New_York", "2026-07-01", -240),
+        ("Australia/Sydney", "2026-01-15", 660), ("Australia/Sydney", "2026-07-01", 600),
+        ("Pacific/Auckland", "2026-01-15", 780), ("Pacific/Auckland", "2026-07-01", 720),
+        ("America/Santiago", "2026-01-15", -180), ("America/Santiago", "2026-07-01", -240),
+        ("Asia/Tokyo", "2026-07-01", 540), ("Asia/Shanghai", "2026-07-01", 480),
+    ]
+    bad2 = []
+    for iana, day, expect in cases:
+        z = by_iana.get(iana)
+        if not z:
+            bad2.append(f"{iana} 不在时区表里")
+            continue
+        ts = int(datetime.datetime.strptime(day, "%Y-%m-%d")
+                 .replace(tzinfo=datetime.timezone.utc).timestamp())
+        got = int(M.offsetAt(z, ts))
+        if got != expect:
+            bad2.append(f"{iana} {day}: 得到 {got} 分钟，期望 {expect}")
+    if bad2:
+        print(f"[FAIL] 夏令时 {len(bad2)} 处不符：")
+        for b in bad2:
+            print("   ", b)
+    else:
+        print(f"[PASS] 夏令时抽查 {len(cases)} 个时刻全部正确")
+
+    return not bad and not bad2
+
+
 if __name__ == "__main__":
     runtime = LuaRuntime(unpack_returned_tuples=True)
     ok0 = lint_cdata_compare()
     ok1 = syntax_check(runtime)
     ok2 = algo_check(runtime)
+    ok3 = city_check(runtime)
     print("\n================ 结论 ================")
     print("cdata 判空:", "通过" if ok0 else "未通过")
     print("语法检查:", "通过" if ok1 else "未通过")
     print("算法校验:", "通过" if ok2 else "未通过")
-    sys.exit(0 if (ok0 and ok1 and ok2) else 1)
+    print("城市时区:", "通过" if ok3 else "未通过")
+    sys.exit(0 if (ok0 and ok1 and ok2 and ok3) else 1)

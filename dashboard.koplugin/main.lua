@@ -76,6 +76,8 @@ local Lunar = require("dashboard_lunar")
 local CityData = require("dashboard_cities")
 local QWeather = require("dashboard_qweather")
 local OpenMeteo = require("dashboard_openmeteo")
+-- 按 IP 粗略定位：只在用户主动点菜单时联网，不参与日常刷新
+local Geo = require("dashboard_geo")
 local Moon = require("dashboard_moon")
 -- 倒数日 / 待办的数据层（存盘、日期运算、输入解析都在里面，本文件只管画）
 local Agenda = require("dashboard_agenda")
@@ -137,7 +139,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.50"
+local DASHBOARD_VERSION = "2.51"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -614,13 +616,21 @@ function Dashboard:genMenuItemTable()
         },
     }
 
-    local city_groups = {
-        { key = "直辖市", text = T("直辖市") },
-        { key = "省会",   text = T("省会与首府") },
-        { key = "港澳台", text = T("港澳台") },
+    -- 城市分组表放在数据模块里：新增城市只要 group 名在表中存在，就会出现在对应分组下，
+    -- 不必回到这里改菜单代码。国内三组在前，海外五组在后。
+    local city_items = {
+        {
+            text = T("自动检测我的位置（按 IP）"),
+            help_text = TL(
+                "联网查一次出口 IP 的大致位置，自动选最近的城市，并把时区一起改掉。\n"
+                .. "查不到时已有设置保持不变，可以继续在下面手动选。",
+                "Looks up the approximate location of this network once, then picks the\n"
+                .. "nearest city and its time zone. If it fails, your current settings\n"
+                .. "stay untouched and you can pick manually below."),
+            callback = function() self:autoLocateCity() end,
+        },
     }
-    local city_items = {}
-    for _, g in ipairs(city_groups) do
+    for _, g in ipairs(CityData.city_groups) do
         local sub = {}
         for _, c in ipairs(CityData.cities) do
             if c.group == g.key then
@@ -632,17 +642,33 @@ function Dashboard:genMenuItemTable()
                 }
             end
         end
-        city_items[#city_items + 1] = { text = g.text, sub_item_table = sub }
+        -- 空分组不显示：某天把一组城市删空，菜单里不该留个点进去什么都没有的空壳
+        if #sub > 0 then
+            city_items[#city_items + 1] = {
+                text = T(g.text),
+                -- 第一条分组前画分隔线，把「自动检测」和手动列表分开
+                separator = (#city_items == 1),
+                sub_item_table = sub,
+            }
+        end
     end
     items[#items + 1] = { text = T("选择城市"), sub_item_table = city_items }
 
     local tz_items = {}
-    for _, t in ipairs(CityData.timezones) do
-        tz_items[#tz_items + 1] = {
-            text = I18n.tzName(t),
-            checked_func = function() return self:getTzIana() == t.iana end,
-            callback = function() self:setTz(t.iana) end,
-        }
+    for _, g in ipairs(CityData.tz_groups) do
+        local sub = {}
+        for _, t in ipairs(CityData.timezones) do
+            if t.group == g.key then
+                sub[#sub + 1] = {
+                    text = I18n.tzName(t),
+                    checked_func = function() return self:getTzIana() == t.iana end,
+                    callback = function() self:setTz(t.iana) end,
+                }
+            end
+        end
+        if #sub > 0 then
+            tz_items[#tz_items + 1] = { text = T(g.text), sub_item_table = sub }
+        end
     end
     items[#items + 1] = { text = T("选择时区"), sub_item_table = tz_items }
 
@@ -696,6 +722,9 @@ function Dashboard:genMenuItemTable()
                     "手势：点按刷新天气 · 上划退出看板\n"
                     .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 版式 / 天气服务）\n"
                     .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
+                    .. "城市可选国内与海外（亚洲/欧洲/美洲/大洋洲/非洲）；\n"
+                    .. "选海外城市会自动把时区一并改掉，\n"
+                    .. "也可点「自动检测我的位置（按 IP）」让它自己挑最近的城市。\n"
                     .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
                     .. "点「倒数日」「待办」这两块卡片 → 弹出列表（可切换置顶、勾选完成）；\n"
                     .. "增删改在菜单「倒数日」「待办事项」里，录入分两步：\n"
@@ -715,6 +744,9 @@ function Dashboard:genMenuItemTable()
                     "Gestures: tap to refresh · swipe up to exit\n"
                     .. "Swipe down from the top edge: dashboard menu (city / time zone / layout)\n"
                     .. "When closed: Settings → Screen → Sleep screen → Desk dashboard\n"
+                    .. "Cities cover China plus Asia, Europe, the Americas, Oceania and Africa;\n"
+                    .. "picking an overseas one also sets its time zone.\n"
+                    .. "Or use Detect my location (by IP) to pick the nearest city.\n"
                     .. "Swipe sideways: switch portrait ↔ landscape (really rotates the screen)\n\n"
                     .. "Kindles have no accelerometer, so landscape must be triggered manually\n"
                     .. "by swiping sideways or via the Layout menu; then hold the device sideways.\n"
@@ -1013,7 +1045,13 @@ end
 
 -- ------------------------------------------------------------------ 配置读写
 function Dashboard:getCityName()
-    return G_reader_settings:readSetting("dashboard_city") or "北京"
+    local name = G_reader_settings:readSetting("dashboard_city")
+    if name then return name end
+    -- 从未选过城市：按设备时区猜一个，海外用户开箱看到的就是本地城市而不是北京。
+    -- 猜不到（读不出设备时区）才回落到北京。
+    local tz = CityData.guessTimezone()
+    if tz then return CityData.defaultCityName(tz.iana) end
+    return "北京"
 end
 
 function Dashboard:getCity()
@@ -1025,25 +1063,79 @@ function Dashboard:getCity()
 end
 
 function Dashboard:getTzIana()
-    return G_reader_settings:readSetting("dashboard_tz") or "Asia/Shanghai"
+    local iana = G_reader_settings:readSetting("dashboard_tz")
+    if iana then return iana end
+    local tz = CityData.guessTimezone()
+    if tz then return tz.iana end
+    return "Asia/Shanghai"
 end
 
+--- 当前时区项。返回的 offset 是**此刻实际生效**的偏移（夏令时期间已是 +60 后的值）；
+--- 原表是静态数据，不改它，需要不同 offset 时另建副本。
 function Dashboard:getTz()
-    local iana = self:getTzIana()
-    for _, t in ipairs(CityData.timezones) do
-        if t.iana == iana then return t end
-    end
-    return CityData.timezones[1]
+    local t = CityData.tzByIana(self:getTzIana()) or CityData.timezones[1]
+    local off = CityData.offsetAt(t, os.time())
+    if off == t.offset then return t end
+    return { name = t.name, en = t.en, iana = t.iana, offset = off, dst = t.dst }
 end
 
 function Dashboard:setCity(name)
     G_reader_settings:saveSetting("dashboard_city", name)
+    -- 海外城市自带 tz：选城市时一并改时区，避免「城市对了、时钟错了」这种最常见的
+    -- 配置失误。国内城市没有 tz，用户手动选的北京时间/新疆时间不会被覆盖。
+    for _, c in ipairs(CityData.cities) do
+        if c.name == name then
+            if c.tz and CityData.tzByIana(c.tz) then
+                G_reader_settings:saveSetting("dashboard_tz", c.tz)
+            end
+            break
+        end
+    end
+    if G_reader_settings.flush then G_reader_settings:flush() end
     self:onConfigChanged()
 end
 
 function Dashboard:setTz(iana)
     G_reader_settings:saveSetting("dashboard_tz", iana)
+    if G_reader_settings.flush then G_reader_settings:flush() end
     self:onConfigChanged()
+end
+
+--- 按 IP 定位并套用最近的城市与时区。同步阻塞，最长约 8 秒（http 超时）。
+--- 失败只弹提示，不动已有设置。
+function Dashboard:autoLocateCity()
+    local info, err = Geo.locate()
+    if not info then
+        UIManager:show(InfoMessage:new{
+            text = string.format(T("定位失败：%s"), err or T("未知原因")),
+            timeout = 5,
+        })
+        return
+    end
+    local city, km = CityData.nearest(info.lat, info.lon)
+    if not city then
+        UIManager:show(InfoMessage:new{
+            text = T("没有可用的城市数据"),
+            timeout = 4,
+        })
+        return
+    end
+
+    self:setCity(city.name)
+    local tz = self:getTz()
+
+    local msg = string.format(T("已定位到：%s"), I18n.city(city))
+    if info.country and info.country ~= "" then
+        msg = msg .. "  " .. tostring(info.country)
+    end
+    msg = msg .. "\n" .. string.format(T("时区：%s"), I18n.tzName(tz))
+    -- 最近的收录城市也在两百公里外：说明表里没有贴近的位置，说明白比装作精确好
+    if km and km > 200 then
+        msg = msg .. "\n" .. string.format(
+            T("附近没有更近的收录城市，已选 %s（约 %d 公里）"),
+            I18n.city(city), math.floor(km / 10) * 10)
+    end
+    UIManager:show(InfoMessage:new{ text = msg, timeout = 6 })
 end
 
 function Dashboard:onConfigChanged()
@@ -4318,24 +4410,35 @@ function Dashboard:fetchWeather(manual)
 
     local cfg = self:getConfig()
     local city, tz = self:getCity(), self:getTz()
+    -- 海外城市标记 global：和风的空气质量接口只覆盖国内站点，海外坐标去问主源
+    -- 必然白跑一趟（还占一次配额），直接走 Open-Meteo
+    local overseas = city.global == true
 
     NetworkMgr:runWhenOnline(function()
-        -- 请求三个接口是同步的，用 pcall 兜住意外错误，否则 fetching 标志会卡死，
-        -- 之后再也不会重试
-        local called, weather, air, err = pcall(QWeather.fetch, {
-            city = city,
-            tz = tz,
-            config = cfg,
-        })
-        if not called then
-            logger.warn("dashboard: 和风拉取异常", tostring(weather))
-            weather, air, err = nil, nil, tostring(weather)
+        local weather, air, err
+        if not overseas then
+            -- 请求三个接口是同步的，用 pcall 兜住意外错误，否则 fetching 标志会卡死，
+            -- 之后再也不会重试
+            local called, w, a, e = pcall(QWeather.fetch, {
+                city = city,
+                tz = tz,
+                config = cfg,
+            })
+            if called then
+                weather, air, err = w, a, e
+            else
+                logger.warn("dashboard: 和风拉取异常", tostring(w))
+                err = tostring(w)
+            end
         end
 
         -- 主源拿不到数据就降级到 Open-Meteo：免凭据，只求界面不空着。
         -- 降级成功时页脚会标注来源，不会让人误以为仍是和风的数据。
-        if not weather and cfg.fallback_openmeteo ~= false then
-            logger.warn("dashboard: 和风不可用，降级到 Open-Meteo：", tostring(err))
+        -- 海外城市没有「和风可用」这个前提，不受 fallback_openmeteo 开关限制。
+        if not weather and (overseas or cfg.fallback_openmeteo ~= false) then
+            if not overseas then
+                logger.warn("dashboard: 和风不可用，降级到 Open-Meteo：", tostring(err))
+            end
             local ok2, w2, a2, e2 = pcall(OpenMeteo.fetch, { city = city, tz = tz })
             if not ok2 then
                 logger.warn("dashboard: Open-Meteo 降级异常", tostring(w2))
