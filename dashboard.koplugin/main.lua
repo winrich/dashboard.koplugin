@@ -163,7 +163,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.54"
+local DASHBOARD_VERSION = "2.55"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -535,6 +535,36 @@ local ICON = {
     },
 }
 
+--- 把一块卡里的「块头 / 条目 / 脚注」铺满整个高度：
+--- 块头贴卡顶、条目之间按比例吃余量、脚注压到卡底。
+--- 为什么不交给 Card:fitChild：它按 gap_h 等比放大，条目一多就把余量摊薄，
+--- 条目一少又会在卡底留一整块白。这里按「先量总量、再把余量分给指定行」算，
+--- 结果是确定的：最后一行脚注永远贴在卡的下内边距上。
+--- rows 是排好的控件数组，gaps 是其中可拉伸的留白行，tail_pad 是脚注上方那行。
+--- ratio 是给条目的比例，剩下的全给脚注上方（脚注因此落到底）。
+local function spreadToBottom(rows, gaps, tail_pad, h, ratio)
+    local used = 0
+    for _, r in ipairs(rows) do used = used + r:getSize().h end
+    local slack = math.max(0, h - used)
+    -- 没有脚注时余量全给条目：留 22% 在卡底就又是一块没来由的白。
+    local ratio_eff = tail_pad and (ratio or 0.78) or 1
+    local share = (#gaps > 0) and math.floor(slack * ratio_eff / #gaps) or 0
+    for _, g in ipairs(gaps) do
+        g.dimen.h = g.dimen.h + share
+        -- gap_h 一起改、并标 fixed：否则 Card:fitChild 会按「设计间距」再算一遍，
+        -- 把这里分好的余量抹平，条目缩回去、卡底又空出一块。
+        g.gap_h = g.dimen.h
+        g.fixed = true
+    end
+    if tail_pad then
+        tail_pad.dimen.h = math.max(1, slack - share * #gaps)
+        tail_pad.gap_h = tail_pad.dimen.h
+    end
+    local out = VerticalGroup:new(rows)
+    out.spread = false
+    return out
+end
+
 --- 卡片：一块白面 + 1px 浅边 + 圆角，浮在 0xEE 纸底上。
 --- 整个 v2.53 版式的骨架——三区各一张卡，区与区之间露出纸底，
 --- 不再用 7px 纯黑通栏线分区（线太重，且把版面切成三条横带）。
@@ -555,7 +585,9 @@ end
 --- 幂等：每次从 gap_h 重算（不是在上次结果上再乘），getSize 调用多少次都一样。
 function Card:fitChild()
     local child = self[1]
-    if not child or self.spread == false then return end
+    -- spread = false：组件自己已经把余量分完了（例如「今日行动」把脚注压到卡底），
+    -- 这里再按比例铺一次就会把它抹掉。
+    if not child or self.spread == false or child.spread == false then return end
     local avail = (self.dimen.h or 0) - (self.pad_t or 0) - (self.pad_b or 0)
     local used = child:getSize().h
     local slack = avail - used
@@ -666,8 +698,9 @@ local ZONE_SPEC = {
     landscape = { A = 181, lower = 296,        gap = 14, head_gap = 12, card_pad = 14, foot_gap = 12 },
 }
 
--- 卡片的圆角半径（设计单位）。8du 在 PW3 上是 14px，约 3.4mm 的弧——
--- 再大就有"泡泡感"，再小等于没圆。设备端 paintBorder 会把超大半径自动夹住。
+-- 卡片的圆角半径（设计单位）。8du 在 PW3 上是 14px，300ppi 下半径约 1.2mm ——
+-- 比信用卡圆角（3.2mm）小一半，看着是"削了角"而不是"泡泡"。再大就发软，再小等于没圆。
+-- 设备端 paintBorder 会把超大半径自动夹住。
 local CARD_RADIUS = 8
 
 -- 组装骨架时必须按这个顺序取区，与配置表的键一致
@@ -3841,7 +3874,7 @@ function Dashboard:compLunar(ctx, w, h, k)
             self:makeText(ctx, I18n.lunarGanzhi(ctx.lunar), math.floor(30 * k)),
             mkPad(1, math.floor(4 * S * k)),
             self:makeText(ctx, I18n.zodiacYear(Lunar.zodiac(ctx.lunar)),
-                math.floor(22 * k), { gray = true }),
+                math.floor(20 * k), { gray = true }),
         }
         local big = self:makeText(ctx, big_txt, math.floor(54 * k))
         local fill = math.max(math.floor(20 * S), w - big:getSize().w - side:getSize().w)
@@ -3876,8 +3909,8 @@ function Dashboard:compLunar(ctx, w, h, k)
 
     local cur = I18n.term(ctx.cur_term.name)
     local nxt = ctx.next_term and I18n.term(ctx.next_term.name) or ""
-    local left_label = self:makeText(ctx, cur, math.floor(20 * k), { gray = true })
-    local right_label = self:makeText(ctx, nxt, math.floor(20 * k), { gray = true })
+    local left_label = self:makeText(ctx, cur, math.floor(17 * k), { gray = true })
+    local right_label = self:makeText(ctx, nxt, math.floor(17 * k), { gray = true })
     push(HorizontalGroup:new{
         align = "center",
         left_label,
@@ -3961,11 +3994,13 @@ end
 --- 把若干块横向排开，把剩余宽度均分成间隔。
 --- 为什么不用固定列宽：一列里「14°/1°」和「-10°/-18°」宽度差一截，
 --- 固定列宽在大负数时会把文字压出格子；均分剩余空隙则永远贴边不溢出。
-local function spreadRows(blocks, total_w)
+local function spreadRows(blocks, total_w, align)
     local used, n = 0, #blocks
     for _, b in ipairs(blocks) do used = used + b:getSize().w end
     local gap = (n > 1) and math.floor(math.max(0, total_w - used) / (n - 1)) or 0
-    local items = { align = "center" }
+    -- align = "top" 的时候三列按上沿看齐：英文的 "Waxing crescent" 会折成两行，
+    -- 那一列比别列高一截，居中对齐会把它的列头往上顶，三个标签就不成一条线了。
+    local items = { align = align or "center" }
     for i, b in ipairs(blocks) do
         if i > 1 then items[#items + 1] = mkPad(gap, 1) end
         items[#items + 1] = b
@@ -4037,14 +4072,20 @@ function Dashboard:compWeatherBig(ctx, w, h, k)
         land and mkPad(1, 1) or self:makeText(ctx, d.feels or "", math.floor(17 * k),
             { color = INK2, max_width = side_max }),
     }
-    return HorizontalGroup:new{
-        align = "center",
-        ImageWidget:new{
-            file = self:iconPath(d.icon), width = icon_w, height = icon_w,
-            scale_factor = 0, alpha = true,
+    -- 整块居中：A 区宽 920，图标 + 温度这一组只有 400 出头，靠左摆会在右边空出
+    -- 一大片没有任何东西的白色，看着像内容没画完。居中之后左右留白相等，
+    -- 那块白才读成"留白"。
+    return CenterContainer:new{
+        dimen = Geom:new{ w = w, h = math.floor(h) },
+        HorizontalGroup:new{
+            align = "center",
+            ImageWidget:new{
+                file = self:iconPath(d.icon), width = icon_w, height = icon_w,
+                scale_factor = 0, alpha = true,
+            },
+            mkPad(math.floor(16 * S * k), 1),
+            side,
         },
-        mkPad(math.floor(16 * S * k), 1),
-        side,
     }
 end
 
@@ -4061,46 +4102,72 @@ function Dashboard:compToday3d(ctx, w, h, k)
     local d = self:weatherDisplay()
     -- 横屏 A 区只有 162 设计单位高，今日块的图标与温度各降一档就正好放下（289 内）
     local icon_w = math.floor((land and 46 or 72) * S * k)
-    local today_max = math.max(math.floor(90 * S), math.floor(w * 0.30))
+    local small_w = math.floor((land and 26 or 36) * S * k)
+
+    -- 等宽单元格：按内容宽度平分留白的话，横屏 A 区 1276 宽会摊出
+    -- 三个 200 px 的大豁口（今日块本来就比「明天/后天/周六」宽），看着像四块散落。
+    -- 切成 w/n 的等宽格子，每块在自己格里居中，节奏就匀了。
+    local n = math.max(1, #days)
+    local cell_w = math.floor(w / n)
+
+    -- 四列共用三条横线：标签 / 图标 / 数值。
+    -- 之前今天列没有标签、图标又大一档，四个温度的高低各不相同 —— 极简的头一条
+    -- 是对齐，第二条才是留白。这里把每一行都装进**等高定宽**的槽里：
+    -- 标签贴同一条上沿，小图标在图标带里居中，数值在数值带里居中。
+    -- 数值取居中而不是底对齐：真机的 TextWidget 不暴露 ascender，底对齐只能对齐
+    -- 盒子底边，58 号与 24 号的下伸量差一截，反而差出十几像素；居中则是光学重心
+    -- 对齐，大字小字同心，看着是一排数字而不是一排参差的数字。
+    local label_px = 17
+    local label_h = textLineH(label_px, S, k) + math.floor(3 * S * k)
+    local num_slot = textLineH((land and 40 or 58), S, k)
+
+    local function labelSlot(str)
+        return mkBox(cell_w, label_h,
+            self:makeText(ctx, str, math.floor(label_px * k), { gray = true }))
+    end
+    -- 图标槽统一按今天列的大图标算高：小图标在这格里居中，
+    -- 四枚图标的光学中心因此横向连成一条线。
+    local function iconSlot(file, px)
+        return mkBox(cell_w, icon_w, ImageWidget:new{
+            file = file, width = px, height = px, scale_factor = 0, alpha = true,
+        })
+    end
+    local function numSlot(str, px)
+        return mkBox(cell_w, num_slot, self:makeText(ctx, str, math.floor(px * k)))
+    end
+
     local today = VerticalGroup:new{
         align = "center",
-        ImageWidget:new{
-            file = self:iconPath(d.icon), width = icon_w, height = icon_w,
-            scale_factor = 0, alpha = true,
-        },
-        self:makeText(ctx, d.temp, math.floor((land and 40 or 58) * k),
-            { max_width = today_max }),
-        self:makeText(ctx, d.cond, math.floor((land and 20 or 24) * k),
-            { gray = true, max_width = today_max }),
-        self:makeText(ctx, d.range or "--", math.floor((land and 18 or 22) * k),
-            { gray = true, max_width = today_max }),
+        labelSlot(I18n.dayLabel(1, days[1] and days[1].wd)),
+        iconSlot(self:iconPath(d.icon), icon_w),
+        numSlot(d.temp, (land and 40 or 58)),
+        self:makeText(ctx, d.cond, math.floor(20 * k),
+            { gray = true, max_width = cell_w }),
+        self:makeText(ctx, d.range or "--", math.floor(17 * k),
+            { gray = true, max_width = cell_w }),
     }
+
     local blocks = { today }
-    for i = 2, #days do
+    for i = 2, n do
         local day = days[i]
-        local di = math.floor((land and 26 or 36) * S * k)
         blocks[#blocks + 1] = VerticalGroup:new{
             align = "center",
-            self:makeText(ctx, I18n.dayLabel(i, day.wd), math.floor((land and 15 or 18) * k),
-                { gray = true }),
-            mkPad(1, math.floor(3 * S * k)),
-            ImageWidget:new{
-                file = self:iconPath(self:dayIcon(day)), width = di, height = di,
-                scale_factor = 0, alpha = true,
-            },
-            mkPad(1, math.floor(3 * S * k)),
-            self:makeText(ctx, degText(day.tmax), math.floor((land and 20 or 24) * k)),
-            self:makeText(ctx, degText(day.tmin), math.floor((land and 17 or 20) * k),
-                { gray = true }),
+            labelSlot(I18n.dayLabel(i, day.wd)),
+            iconSlot(self:iconPath(self:dayIcon(day)), small_w),
+            numSlot(degText(day.tmax), (land and 20 or 24)),
+            -- 低温这行用「贴合字高」的槽，不跟着大字号槽走：它下面再没有要对齐的东西，
+            -- 用一个 141 高的空槽顶着，卡底就白出一大块，还会把 k 档压低一整级。
+            mkBox(cell_w, textLineH((land and 17 or 20), S, k),
+                self:makeText(ctx, degText(day.tmin), math.floor((land and 17 or 20) * k),
+                    { gray = true })),
         }
     end
-    -- 等宽单元格再居中：按内容宽度平分留白的话，横屏 A 区 1276 宽会摊出
-    -- 三个 200 px 的大豁口（今日块本来就比「明天/后天/周六」宽），看着像四块散落。
-    -- 切成 w/4 的等宽格子，每块在自己格里居中，节奏就匀了。
-    local cell_w = math.floor(w / #blocks)
-    local cells = { align = "center" }
-    for _, b in ipairs(blocks) do
-        cells[#cells + 1] = mkBox(cell_w, 1, b, { align = "center", auto_h = true })
+    -- 顶对齐：标签贴同一条上沿，今天列多出来的「现象 / 高低温」往下长，
+    -- 不再靠垂直居中把整列往上顶。
+    local cells = { align = "top" }
+    for i, b in ipairs(blocks) do
+        local cw = (i == n) and (w - cell_w * (n - 1)) or cell_w
+        cells[#cells + 1] = mkBox(cw, 1, b, { auto_h = true })
     end
     return HorizontalGroup:new(cells)
 end
@@ -4246,13 +4313,13 @@ function Dashboard:compReading(ctx, w, h, k)
 
     local rows = {
         align = "left",
-        self:makeText(ctx, T("在读"), math.floor(18 * k), { gray = true }),
+        self:makeText(ctx, T("在读"), math.floor(17 * k), { gray = true }),
         mkPad(1, math.floor(4 * S * k)),
         self:makeText(ctx, info.title, math.floor(30 * k), { max_width = text_w, ellipsis = true }),
     }
     if info.authors then
         rows[#rows + 1] = self:makeText(ctx,
-            T("作者") .. " " .. info.authors, math.floor(18 * k), { gray = true, max_width = text_w })
+            T("作者") .. " " .. info.authors, math.floor(17 * k), { gray = true, max_width = text_w })
     end
     local pct = info.percent or 0
     rows[#rows + 1] = mkPad(1, math.floor(10 * S * k))
@@ -4385,19 +4452,23 @@ function Dashboard:compSunMoon(ctx, w, h, k)
         column(T("日出"), d.sunrise, true, "horizon"),
         column(T("日落"), d.sunset, true, "horizon"),
         column(T("月相"), moon.label, false, "moon"),
-    }, w)
+    }, w, "top")
     if not tall then return cols end
     -- 高度够时补两行注释：白昼时长 / 月升月落。都给 max_width，长文案折行不收边。
+    -- 用 15 而不是 17：17 是「标签」那一档，注释与列头同号就分不出主次了。
+    -- 整个产品只留四档字号——15 脚注 / 17 标签 / 26 数值 / A 区大字，
+    -- 档位一多，眼睛就得先分辨"这行有多重要"才敢读。
+    local note_px = 15
     local rows = {
         align = "center",
         cols,
-        mkPad(1, math.floor(12 * S * k)),
-        self:makeText(ctx, daylen_text or moon_note, math.floor(17 * k),
+        mkPad(1, math.floor(11 * S * k)),
+        self:makeText(ctx, daylen_text or moon_note, math.floor(note_px * k),
             { color = INK2, max_width = w }),
     }
     if daylen_text then
-        rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
-        rows[#rows + 1] = self:makeText(ctx, moon_note, math.floor(17 * k),
+        rows[#rows + 1] = mkPad(1, math.floor(5 * S * k))
+        rows[#rows + 1] = self:makeText(ctx, moon_note, math.floor(note_px * k),
             { color = INK2, max_width = w })
     end
     return VerticalGroup:new(rows)
@@ -4559,16 +4630,18 @@ function Dashboard:compBatteryNet(ctx, w, h, k)
     -- 原来把电池塞进标签行 34px 的图标位，细节全糊在一起，只剩一个方框 ——
     -- 那是"加了个图标"，不是"图形化"。
     local cap = net.cap
+    -- 壳体尺寸收一档（64×21 → 52×16）：原来的电池是一大块实心黑，
+    -- 比旁边的 58% 还重，一张卡里最响的成了"配角"。图形该做定语，数字才是主语。
     local battery = HorizontalGroup:new{
         align = "center",
         BatteryGauge:new{
-            dimen = Geom:new{ w = math.floor(64 * S), h = math.floor(21 * S) },
-            border = math.max(2, math.floor(1.8 * S)),
+            dimen = Geom:new{ w = math.floor(52 * S), h = math.floor(16 * S) },
+            border = math.max(1, math.floor(1.4 * S)),
             ratio = (cap or 0) / 100,
             charging = net.charging,
             color = COLOR_BLACK,
         },
-        mkPad(math.floor(12 * S), 1),
+        mkPad(math.floor(14 * S), 1),
         self:makeNum(ctx, cap and string.format("%d%%", cap) or "--", 28),
     }
     local items = {
@@ -4654,10 +4727,10 @@ function Dashboard:compCountdown(ctx, w, h, k)
             dimen = Geom:new{ w = w, h = math.floor(h) },
             VerticalGroup:new{
                 align = "center",
-                self:makeText(ctx, T("暂无倒数日"), math.floor(22 * k), { gray = true }),
+                self:makeText(ctx, T("暂无倒数日"), math.floor(20 * k), { gray = true }),
                 mkPad(1, math.floor(8 * S * k)),
                 self:makeText(ctx, TL("菜单 → 倒数日 → 添加", "Menu → Countdown → Add"),
-                    math.floor(16 * k), { gray = true }),
+                    math.floor(15 * k), { gray = true }),
             },
         }
     end
@@ -4677,13 +4750,13 @@ function Dashboard:compCountdown(ctx, w, h, k)
         end
         line[#line + 1] = self:makeNum(ctx, tostring(math.abs(f.days)), math.floor(big_px * k))
         line[#line + 1] = mkPad(math.floor(6 * S * k), 1)
-        line[#line + 1] = self:makeText(ctx, I18n.daysUnit(f.days), math.floor(18 * k),
+        line[#line + 1] = self:makeText(ctx, I18n.daysUnit(f.days), math.floor(17 * k),
             { gray = true })
         block[#block + 1] = HorizontalGroup:new(line)
     end
     block[#block + 1] = self:makeText(ctx, f.name, math.floor(26 * k),
         { ellipsis = true, max_width = w })
-    block[#block + 1] = self:makeText(ctx, f.date, math.floor(16 * k), { gray = true })
+    block[#block + 1] = self:makeText(ctx, f.date, math.floor(15 * k), { gray = true })
 
     local gap1 = math.floor(10 * S * k)
     local gap2 = math.floor(8 * S * k)
@@ -4725,9 +4798,9 @@ function Dashboard:compTodo(ctx, w, h, k)
             dimen = Geom:new{ w = w, h = math.floor(h) },
             VerticalGroup:new{
                 align = "center",
-                self:makeText(ctx, T("今日无待办"), math.floor(22 * k), { color = INK2 }),
+                self:makeText(ctx, T("今日无待办"), math.floor(20 * k), { color = INK2 }),
                 mkPad(1, math.floor(8 * S * k)),
-                self:makeText(ctx, sub, math.floor(16 * k), { color = INK2, max_width = w }),
+                self:makeText(ctx, sub, math.floor(15 * k), { color = INK2, max_width = w }),
             },
         }
     end
@@ -4740,24 +4813,31 @@ function Dashboard:compTodo(ctx, w, h, k)
     local row_h = line_h + row_gap
     local cap = math.max(0, math.floor((h - head:getSize().h - gap1) / row_h))
     local n = math.min(#v.today, cap)
-    local rows = { align = "left", head, mkPad(1, gap1) }
+    local rows = { align = "left", head, mkPad(1, gap1, true) }
+    local gaps = {}
     for i = 1, n do
-        if i > 1 then rows[#rows + 1] = mkPad(1, row_gap) end
+        if i > 1 then
+            local g = mkPad(1, row_gap)
+            gaps[#gaps + 1] = g
+            rows[#rows + 1] = g
+        end
         rows[#rows + 1] = self:todoRow(ctx, w, k, v.today[i], row_px, box_px)
     end
 
     -- 还有空位就补一行「未来 N 项」，不占行数预算时才有
+    local tail_pad
     if n == #v.today and v.pending_future > 0 then
         local foot_h = textLineH(16, S, k)
         local used = head:getSize().h + gap1 + n * row_h
         if used + foot_h + math.floor(6 * S * k) <= h then
-            rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
+            rows[#rows + 1] = mkPad(1, math.floor(6 * S * k), true)
+            tail_pad = rows[#rows]
             rows[#rows + 1] = self:makeText(ctx,
                 string.format("%s %d %s", T("未来"), v.pending_future, I18n.items(v.pending_future)),
-                math.floor(16 * k), { color = INK2 })
+                math.floor(15 * k), { color = INK2 })
         end
     end
-    return VerticalGroup:new(rows)
+    return spreadToBottom(rows, gaps, tail_pad, h)
 end
 
 --- 一行待办：自绘勾选框 + 文本。
@@ -4807,7 +4887,7 @@ function Dashboard:compTodayActions(ctx, w, h, k)
                 align = "center",
                 self:makeText(ctx, T("今日无待办"), math.floor(24 * k), { color = INK2 }),
                 mkPad(1, math.floor(9 * S * k)),
-                self:makeText(ctx, sub, math.floor(16 * k), { color = INK2, max_width = w }),
+                self:makeText(ctx, sub, math.floor(15 * k), { color = INK2, max_width = w }),
             },
         }
     end
@@ -4832,8 +4912,13 @@ function Dashboard:compTodayActions(ctx, w, h, k)
     local n = math.min(#v.today, cap)
 
     local rows = { align = "left", head, mkPad(1, gap1, true) }
+    local gaps = {}
     for i = 1, n do
-        if i > 1 then rows[#rows + 1] = mkPad(1, row_gap) end
+        if i > 1 then
+            local g = mkPad(1, row_gap)
+            gaps[#gaps + 1] = g
+            rows[#rows + 1] = g
+        end
         rows[#rows + 1] = self:todoRow(ctx, w, k, v.today[i], row_px, box_px)
     end
 
@@ -4845,12 +4930,16 @@ function Dashboard:compTodayActions(ctx, w, h, k)
     else
         tail = foot_text
     end
+    local tail_pad
     if tail then
-        rows[#rows + 1] = mkPad(1, math.floor(13 * S * k))
+        rows[#rows + 1] = mkPad(1, 13 * S * k, true)  -- 占位，下面按余量重算
+        tail_pad = rows[#rows]
         rows[#rows + 1] = self:makeText(ctx, tail, math.floor(15 * k),
             { color = INK2, max_width = w })
     end
-    return VerticalGroup:new(rows)
+
+    -- 三条横线：块头贴卡顶、条目在中间摊开、脚注贴卡底（见 spreadToBottom）。
+    return spreadToBottom(rows, gaps, tail_pad, h)
 end
 
 --- 整月日历：周一起始、跨月补位、今天反白、节气日带点
