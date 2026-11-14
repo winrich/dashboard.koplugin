@@ -40,7 +40,9 @@ PLUGIN = "dashboard.koplugin"
 # 真机 PW3：原生竖屏 1072×1448，横屏 = 把这块 framebuffer 转 90°
 NATIVE_W, NATIVE_H = 1072, 1448
 SCALE = 2                    # 超采样倍数
-BLACK, GRAY = 0, 105         # 桩件里的 COLOR_BLACK=255 / COLOR_DARK_GRAY=85
+
+# 桩件值域与真机相反（0 = 纸白 / 255 = 纯黑），所以屏幕灰度恒为 255 - color。
+# 矩形、描边、文字三条路径都走这一个换算，任何"按色值分支"的写法都会漏掉新墨阶。
 
 # 出图锚点：日期和时刻都钉死。真机时钟走的是系统时间，不钉的话每次出图都是一个新的
 # 时刻，README 的图会天天换脸，文章里「写这段的时候，屏幕上是十月初四」也会对不上。
@@ -267,7 +269,10 @@ def draw_items(items, dw, dh):
 def draw_text(d, img, x, y, w, h, text, color, S):
     if not text or h <= 0:
         return
-    fill = GRAY if color == 85 else BLACK
+    # 与 paintRect / paintBorder 同一套换算：任意墨阶都能出图。
+    # 旧写法是「color == 85 就画灰、否则画黑」，灰阶一多就全塌成黑色，
+    # 反白文字（color = COLOR_WHITE = 0）也会被画成黑——白字变黑就是这个 bug。
+    fill = 255 - (color or 0)
     limit = max(4, w) * S
 
     def fit(px, s):

@@ -20,7 +20,14 @@ SIZES = [
 ]
 
 # 桩件里的颜色常量（0=白 255=黑 85=深灰）
-FILL = {0: "#ffffff", 255: "#111111", 85: "#8a8a8a"}
+def ink(color):
+    """桩件值域与真机相反（0 = 纸白 / 255 = 纯黑），255 - color 即屏幕灰度。
+
+    旧代码用 {0: 白, 255: 黑, 85: 灰} 查表，只认三种颜色：
+    墨阶一多、或者桩件的灰值一改，没命中的就全落到默认色上。
+    """
+    v = 255 - (color or 0)
+    return "#%02x%02x%02x" % (v, v, v)
 
 
 def grab(w, h, rotation=0):
@@ -80,13 +87,13 @@ def svg_for(items, w, h, disp_w):
     body = [f'<rect x="0" y="0" width="{w}" height="{h}" fill="#ffffff"/>']
     for tag, x, y, iw, ih, color, text in items:
         if tag == "R":
-            body.append(f'<rect x="{x}" y="{y}" width="{iw}" height="{ih}" fill="{FILL.get(color, "#333")}"/>')
+            body.append(f'<rect x="{x}" y="{y}" width="{iw}" height="{ih}" fill="{ink(color)}"/>')
         elif tag == "B":
             body.append(f'<rect x="{x}" y="{y}" width="{iw}" height="{ih}" fill="none" '
-                        f'stroke="#111" stroke-width="3"/>')
+                        f'stroke="{ink(color)}" stroke-width="3"/>')
         elif tag == "T":
             size = max(6, round(ih * 0.72))
-            fill = "#8a8a8a" if color == 85 else "#111111"
+            fill = ink(color)
             body.append(f'<text x="{x}" y="{y + ih * 0.78:.0f}" font-size="{size}" fill="{fill}" '
                         f'font-family="PingFang SC, Noto Sans CJK SC, Microsoft YaHei, sans-serif">'
                         f'{esc(text)}</text>')

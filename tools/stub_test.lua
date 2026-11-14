@@ -610,7 +610,12 @@ end
 
 ---------------------------------------------------------------- 模块注册
 package.preload["ffi/blitbuffer"] = function()
-    return { COLOR_WHITE = 0, COLOR_BLACK = 255, COLOR_DARK_GRAY = 0x55 }
+    -- 桩件的值域是反的：0 = 纸白、255 = 纯黑。真机 Color8 正好相反
+    -- （COLOR_BLACK = Color8(0)、COLOR_WHITE = Color8(0xFF)），
+    -- 所以出图端一律用 255 - color 换回屏幕灰度。
+    -- 0x77 反向后 = 136，等于真机 COLOR_DARK_GRAY = Color8(0x88)，
+    -- 两边必须是同一个灰，否则预览图和真机对不上。
+    return { COLOR_WHITE = 0, COLOR_BLACK = 255, COLOR_DARK_GRAY = 0x77 }
 end
 package.preload["ui/widget/widget"] = function() return Widget end
 package.preload["ui/widget/container/widgetcontainer"] = function() return WidgetContainer end
