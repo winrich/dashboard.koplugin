@@ -145,7 +145,7 @@ Requires a jailbroken Kindle with KOReader already installed (those two steps ar
 | Tap | Refresh weather and air quality |
 | Tap the countdown / to-do card | Opens the list (re-pin, tick off, go add); tapping elsewhere still refreshes |
 | Swipe up | Leave the board, back to reading |
-| Swipe down from the top edge | The board's own menu (city, time zone, layout, weather service, relayout, help) |
+| Swipe down from the top edge | The board's own menu (appearance, location & weather, content, display & power, language, help) |
 | Swipe left or right | Portrait ↔ landscape (Kindle has no accelerometer, so this is manual) |
 
 A small hint line stays at the bottom. A tap wakes the screen while it is asleep, and refreshes while it is awake.
@@ -173,7 +173,7 @@ The first countdown you add is pinned automatically; only one can be pinned. Fin
 The city list covers 33 cities in China and 47 major cities elsewhere, grouped as municipalities, provincial capitals, HK/Macao/Taiwan, Asia, Europe, North America, South America, Oceania and Africa. The interface itself is bilingual.
 
 - **Picking an overseas city also sets its time zone.** Choose "New York" and the zone becomes `America/New_York` in the same tap. Cities in China leave the zone alone — mainland China has both Beijing time and Xinjiang time, so choosing a city never overrides a zone you picked yourself.
-- **Don't want to hunt through the list**: menu → "City" → the first entry, "Detect my location (by IP)". It looks up the approximate location of your network once and picks the nearest city. If it fails it shows why and leaves your settings untouched.
+- **Don't want to hunt through the list**: menu → "Location & weather" → "Detect my location (by IP)". It looks up the approximate location of your network once and picks the nearest city. If it fails it shows why and leaves your settings untouched.
 - **Daylight saving is handled.** London, Paris, New York, Los Angeles, Sydney, Auckland and others shift by an hour under their local rules; Mexico and Brazil have abolished DST and use a fixed offset; Egypt and Morocco have irregular rules and are also fixed.
 - **Overseas cities use Open-Meteo for weather.** QWeather's air-quality endpoint only covers stations in China, so overseas coordinates get no AQI; those cities go straight to Open-Meteo (no key required) and the footer still names the source.
 - The header shows a plain offset such as `UTC+8` / `UTC-5`, and during DST it shows the offset actually in effect.
@@ -186,7 +186,7 @@ On first run, before you have picked a city, the board guesses one from the devi
 
 By default it uses Open-Meteo, which needs no account: temperature, condition, humidity, wind, sunrise and sunset are all fine. Only air quality is estimated from PM2.5/PM10 concentrations (the footer says "fallback").
 
-For the official Chinese AQI and more local detail, get a key from QWeather (<https://console.qweather.com>), then on the device: menu → "Weather service" → fill API Host and API Key → "Test connection". **No USB or file editing needed**; settings live in KOReader, so a key can be changed at any time.
+For the official Chinese AQI and more local detail, get a key from QWeather (<https://console.qweather.com>), then on the device: menu → "Location & weather" → "Weather service" → fill API Host and API Key → "Test connection". **No USB or file editing needed**; settings live in KOReader, so a key can be changed at any time.
 
 The free tier allows 50,000 calls a month; this plugin uses about 48 refreshes a day across three endpoints — roughly 4,300 a month.
 
@@ -202,7 +202,7 @@ One thing to know: e-ink stops its CPU while asleep, so the picture is static �
 
 When it stays on, the power goes mostly into how often the screen refreshes. Defaults: the clock updates every **5 minutes**, weather every **1 hour**, and the whole screen flashes once an hour to clear ghosting.
 
-All of it is adjustable under Menu → "Power saving". Push the clock to 10 or 30 minutes and the number of screen updates drops proportionally; pick "Only on touch" and it stops moving on its own — it corrects itself when you tap, and costs almost nothing.
+All of it is adjustable under Menu → "Display & power" → "Power saving". Push the clock to 10 or 30 minutes and the number of screen updates drops proportionally; pick "Only on touch" and it stops moving on its own — it corrects itself when you tap, and costs almost nothing.
 
 Below 10% battery it throttles by itself (clock drops to a 30-minute step, weather and full refresh stop) until you plug in. That threshold can be turned off.
 
@@ -221,7 +221,7 @@ Below 10% battery it throttles by itself (clock drops to a 30-minute step, weath
 | Sluggish for a few seconds after waking | It is fetching weather synchronously; this version adds a 25-second grace period |
 | Clock stuck at the sleep time | Waking rebuilds the layout; if it never moves, check `crash.log` |
 | Cannot swipe up to exit | Confirm you are on a current version; a `registerTouchZones` error in the log means KOReader is too old |
-| Layout unchanged after rotating | Pick it manually in menu → "Layout" |
+| Layout unchanged after rotating | Pick it manually in menu → "Appearance" |
 
 More, including exact log strings: [DEVELOPMENT.md](DEVELOPMENT.md) (Chinese).
 

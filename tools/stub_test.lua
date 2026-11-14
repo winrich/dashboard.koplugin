@@ -1100,62 +1100,101 @@ if not desk.separator then
     print("[FAIL] 没说要在屏保原生项前画分隔线")
     os.exit(1)
 end
-local city_menu, tz_menu, weather_menu = nil, nil, nil
-for _, item in ipairs(desk.sub_item_table) do
-    -- 用 T() 取当前语言下的文案：桩件既要能跑中文，也要能跑 STUB_LANG=en
-    if item.text == T("选择城市") then city_menu = item end
-    if item.text == T("选择时区") then tz_menu = item end
-    if item.text == T("天气服务") then weather_menu = item end
-end
-if not weather_menu then
-    print("[FAIL] 菜单里没有「天气服务」入口")
-    os.exit(1)
-end
--- 分组菜单的叶子总数：城市菜单第一项是「自动检测」叶子项，时区菜单全是分组，
--- 直接取 #sub_item_table 只会得到分组数，必须逐组累加并跳过叶子项。
+-- 顶层结构与「一页放得下」的硬约束（v2.60）。
 --
--- 用立即执行的匿名函数而不是新增顶层 local：本文件已经贴着 Lua 单 chunk
--- 最多 200 个局部变量的上限，再多声明两个就会 "too many local variables"。
-EVENTS[#EVENTS + 1] = (function()
-    local function count(menu)
-        local n = 0
-        for _, g in ipairs(menu.sub_item_table) do
-            if g.sub_item_table then n = n + #g.sub_item_table end
-        end
-        return n
-    end
-    return string.format(
-        "== 菜单：城市 %d 个（分组 %d），时区 %d 个（分组 %d），天气服务 %d 项 ==",
-        count(city_menu), #city_menu.sub_item_table - 1,
-        count(tz_menu), #tz_menu.sub_item_table, #weather_menu.sub_item_table)
-end)()
-
--- ============ 海外城市 / 自动定位 ============
--- 城市菜单第一项是「自动检测」，其后才是手动分组；海外分组必须真的挂进菜单，
--- 否则数据表里加了城市却在界面上看不到（最容易漏的一环）。
--- 同样用匿名函数包住：do…end 不隔开寄存器，顶层局部变量照样计入 200 上限。
--- 行首的分号必须有：上一行结尾是 `end)()`，不加分号时 Lua 会把这里的 `(`
--- 当成「调用上一个表达式的结果」，报 "attempt to call a string value"。
+-- TouchMenu 每页容量 = min(按行高算出来的条数, max_per_page_default)。真机实读
+-- PW3 1072x1448：竖屏 10 条、横屏 9 条 —— 顶层超过 9 条横屏就会翻页。原来的
+-- 15 条平铺正是用户反馈的「菜单要翻页」。上限写进断言，以后再往里加项会直接 FAIL。
 ;(function()
-    local first = city_menu.sub_item_table[1]
-    if not first or first.text ~= T("自动检测我的位置（按 IP）") then
-        print("[FAIL] 城市菜单第一项应为「自动检测我的位置（按 IP）」，实际 "
-            .. tostring(first and first.text))
+    local top = desk.sub_item_table
+    local by_text = {}
+    for _, item in ipairs(top) do
+        -- 用 T() 取当前语言下的文案：桩件既要能跑中文，也要能跑 STUB_LANG=en
+        by_text[item.text] = item
+    end
+    -- Settings 入口比看板内多一条「打开看板」，所以上限给 7
+    if #top > 7 then
+        print(string.format("[FAIL] 顶层菜单 %d 条，超过 7 条：横屏一页只放 9 条，会翻页", #top))
         os.exit(1)
     end
-    local want = { T("直辖市"), T("省会与首府"), T("港澳台"),
-                   T("亚洲"), T("欧洲"), T("北美洲"), T("南美洲"),
-                   T("大洋洲"), T("非洲") }
-    local seen = {}
-    for i = 2, #city_menu.sub_item_table do
-        seen[city_menu.sub_item_table[i].text] = true
+    for _, name in ipairs({ "外观", "地点与天气", "内容", "显示与省电", "语言 / Language" }) do
+        if not by_text[T(name)] then
+            print("[FAIL] 顶层菜单缺少分组：" .. name)
+            os.exit(1)
+        end
     end
-    for _, name in ipairs(want) do
-        if not seen[name] then
+
+    local place = by_text[T("地点与天气")]
+    if #place.sub_item_table ~= 5 then
+        print(string.format("[FAIL] 「地点与天气」应有 5 项，实际 %d", #place.sub_item_table))
+        os.exit(1)
+    end
+    local seen_place = {}
+    for _, it in ipairs(place.sub_item_table) do seen_place[it.text] = true end
+    for _, name in ipairs({ "选择城市", "选择时区", "自动检测我的位置（按 IP）",
+                            "天气服务", "立即刷新天气" }) do
+        if not seen_place[T(name)] then
+            print("[FAIL] 「地点与天气」缺少：" .. name)
+            os.exit(1)
+        end
+    end
+
+    -- 城市菜单：v2.60 拆成「国内城市 / 海外城市」两组。原来是 9 个分组 + 自动检测
+    -- 共 10 条，竖屏刚够一页、横屏就要翻。
+    local city
+    for _, it in ipairs(place.sub_item_table) do
+        if it.text == T("选择城市") then city = it end
+    end
+    local buckets = city and city.sub_item_table or {}
+    if #buckets ~= 2 or buckets[1].text ~= T("国内城市")
+        or buckets[2].text ~= T("海外城市") then
+        print("[FAIL] 城市菜单应只有「国内城市」「海外城市」两组，实际 " .. tostring(#buckets))
+        os.exit(1)
+    end
+    local group_names = {}
+    for _, g in ipairs(buckets) do
+        for _, sub in ipairs(g.sub_item_table) do
+            if sub.sub_item_table then group_names[sub.text] = true end
+        end
+    end
+    for _, name in ipairs({ "直辖市", "省会与首府", "港澳台", "亚洲", "欧洲",
+                            "北美洲", "南美洲", "大洋洲", "非洲" }) do
+        if not group_names[T(name)] then
             print("[FAIL] 城市菜单缺少分组：" .. name)
             os.exit(1)
         end
     end
+
+    -- 分组层不许超过 9 条（横屏一页）。城市 / 时区那种纯叶子长列表不在此列：
+    -- 它们的长短由数据决定，翻页是正常的，不该为了凑数去砍城市。
+    local function any_sub(tbl)
+        for _, it in ipairs(tbl) do
+            if it.sub_item_table then return true end
+        end
+        return false
+    end
+    local function walk(tbl, where)
+        if #tbl > 9 and any_sub(tbl) then
+            print(string.format("[FAIL] %s 有 %d 条，超过横屏一页的 9 条", where, #tbl))
+            os.exit(1)
+        end
+        for _, it in ipairs(tbl) do
+            if it.sub_item_table then walk(it.sub_item_table, where .. " › " .. it.text) end
+        end
+    end
+    walk(top, "顶层")
+    EVENTS[#EVENTS + 1] = string.format(
+        "== 菜单分层：顶层 %d 条，城市分国内 %d / 海外 %d 组，分组层均不超 9 条 ==",
+        #top, #buckets[1].sub_item_table, #buckets[2].sub_item_table)
+end)()
+
+-- ============ 海外城市 / 自动定位 ============
+-- 分组结构（国内 / 海外两组、九个子分组、自动检测的位置）已在上面的
+-- 「菜单分层」块里断言过，这里只查数据本身：海外城市必须真的带 tz。
+-- 用匿名函数包住：do…end 不隔开寄存器，顶层局部变量照样计入 200 上限。
+-- 行首的分号必须有：上一行结尾是 `end)()`，不加分号时 Lua 会把这里的 `(`
+-- 当成「调用上一个表达式的结果」，报 "attempt to call a string value"。
+;(function()
 
     -- 海外城市必须自带 tz，且该 tz 能在时区表里查到（查不到会回落成北京时间）
     local CD = package.loaded["dashboard_cities"]
@@ -1538,17 +1577,15 @@ local function reopen_menu()
     return MENU_SHOWN
 end
 local menu3 = reopen_menu()
+-- v2.60 起版式三项挂在「外观」的第一屏（其后是竖屏布局 / 横屏布局 / 复制 / 恢复）。
+-- 不能按「恰好 3 项」找，也不能只判首项含「竖屏」——「竖屏布局」同样以这两个字
+-- 开头，会把匹配抢走（v2.54 踩过）。
 local orient_item
 for _, it in ipairs(menu3.tab or {}) do
-    -- 只认「版式」：恰好 3 项且首项是竖屏。不能只判首项含"竖屏"——
-    -- 新增的「布局组件」首项是"竖屏布局"，会把匹配抢走（本轮踩过）。
-    if it.sub_item_table and #it.sub_item_table == 3 and it.sub_item_table[1]
-        and it.sub_item_table[1].text:find(T("竖屏"), 1, true) then
-        orient_item = it
-    end
+    if it.text == T("外观") and it.sub_item_table then orient_item = it end
 end
 if not orient_item then
-    print("[FAIL] 菜单里找不到「版式」子菜单")
+    print("[FAIL] 菜单里找不到「外观」子菜单")
     os.exit(1)
 end
 for i, sub in ipairs(orient_item.sub_item_table) do
@@ -1616,10 +1653,8 @@ local menu5 = reopen_menu()
 instance.menu = nil
 local orient_item5
 for _, it in ipairs(menu5.tab or {}) do
-    if it.sub_item_table and #it.sub_item_table == 3 and it.sub_item_table[1]
-        and it.sub_item_table[1].text:find(T("竖屏"), 1, true) then
-        orient_item5 = it
-    end
+    -- 同上：版式三项现在挂在「外观」下，前 3 项就是竖屏 / 横屏 / 横屏
+    if it.text == T("外观") and it.sub_item_table then orient_item5 = it end
 end
 local layout_before_orphan = instance.layout_landscape
 orient_item5.sub_item_table[layout_before_orphan and 1 or 2].callback()
@@ -2825,12 +2860,16 @@ local function check_agenda()
         end
     end
 
-    -- 6) 菜单结构：两条顶级入口 + 逐条子菜单
+    -- 6) 菜单结构：v2.60 起倒数日 / 待办在二级「内容」下，逐条子菜单
     local items = instance:genMenuItemTable()
     local cd, td_menu
     for _, it in ipairs(items) do
-        if it.text == T("倒数日") then cd = it end
-        if it.text == T("待办事项") then td_menu = it end
+        if it.text == T("内容") then
+            for _, sub in ipairs(it.sub_item_table or {}) do
+                if sub.text == T("倒数日") then cd = sub end
+                if sub.text == T("待办事项") then td_menu = sub end
+            end
+        end
     end
     if not cd or not td_menu then fail("菜单里缺倒数日 / 待办事项入口") end
     if #cd.sub_item_table ~= #A.allEvents() + 1 then
@@ -2941,19 +2980,26 @@ end
 local menu_items = instance:genMenuItemTable()
 local layout_item, lang_item
 for _, it in ipairs(menu_items) do
-    if it.text and it.text:find(T("布局组件"), 1, true) then layout_item = it end
+    -- v2.60：版式三项 + 布局组件四项合成「外观」一屏（布局组件不再是顶层）
+    if it.text == T("外观") then layout_item = it end
     if it.text and it.text:find("Language", 1, true) then lang_item = it end
 end
-if not layout_item or #layout_item.sub_item_table ~= 4 then
-    print("[FAIL] 布局组件菜单缺失或项数不对")
+if not layout_item or #layout_item.sub_item_table ~= 7 then
+    print("[FAIL] 外观菜单缺失或项数不对：应为版式 3 项 + 布局 4 项")
     os.exit(1)
 end
 if not lang_item or #lang_item.sub_item_table ~= 3 then
     print("[FAIL] 语言菜单缺失或项数不对")
     os.exit(1)
 end
--- 层级：布局组件 → 竖屏布局 → A 区 → 具体组件项
-local zone_a = layout_item.sub_item_table[1].sub_item_table
+for i = 1, 3 do
+    if not layout_item.sub_item_table[i].callback then
+        print(string.format("[FAIL] 外观第 %d 项应为版式项（带 callback）", i))
+        os.exit(1)
+    end
+end
+-- 层级：外观 → 竖屏布局（第 4 项）→ A 区 → 具体组件项
+local zone_a = layout_item.sub_item_table[4].sub_item_table
 if #zone_a ~= 3 then
     print("[FAIL] 竖屏布局应有 A/B/C 三个区，实际 " .. #zone_a)
     os.exit(1)

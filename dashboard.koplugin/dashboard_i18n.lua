@@ -128,7 +128,13 @@ local EN = {
     ["立即刷新天气"] = "Refresh weather now",
     ["重新布局"] = "Relayout",
     ["休眠时显示看板（屏保）"] = "Show dashboard while asleep (screensaver)",
-    ["显示设置"] = "Display",
+    -- v2.60 顶层分成六组后的组名（原来是 15 条平铺，超过一页就会翻）
+    ["外观"] = "Appearance",
+    ["地点与天气"] = "Location & weather",
+    ["内容"] = "Content",
+    ["显示与省电"] = "Display & power",
+    ["国内城市"] = "Cities in China",
+    ["海外城市"] = "Overseas cities",
     -- 省电设置
     ["省电设置"] = "Power saving",
     ["时钟刷新"] = "Clock refresh",

@@ -5,7 +5,7 @@
   · 竖屏（H > W）  仪表盘版式：顶部城市条 + 大时钟 + 天气 + 农历大字 + 节气进度条 + 底部三格
   · 横屏（W >= H） 上下分区版式：顶部城市条 + 大时钟与天气 + 整月日历网格 + 农历节气
 
-显示内容：每个区各选一个组件（菜单「布局组件」里换）。可选组件：
+显示内容：每个区各选一个组件（菜单「外观 → 竖屏布局 / 横屏布局」里换）。可选组件：
   时钟与天气 / 农历与节气 / 三格状态 / 月历 / 侧栏（v2.44 及以前）
   大字时钟 / 纯天气 / 今日+三日 / 一周预报 / 在读卡 / 日月 / 空气明细 / 电量网络（v2.45 新增）
 月相优先用和风的 astro.moonphase，降级时由 dashboard_moon.lua 现算（日月黄经差）。
@@ -24,6 +24,9 @@ dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host �
 配置入口（两处，同一份菜单项 genMenuItemTable）：
   · 设置 → 屏幕 → 屏保 → 桌面看板（不开看板时改，靠 sorting_hint="screensaver" 挂进去）
   · 看板打开时屏幕上缘下滑（TouchMenu；KOReader 菜单被看板盖住时进不去）
+  顶层固定 6 组（外观 / 地点与天气 / 内容 / 显示与省电 / 语言 / 使用说明），
+  因为 TouchMenu 一页最多 10 条、横屏只有 9 条，超过就要翻页（v2.60 前的 15 条平铺
+  正是这个问题）。加新项请挂进已有的组，或在组内再加一层，不要往顶层堆。
 
 设计要点（均已按 KOReader 源码核对，非猜测）：
   · Widget:paintTo 基类是空实现，自绘控件必须自己实现 paintTo，getSize 返回 self.dimen
@@ -36,7 +39,7 @@ dashboard_config.local.lua（或菜单「天气服务」）里填写 API Host �
 看板打开之后的状态机（每一条都已按 KOReader 上游源码核对）：
   触摸            点按刷新天气；上划退出；左右滑切版式；上缘下滑开菜单
   空闲但未超时      按「时钟刷新」粒度只重画时钟那一块（默认 5 分钟），全刷按周期清残影
-                    （默认 60 分钟）；两项都可在菜单「省电设置」里改
+                    （默认 60 分钟）；两项都可在菜单「显示与省电 → 省电设置」里改
   空闲超时 / 按电源键  powerd → Device:intoScreenSaver() → Screensaver.show 被我们接管
                      → 屏幕保持看板 → powerd:beforeSuspend() 真正挂起（CPU 停）
                      所以「按电源键屏幕没变化」是正常的：它本来就在显示看板
@@ -163,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.59"
+local DASHBOARD_VERSION = "2.60"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -975,6 +978,18 @@ function Dashboard:addToMainMenu(menu_items)
 end
 
 function Dashboard:genMenuItemTable()
+    -- 顶层只放 6 条（Settings 入口 7 条，含「打开看板」）。
+    --
+    -- 这里有一条硬约束：TouchMenu 每页容量 = min(按行高算出来的条数,
+    -- max_per_page_default)。真机实读（PW3 1072x1448）：竖屏算出 13，被默认值
+    -- 挡住 → 10 条；横屏算出 9 → 9 条。所以**顶层超过 9 条就要翻页，横屏先翻**。
+    -- 原来这一层是 15 条，两个方向都翻（截到过「第 1 页，共 2 页」）。
+    --
+    -- 分组的依据是用户心里的对象，不是代码里的模块：
+    --   外观（版式 + 区域组件）· 地点与天气 · 内容（倒数日 / 待办）·
+    --   显示与省电 · 语言 · 使用说明
+    -- 深度是刻意守住的：「切横竖屏」仍在「外观」的第一屏；「换某区组件」仍是
+    -- 四跳（外观 → 竖屏布局 → C 区 → 组件），与原来「布局组件」那条一样深。
     local items = {
         {
             text = T("打开看板"),
@@ -983,15 +998,227 @@ function Dashboard:genMenuItemTable()
             callback = function() self:open() end,
         },
         {
-            text = T("立即刷新天气"),
-            callback = function() self:fetchWeather(true) end,
+            text = T("外观"),
+            help_text = TL(
+                "版式（竖屏 / 横屏）与各区域放什么组件。",
+                "Orientation (portrait / landscape) and what each zone shows."),
+            sub_item_table = self:genAppearanceMenu(),
         },
         {
-            text = T("重新布局"),
+            text = T("地点与天气"),
+            help_text = TL(
+                "城市与时区决定看板上所有时间；天气服务决定数据从哪来。",
+                "City and time zone set every clock on the board; the weather service\n"
+                .. "picks where the data comes from."),
+            sub_item_table = self:genPlaceMenu(),
+        },
+        {
+            text = T("内容"),
+            help_text = TL(
+                "看板上只做「看 + 勾选」，增删改都在这里。",
+                "The board only shows and ticks them; add and remove here."),
+            sub_item_table = {
+                { text = T("倒数日"), sub_item_table = self:genCountdownMenu() },
+                { text = T("待办事项"), sub_item_table = self:genTodoMenu() },
+            },
+        },
+        {
+            text = T("显示与省电"),
+            help_text = TL(
+                "屏保行为、页脚提示、刷新节奏都在这里。",
+                "Screensaver behaviour, footer hints and refresh cadence."),
+            sub_item_table = self:genDisplayPowerMenu(),
+        },
+        {
+            text = T("语言 / Language"),
+            sub_item_table = self:genLangMenu(),
+        },
+        {
+            -- 版本号放这儿：上机时打开菜单扫一眼就知道是不是刚改的那份代码
+            text = T("使用说明") .. "  v" .. DASHBOARD_VERSION,
             callback = function()
-                if self.shown then self:refreshLayout() end
+                UIManager:show(InfoMessage:new{
+                    text = TL(
+                        "手势：点按刷新天气 · 上划退出看板\n"
+                        .. "屏幕上缘下滑 → 打开看板菜单（外观 / 地点与天气 / 内容 / 显示与省电）\n"
+                        .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
+                        .. "城市可选国内与海外（亚洲/欧洲/美洲/大洋洲/非洲）；\n"
+                        .. "选海外城市会自动把时区一并改掉，\n"
+                        .. "也可点「地点与天气 → 自动检测我的位置（按 IP）」让它自己挑最近的城市。\n"
+                        .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
+                        .. "点「倒数日」「待办」这两块卡片 → 弹出列表（可切换置顶、勾选完成）；\n"
+                        .. "增删改在菜单「内容 → 倒数日 / 待办事项」里，录入分两步：\n"
+                        .. "第 1 步填名称（键盘），第 2 步点选日期（年 / 月 / 日 各自翻页，免键盘）。\n"
+                        .. "  倒数日：名称 + 日期，例「妈妈生日」+ 2026-11-30\n"
+                        .. "  待办：名称 + 日期，日期默认今天\n"
+                        .. "数据存在 KOReader 设置目录的 dashboard_agenda.lua，可直接备份。\n\n"
+                        .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
+                        .. "所以横屏要靠左右滑动（或菜单「外观」）手动切，切完请把设备横着拿。\n"
+                        .. "菜单「外观」里选中一项后会立即关菜单并按新方向重排，不用手动关菜单。\n"
+                        .. "若横屏后文字是倒的，到菜单「外观」里换「向左转 90°」那一项。\n\n"
+                        .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
+                        .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
+                        .. "空闲超时或按电源键休眠时，屏幕会停留在看板上（相当于屏保）。\n"
+                        .. "长时间显示建议接通电源；全刷周期默认 60 分钟，可在「显示与省电 → 省电设置」里调。\n\n"
+                        .. "看板版本 v" .. DASHBOARD_VERSION,
+                        "Gestures: tap to refresh · swipe up to exit\n"
+                        .. "Swipe down from the top edge: dashboard menu (appearance / location & weather /\n"
+                        .. "content / display & power)\n"
+                        .. "When closed: Settings → Screen → Sleep screen → Desk dashboard\n"
+                        .. "Cities cover China plus Asia, Europe, the Americas, Oceania and Africa;\n"
+                        .. "picking an overseas one also sets its time zone.\n"
+                        .. "Or use Location & weather → Detect my location (by IP) to pick the nearest city.\n"
+                        .. "Swipe sideways: switch portrait ↔ landscape (really rotates the screen)\n\n"
+                        .. "Kindles have no accelerometer, so landscape must be triggered manually\n"
+                        .. "by swiping sideways or via the Appearance menu; then hold the device sideways.\n"
+                        .. "If the landscape text appears upside down, pick the other rotation.\n\n"
+                        .. "Tap the Countdown / To-do card to open its list (pin, tick off);\n"
+                        .. "add and remove them under Content → Countdown / To-dos, in two steps:\n"
+                        .. "step 1 types the name, step 2 picks the date (no typing for dates).\n"
+                        .. "Data lives in dashboard_agenda.lua in the KOReader settings folder.\n\n"
+                        .. "Top right: battery percentage and icon (inverted while charging).\n"
+                        .. "Weather comes from QWeather; if unavailable it falls back to Open-Meteo,\n"
+                        .. "and the footer shows the current source.\n"
+                        .. "On idle or power-button sleep the screen keeps the dashboard (acts as a\n"
+                        .. "screensaver). For long display, keep it plugged in; full refresh\n"
+                        .. "defaults to every 60 minutes (Display & power → Power saving).\n\n"
+                        .. "Dashboard version v" .. DASHBOARD_VERSION),
+                })
             end,
         },
+    }
+    return items
+end
+
+-- ------------------------------------------------------------------ 外观菜单
+--- 「外观」= 版式（竖屏 / 横屏）+ 各区域放什么组件。
+--- 版式三项**刻意不用 checked_func**。TouchMenu:onMenuSelect 里是这么分支的
+--- （v2025/v2026 一致）：
+---   callback(self)
+---   if item.checked or item.checked_func then   -- 勾选项
+---       self:updateItems()                       -- 只刷新，**不关菜单**
+---   elseif not item.keep_menu_open then
+---       self:closeMenu()                         -- 普通项，回调后自动关
+--- 也就是说「带勾选」和「点完自动关菜单」在 TouchMenu 里是互斥的，之前用
+--- checked_func 就必然点完菜单还杵着。现在改成普通叶子项：点击 → callback 记下
+--- 方向 → TouchMenu 自己 closeMenu() → close_callback → 立刻转屏重排。
+--- 当前方向改用文字标注（不能依赖屏幕旋转结果：转不了屏的机型会退化成纯版式切换）。
+function Dashboard:genAppearanceMenu()
+    local cur_mode = self:currentOrientationMode()
+    local function orientEntry(text, mode)
+        return {
+            text = (cur_mode == mode) and (text .. T("（当前）")) or text,
+            -- TouchMenu 调 callback 时会把**菜单自己**作为第一个参数传进来
+            -- （源码注释：Provide callback with us, so it can call our closemenu()）。
+            -- 真机上「靠 onMenuSelect 自动关菜单」这条分支没生效，所以这里拿住菜单
+            -- 实例，自己去关，不再赌框架行为。
+            callback = function(menu) self:setOrientationFromMenu(mode, menu) end,
+        }
+    end
+    local sub = {
+        orientEntry(T("竖屏"), "portrait"),
+        orientEntry(T("横屏（向右转 90°）"), "landscape"),
+        orientEntry(T("横屏（向左转 90°）"), "landscape_ccw"),
+    }
+    -- 分隔线画在「版式三项」之后（TouchMenu 的 separator 是画在**本项下面**的，
+    -- 所以要挂在第三项上，挂到第四项就会落到「竖屏布局」和「横屏布局」中间）。
+    sub[#sub].separator = true
+    -- 下面四条就是原来的「布局组件」那一层，只是换了个挂点：
+    -- 层级深度不变（外观 → 竖屏布局 → 区 → 组件），省掉的只是顶层的一条。
+    for _, it in ipairs(self:genLayoutMenu()) do sub[#sub + 1] = it end
+    return sub
+end
+
+-- ------------------------------------------------------------------ 地点与天气
+--- 城市、时区、天气源三件事同属「看板显示的是哪里的天气几点钟」，并成一组。
+--- 「立即刷新天气」放在这儿而不是顶层：看板上点一下屏幕就能刷新，
+--- 菜单里不必为它长期占一个顶层位置。
+function Dashboard:genPlaceMenu()
+    return {
+        { text = T("选择城市"), sub_item_table = self:genCityMenu() },
+        { text = T("选择时区"), sub_item_table = self:genTzMenu() },
+        {
+            text = T("自动检测我的位置（按 IP）"),
+            help_text = TL(
+                "联网查一次出口 IP 的大致位置，自动选最近的城市，并把时区一起改掉。\n"
+                .. "查不到时已有设置保持不变，可以继续手动选。",
+                "Looks up the approximate location of this network once, then picks the\n"
+                .. "nearest city and its time zone. If it fails, your current settings\n"
+                .. "stay untouched and you can pick manually."),
+            callback = function() self:autoLocateCity() end,
+        },
+        { text = T("天气服务"), sub_item_table = self:genWeatherMenu() },
+        { text = T("立即刷新天气"), callback = function() self:fetchWeather(true) end },
+    }
+end
+
+--- 国内三组与海外六组分开：原来 9 个分组 + 自动检测 = 10 条，竖屏刚够一页，
+--- 横屏（9 条上限）就要翻页。现在两组各 3 / 6 条，任何方向都是一屏。
+local DOMESTIC_CITY_GROUPS = {
+    ["直辖市"] = true,
+    ["省会"] = true,
+    ["港澳台"] = true,
+}
+
+--- 城市菜单：国内城市 / 海外城市两个分组（都是单选，当前项打勾）。
+--- 分组表放在数据模块里：新增城市只要 group 名在表中存在，就会出现在对应分组下，
+--- 不必回到这里改菜单代码。国内组在前，海外组在后。
+function Dashboard:genCityMenu()
+    local domestic, overseas = {}, {}
+    for _, g in ipairs(CityData.city_groups) do
+        local sub = {}
+        for _, c in ipairs(CityData.cities) do
+            if c.group == g.key then
+                sub[#sub + 1] = {
+                    -- 只译显示名：checked/callback 仍用中文名做键，设置里存的也是它
+                    text = I18n.city(c),
+                    checked_func = function() return self:getCityName() == c.name end,
+                    callback = function() self:setCity(c.name) end,
+                }
+            end
+        end
+        -- 空分组不显示：某天把一组城市删空，菜单里不该留个点进去什么都没有的空壳
+        if #sub > 0 then
+            local bucket = DOMESTIC_CITY_GROUPS[g.key] and domestic or overseas
+            bucket[#bucket + 1] = { text = T(g.text), sub_item_table = sub }
+        end
+    end
+    local items = {}
+    if #domestic > 0 then
+        items[#items + 1] = { text = T("国内城市"), sub_item_table = domestic }
+    end
+    if #overseas > 0 then
+        items[#items + 1] = { text = T("海外城市"), sub_item_table = overseas }
+    end
+    return items
+end
+
+--- 时区菜单：按洲分组（北美与南美合成「美洲」，避免两组都只有三四项）。
+function Dashboard:genTzMenu()
+    local items = {}
+    for _, g in ipairs(CityData.tz_groups) do
+        local sub = {}
+        for _, t in ipairs(CityData.timezones) do
+            if t.group == g.key then
+                sub[#sub + 1] = {
+                    text = I18n.tzName(t),
+                    checked_func = function() return self:getTzIana() == t.iana end,
+                    callback = function() self:setTz(t.iana) end,
+                }
+            end
+        end
+        if #sub > 0 then
+            items[#items + 1] = { text = T(g.text), sub_item_table = sub }
+        end
+    end
+    return items
+end
+
+-- ------------------------------------------------------------------ 显示与省电
+--- 屏保在休眠时接管屏幕，页脚提示与刷新节奏都属于「常显在屏幕上要付的代价」，
+--- 四件事搁一起。省电设置仍是子菜单（内部四项各自还要选档，会超过一屏）。
+function Dashboard:genDisplayPowerMenu()
+    return {
         {
             text = T("休眠时显示看板（屏保）"),
             help_text = TL(
@@ -1008,26 +1235,31 @@ function Dashboard:genMenuItemTable()
             end,
         },
         {
-            text = T("显示设置"),
-            sub_item_table = {
-                {
-                    text = T("页脚手势提示"),
-                    help_text = TL(
-                        "关闭时页脚只显示「数据时刻 · 来源」，六个手势改成只在第一次打开时提示。\n"
-                        .. "打开后在页脚常驻一行，会把版面下沿挤占掉。",
-                        "When off, the footer only shows the data time and source.\n"
-                        .. "When on, the gesture hints take up a full line at the bottom."),
-                    checked_func = function()
-                        return G_reader_settings:readSetting("dashboard_show_hints") == true
-                    end,
-                    callback = function()
-                        local on = G_reader_settings:readSetting("dashboard_show_hints") == true
-                        G_reader_settings:saveSetting("dashboard_show_hints", not on)
-                        if G_reader_settings.flush then G_reader_settings:flush() end
-                        if self.shown then self:refreshLayout() end
-                    end,
-                },
-            },
+            text = T("页脚手势提示"),
+            help_text = TL(
+                "关闭时页脚只显示「数据时刻 · 来源」，六个手势改成只在第一次打开时提示。\n"
+                .. "打开后在页脚常驻一行，会把版面下沿挤占掉。",
+                "When off, the footer only shows the data time and source.\n"
+                .. "When on, the gesture hints take up a full line at the bottom."),
+            checked_func = function()
+                return G_reader_settings:readSetting("dashboard_show_hints") == true
+            end,
+            callback = function()
+                local on = G_reader_settings:readSetting("dashboard_show_hints") == true
+                G_reader_settings:saveSetting("dashboard_show_hints", not on)
+                if G_reader_settings.flush then G_reader_settings:flush() end
+                if self.shown then self:refreshLayout() end
+            end,
+        },
+        {
+            text = T("重新布局"),
+            help_text = TL(
+                "按当前设置把整屏重画一遍。画面错乱、或者改完组件没跟着变时用。",
+                "Redraws the whole board with the current settings, for when the screen\n"
+                .. "looks wrong or a change did not apply."),
+            callback = function()
+                if self.shown then self:refreshLayout() end
+            end,
         },
         {
             text = T("省电设置"),
@@ -1039,157 +1271,6 @@ function Dashboard:genMenuItemTable()
             sub_item_table = self:genPowerMenu(),
         },
     }
-
-    -- 城市分组表放在数据模块里：新增城市只要 group 名在表中存在，就会出现在对应分组下，
-    -- 不必回到这里改菜单代码。国内三组在前，海外五组在后。
-    local city_items = {
-        {
-            text = T("自动检测我的位置（按 IP）"),
-            help_text = TL(
-                "联网查一次出口 IP 的大致位置，自动选最近的城市，并把时区一起改掉。\n"
-                .. "查不到时已有设置保持不变，可以继续在下面手动选。",
-                "Looks up the approximate location of this network once, then picks the\n"
-                .. "nearest city and its time zone. If it fails, your current settings\n"
-                .. "stay untouched and you can pick manually below."),
-            callback = function() self:autoLocateCity() end,
-        },
-    }
-    for _, g in ipairs(CityData.city_groups) do
-        local sub = {}
-        for _, c in ipairs(CityData.cities) do
-            if c.group == g.key then
-                sub[#sub + 1] = {
-                    -- 只译显示名：checked/callback 仍用中文名做键，设置里存的也是它
-                    text = I18n.city(c),
-                    checked_func = function() return self:getCityName() == c.name end,
-                    callback = function() self:setCity(c.name) end,
-                }
-            end
-        end
-        -- 空分组不显示：某天把一组城市删空，菜单里不该留个点进去什么都没有的空壳
-        if #sub > 0 then
-            city_items[#city_items + 1] = {
-                text = T(g.text),
-                -- 第一条分组前画分隔线，把「自动检测」和手动列表分开
-                separator = (#city_items == 1),
-                sub_item_table = sub,
-            }
-        end
-    end
-    items[#items + 1] = { text = T("选择城市"), sub_item_table = city_items }
-
-    local tz_items = {}
-    for _, g in ipairs(CityData.tz_groups) do
-        local sub = {}
-        for _, t in ipairs(CityData.timezones) do
-            if t.group == g.key then
-                sub[#sub + 1] = {
-                    text = I18n.tzName(t),
-                    checked_func = function() return self:getTzIana() == t.iana end,
-                    callback = function() self:setTz(t.iana) end,
-                }
-            end
-        end
-        if #sub > 0 then
-            tz_items[#tz_items + 1] = { text = T(g.text), sub_item_table = sub }
-        end
-    end
-    items[#items + 1] = { text = T("选择时区"), sub_item_table = tz_items }
-
-    -- 版式三项**刻意不用 checked_func**。TouchMenu:onMenuSelect 里是这么分支的
-    -- （v2025/v2026 一致）：
-    --   callback(self)
-    --   if item.checked or item.checked_func then   -- 勾选项
-    --       self:updateItems()                       -- 只刷新，**不关菜单**
-    --   elseif not item.keep_menu_open then
-    --       self:closeMenu()                         -- 普通项，回调后自动关
-    -- 也就是说「带勾选」和「点完自动关菜单」在 TouchMenu 里是互斥的，之前用
-    -- checked_func 就必然点完菜单还杵着。现在改成普通叶子项：点击 → callback 记下
-    -- 方向 → TouchMenu 自己 closeMenu() → close_callback → 立刻转屏重排。
-    -- 当前方向改用文字标注（不能依赖屏幕旋转结果：转不了屏的机型会退化成纯版式切换）。
-    local cur_mode = self:currentOrientationMode()
-    local function orientEntry(text, mode)
-        return {
-            text = (cur_mode == mode) and (text .. T("（当前）")) or text,
-            -- TouchMenu 调 callback 时会把**菜单自己**作为第一个参数传进来
-            -- （源码注释：Provide callback with us, so it can call our closemenu()）。
-            -- 真机上「靠 onMenuSelect 自动关菜单」这条分支没生效，所以这里拿住菜单
-            -- 实例，自己去关，不再赌框架行为。
-            callback = function(menu) self:setOrientationFromMenu(mode, menu) end,
-        }
-    end
-    items[#items + 1] = {
-        text = T("版式（竖屏 / 横屏）"),
-        sub_item_table = {
-            orientEntry(T("竖屏"), "portrait"),
-            orientEntry(T("横屏（向右转 90°）"), "landscape"),
-            orientEntry(T("横屏（向左转 90°）"), "landscape_ccw"),
-        },
-    }
-
-    items[#items + 1] = { text = T("布局组件"), sub_item_table = self:genLayoutMenu() }
-
-    -- 倒数日 / 待办的增删改都在这里；看板上点击组件只做「看 + 勾选」
-    items[#items + 1] = { text = T("倒数日"), sub_item_table = self:genCountdownMenu() }
-    items[#items + 1] = { text = T("待办事项"), sub_item_table = self:genTodoMenu() }
-
-    items[#items + 1] = { text = T("语言 / Language"), sub_item_table = self:genLangMenu() }
-
-    items[#items + 1] = { text = T("天气服务"), sub_item_table = self:genWeatherMenu() }
-
-    items[#items + 1] = {
-        -- 版本号放这儿：上机时打开菜单扫一眼就知道是不是刚改的那份代码
-        text = T("使用说明") .. "  v" .. DASHBOARD_VERSION,
-        callback = function()
-            UIManager:show(InfoMessage:new{
-                text = TL(
-                    "手势：点按刷新天气 · 上划退出看板\n"
-                    .. "屏幕上缘下滑 → 打开看板菜单（城市 / 时区 / 版式 / 天气服务）\n"
-                    .. "看板没打开时：设置 → 屏幕 → 屏保 → 桌面看板（同一套菜单）\n"
-                    .. "城市可选国内与海外（亚洲/欧洲/美洲/大洋洲/非洲）；\n"
-                    .. "选海外城市会自动把时区一并改掉，\n"
-                    .. "也可点「自动检测我的位置（按 IP）」让它自己挑最近的城市。\n"
-                    .. "左右滑动 → 竖屏 ↔ 横屏 互相切换（会真的旋转屏幕）\n\n"
-                    .. "点「倒数日」「待办」这两块卡片 → 弹出列表（可切换置顶、勾选完成）；\n"
-                    .. "增删改在菜单「倒数日」「待办事项」里，录入分两步：\n"
-                    .. "第 1 步填名称（键盘），第 2 步点选日期（年 / 月 / 日 各自翻页，免键盘）。\n"
-                    .. "  倒数日：名称 + 日期，例「妈妈生日」+ 2026-11-30\n"
-                    .. "  待办：名称 + 日期，日期默认今天\n"
-                    .. "数据存在 KOReader 设置目录的 dashboard_agenda.lua，可直接备份。\n\n"
-                    .. "Kindle 没有重力感应，机器横过来屏幕不会自己转，\n"
-                    .. "所以横屏要靠左右滑动（或菜单「版式」）手动切，切完请把设备横着拿。\n"
-                    .. "菜单「版式」里选中一项后会立即关菜单并按新方向重排，不用手动关菜单。\n"
-                    .. "若横屏后文字是倒的，到菜单「版式」里换「向左转 90°」那一项。\n\n"
-                    .. "右上角显示电量百分比与电量图标（充电时图标反白）。\n"
-                    .. "天气优先用和风天气，不可用时自动降级到 Open-Meteo，页脚会标注来源。\n"
-                    .. "空闲超时或按电源键休眠时，屏幕会停留在看板上（相当于屏保）。\n"
-                    .. "长时间显示建议接通电源；全刷周期默认 60 分钟，可在「省电设置」里调。\n\n"
-                    .. "看板版本 v" .. DASHBOARD_VERSION,
-                    "Gestures: tap to refresh · swipe up to exit\n"
-                    .. "Swipe down from the top edge: dashboard menu (city / time zone / layout)\n"
-                    .. "When closed: Settings → Screen → Sleep screen → Desk dashboard\n"
-                    .. "Cities cover China plus Asia, Europe, the Americas, Oceania and Africa;\n"
-                    .. "picking an overseas one also sets its time zone.\n"
-                    .. "Or use Detect my location (by IP) to pick the nearest city.\n"
-                    .. "Swipe sideways: switch portrait ↔ landscape (really rotates the screen)\n\n"
-                    .. "Kindles have no accelerometer, so landscape must be triggered manually\n"
-                    .. "by swiping sideways or via the Layout menu; then hold the device sideways.\n"
-                    .. "If the landscape text appears upside down, pick the other rotation.\n\n"
-                    .. "Tap the Countdown / To-do card to open its list (pin, tick off);\n"
-                    .. "add and remove them under Countdown / To-dos in the menu, in two steps:\n"
-                    .. "step 1 types the name, step 2 picks the date (no typing for dates).\n"
-                    .. "Data lives in dashboard_agenda.lua in the KOReader settings folder.\n\n"
-                    .. "Top right: battery percentage and icon (inverted while charging).\n"
-                    .. "Weather comes from QWeather; if unavailable it falls back to Open-Meteo,\n"
-                    .. "and the footer shows the current source.\n"
-                    .. "On idle or power-button sleep the screen keeps the dashboard (acts as a\n"
-                    .. "screensaver). For long display, keep it plugged in; full refresh\n"
-                    .. "defaults to every 60 minutes (Power saving menu).\n\n"
-                    .. "Dashboard version v" .. DASHBOARD_VERSION),
-            })
-        end,
-    }
-    return items
 end
 
 -- ------------------------------------------------------------------ 布局组件菜单
@@ -4933,7 +5014,7 @@ function Dashboard:compCountdown(ctx, w, h, k)
                 align = "center",
                 self:makeText(ctx, T("暂无倒数日"), math.floor(20 * k), { gray = true }),
                 mkPad(1, math.floor(8 * S * k)),
-                self:makeText(ctx, TL("菜单 → 倒数日 → 添加", "Menu → Countdown → Add"),
+                self:makeText(ctx, TL("菜单 → 内容 → 倒数日 → 添加", "Menu → Content → Countdown → Add"),
                     math.floor(15 * k), { gray = true }),
             },
         }
@@ -4996,7 +5077,7 @@ function Dashboard:compTodo(ctx, w, h, k)
             sub = string.format("%s · %s %d %s", T("今日无待办"), T("未来"),
                 v.pending_future, I18n.items(v.pending_future))
         else
-            sub = TL("菜单 → 待办事项 → 添加", "Menu → To-dos → Add")
+            sub = TL("菜单 → 内容 → 待办事项 → 添加", "Menu → Content → To-dos → Add")
         end
         return CenterContainer:new{
             dimen = Geom:new{ w = w, h = math.floor(h) },
@@ -5084,7 +5165,7 @@ function Dashboard:compTodayActions(ctx, w, h, k)
         local sub = v.pending_future > 0
             and string.format("%s · %s %d %s", T("今日无待办"), T("未来"),
                 v.pending_future, I18n.items(v.pending_future))
-            or TL("菜单 → 待办事项 → 添加", "Menu → To-dos → Add")
+            or TL("菜单 → 内容 → 待办事项 → 添加", "Menu → Content → To-dos → Add")
         return CenterContainer:new{
             dimen = Geom:new{ w = w, h = math.floor(h) },
             VerticalGroup:new{
