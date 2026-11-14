@@ -7,7 +7,7 @@
 > A sleeping Kindle usually shows one book cover, or a plain "Sleep". Replace it, and that 300 ppi e-ink panel stops sitting idle.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.50-blue.svg" alt="Version 2.50">
+  <img src="https://img.shields.io/badge/version-2.60-blue.svg" alt="Version 2.60">
   <img src="https://img.shields.io/badge/KOReader-plugin-blueviolet.svg" alt="KOReader plugin">
   <img src="https://img.shields.io/badge/Kindle-jailbroken-lightgrey.svg" alt="Jailbroken Kindle">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
@@ -27,7 +27,7 @@
 <table align="center">
   <tr>
     <td align="center"><b>🧩 15 widgets</b><br/><sub>three boxes, mix freely</sub></td>
-    <td align="center"><b>🌍 34 cities · 10 zones</b><br/><sub>incl. HK / Macao / Taiwan</sub></td>
+    <td align="center"><b>🌍 81 cities · 43 zones</b><br/><sub>34 in China · 47 overseas</sub></td>
     <td align="center"><b>⏱️ 5 minutes</b><br/><sub>default clock step</sub></td>
     <td align="center"><b>🔋 ~288 refreshes</b><br/><sub>per day, by default</sub></td>
   </tr>
@@ -77,7 +77,8 @@ flowchart LR
 board = time + lunar calendar + weather + current book + countdowns + to-dos
 ```
 
-All of it lives in **three boxes** (top, middle, bottom). Five portrait presets and five landscape ones, switchable from the menu.
+All of it lives in **three boxes** (top, middle, bottom), one item per box. Portrait and landscape each keep
+their own arrangement, switchable under Appearance in the menu.
 
 ---
 
@@ -113,13 +114,15 @@ Portrait and landscape are both three boxes (top / middle / bottom), each taking
 | Weather set | Big weather, today + 3 days, 7-day forecast, air quality detail, sun and moon |
 | Status set | Humidity / wind / AQI row, battery and WiFi, month calendar |
 
-Fifteen in total (grouped above) — fill the boxes however you like. Five portrait presets and five landscape ones, or build your own.
+Fifteen in total (grouped above) — fill the boxes however you like. Portrait and landscape keep separate
+arrangements, and one tap restores the defaults.
 
 Anything that *can* be a shape **is** a shape: humidity is a droplet, wind is a wind line, air quality is a dial,
-WiFi is three arcs plus a slash, to-do progress is a row of blocks, and each pollutant carries a bar showing how
-far it is from the national limit. One glance is enough — no need to read every word.
+WiFi is three arcs (plus a slash when not connected), to-do progress is a row of blocks, and each pollutant
+carries a bar showing how far it is from the national limit. One glance is enough — no need to read every word.
 
-34 cities (municipalities, provincial capitals, Hong Kong / Macao / Taiwan) and 10 time zones. Chinese and English, switchable in the menu.
+81 cities (34 in China: municipalities, provincial capitals, Hong Kong / Macao / Taiwan; 47 overseas) and
+43 time zones. Chinese and English, switchable in the menu.
 
 ---
 
@@ -132,7 +135,8 @@ Requires a jailbroken Kindle with KOReader already installed (those two steps ar
    (the folder name must end in `.koplugin`, otherwise it is skipped).
 3. Eject safely, then **fully quit and reopen** KOReader — replaced files are not reloaded while it is running.
 4. Menu → Settings → Screen → Screensaver → Dashboard → "Open dashboard".
-   City and time zone are guessed from the device time zone first; change them under "City" if wrong.
+   City and time zone are guessed from the device time zone first; change them under
+   "Location & weather → City" if wrong.
 
 `dist/dashboard.koplugin.zip` is the same content; unzipping it into `plugins/` works too.
 
@@ -152,11 +156,27 @@ A small hint line stays at the bottom. A tap wakes the screen while it is asleep
 
 The board is full-screen and covers KOReader's own menu, so the swipe-down menu is the board's; when the board is closed you can find the same settings at Settings → Screen → Screensaver → Dashboard.
 
+### What the menu looks like
+
+Six groups on top, and every page fits one screen in both orientations — no paging:
+
+| Group | What is inside |
+|---|---|
+| Appearance | Portrait · Landscape (rotate right) · Landscape (rotate left) · Portrait layout▸ · Landscape layout▸ · Copy portrait layout to landscape · Restore default layout |
+| Location & weather | City▸ · Time zone▸ · Detect my location (by IP) · Weather service▸ · Refresh weather now |
+| Content | Countdown▸ · To-dos▸ |
+| Display & power | Show dashboard while asleep (screensaver) · Footer gesture hints · Relayout · Power saving▸ |
+| Language | Follow KOReader · 中文 · English |
+| Help | Gesture and path cheat sheet, with the current version in its title |
+
+▸ means there is another level. Switching orientation is on the first page of Appearance; what goes in a
+given box is under Appearance → Portrait layout / Landscape layout → box A/B/C → widget.
+
 ---
 
 ## 📅 Adding a date or a to-do
 
-Menu → "Countdowns / To-dos" → Add, in **two steps**:
+Menu → "Content" → "Countdown / To-dos" → Add, in **two steps**:
 
 1. Type the name (e.g. `Mom's birthday`);
 2. Then pick the date: year, month and day are three columns you scroll, defaulting to today.
@@ -170,7 +190,10 @@ The first countdown you add is pinned automatically; only one can be pinned. Fin
 
 ## 🌍 Outside China
 
-The city list covers 33 cities in China and 47 major cities elsewhere, grouped as municipalities, provincial capitals, HK/Macao/Taiwan, Asia, Europe, North America, South America, Oceania and Africa. The interface itself is bilingual.
+The list holds 34 cities in China (municipalities, provincial capitals, Hong Kong / Macao / Taiwan) and
+47 major cities overseas. The menu is two levels deep: pick "Cities in China" or "Overseas cities" first;
+China then has three groups, and overseas splits into Asia, Europe, North America, South America, Oceania
+and Africa. The interface itself is bilingual.
 
 - **Picking an overseas city also sets its time zone.** Choose "New York" and the zone becomes `America/New_York` in the same tap. Cities in China leave the zone alone — mainland China has both Beijing time and Xinjiang time, so choosing a city never overrides a zone you picked yourself.
 - **Don't want to hunt through the list**: menu → "Location & weather" → "Detect my location (by IP)". It looks up the approximate location of your network once and picks the nearest city. If it fails it shows why and leaves your settings untouched.
@@ -194,7 +217,7 @@ The free tier allows 50,000 calls a month; this plugin uses about 48 refreshes a
 
 ## 🔋 Why it feels "always on"
 
-Because it is the screensaver. Put the book down, let it sleep, or press the power button, and the screen stays on the board instead of jumping back to a cover. Menu → "Show dashboard when asleep (screensaver)" turns this off.
+Because it is the screensaver. Put the book down, let it sleep, or press the power button, and the screen stays on the board instead of jumping back to a cover. Menu → "Display & power" → "Show dashboard while asleep (screensaver)" turns this off.
 
 One thing to know: e-ink stops its CPU while asleep, so the picture is static — **the clock shows the time it fell asleep**. Touch to wake and it corrects itself immediately. Keeping minutes ticking means staying awake on USB power, which is not recommended: a lithium battery held at full charge for months can swell.
 
@@ -215,9 +238,9 @@ Below 10% battery it throttles by itself (clock drops to a 30-minute step, weath
 | No "Dashboard" entry in the menu | Folder name ends in `.koplugin`, and it sits in `koreader/plugins/` |
 | Black or blank screen | `koreader/crash.log` — usually a missing icon path |
 | Text but no weather icons | Did `icons/` get copied with the folder? |
-| Temperature stuck at `--°` | Menu → "Weather service → Test connection"; `401` usually means Host and Key do not match |
+| Temperature stuck at `--°` | Menu → "Location & weather" → "Weather service" → "Test connection"; `401` usually means Host and Key do not match |
 | Footer says "Open-Meteo (fallback)" | No key configured (normal), or the QWeather path failed |
-| Still shows cover / Sleep after sleeping | Make sure "Show dashboard when asleep" is ticked |
+| Still shows cover / Sleep after sleeping | Make sure "Show dashboard while asleep" is ticked |
 | Sluggish for a few seconds after waking | It is fetching weather synchronously; this version adds a 25-second grace period |
 | Clock stuck at the sleep time | Waking rebuilds the layout; if it never moves, check `crash.log` |
 | Cannot swipe up to exit | Confirm you are on a current version; a `registerTouchZones` error in the log means KOReader is too old |
