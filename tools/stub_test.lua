@@ -2442,6 +2442,82 @@ end
 EVENTS[#EVENTS + 1] = string.format("== 在读卡活文档优先：%s · 页码兜底 %.0f%% ==",
     r_live.title, r_page.percent * 100)
 
+-- v2.61 统计口径：速度用「已读时长 ÷ 已读书页」，剩余时长用「已读时长 × 剩余比例 ÷ 已读比例」。
+-- 这两个口径都绕开了 statistics 表里的 total_read_pages（那是屏幕页，字号一变页数就变），
+-- 所以下面钉死的是数值本身，不是「大致对」。
+local f1 = instance:readingFacts({ percent = 0.25, pages = 640 },
+    { read_time = 3600, read_pages = 100, last_open = os.time(), week_sec = 7200, week_days = 2 })
+if f1.read_pages ~= 160 then
+    print("[FAIL] 已读页数应按 percent × 总页数算：" .. tostring(f1.read_pages))
+    os.exit(1)
+end
+if f1.used ~= "1 小时" or f1.remain ~= "3 小时" then
+    print(string.format("[FAIL] 时长口径不对：累计 %s / 还要读 %s", tostring(f1.used), tostring(f1.remain)))
+    os.exit(1)
+end
+if not f1.speed or not f1.eta then
+    print("[FAIL] 样本足够时应给出速度与预计读完")
+    os.exit(1)
+end
+
+-- 样本太少不许外推：一本刚翻两页的书按比例算会得出「还要 8 小时」这种假精度
+local f2 = instance:readingFacts({ percent = 0.004, pages = 640 },
+    { read_time = 186, read_pages = 2, last_open = os.time(), week_sec = 186, week_days = 1 })
+if f2.speed or f2.remain or f2.eta then
+    print("[FAIL] 统计不足 10 屏时不该给速度/剩余/预计")
+    os.exit(1)
+end
+
+-- 近 7 天没读：日均会掉到 0，日期会跳到明年，宁可不给
+local f3 = instance:readingFacts({ percent = 0.5, pages = 400 },
+    { read_time = 7200, read_pages = 200, last_open = os.time() - 30 * 86400,
+      week_sec = 0, week_days = 0 })
+if f3.eta then
+    print("[FAIL] 近 7 天没读过时不该给「预计几号读完」")
+    os.exit(1)
+end
+
+-- 统计库整个取不到（用户关了统计插件）：只退成进度四项，不能崩、不能画空三栏
+local f0 = instance:readingFacts({ percent = 0.42, pages = 640 }, nil)
+if f0.read_pages ~= 269 or f0.used or f0.remain then
+    print(string.format("[FAIL] 统计库缺失时应只剩进度：已读 %s 累计 %s",
+        tostring(f0.read_pages), tostring(f0.used)))
+    os.exit(1)
+end
+EVENTS[#EVENTS + 1] = string.format("== 阅读统计口径：1 小时/640 页 → 已读 %d 页、还要 %s；样本不足与无统计均不外推 ==",
+    f1.read_pages, tostring(f1.remain))
+
+-- 没有可显示的数时整行返回 nil：横屏那档上面有条分隔线，空控件会让线悬在半空。
+-- 早先版本缺值补「—」，真机上一排三个破折号，看着像卡片坏了。
+-- 注意分级：
+--   f2  读了 186 秒、2 屏 → 「累计 3 分」这一项成立，仍要画（画一栏，不是三栏）
+--   tiny 只读了 10 秒     → 连累计都凑不成整数分钟，整行不画
+-- 用 do 收窄作用域：桩件主 chunk 的局部变量已接近 Lua 的 200 上限。
+do
+    local tiny = instance:readingFacts({ percent = 0.79, pages = 1858 },
+        { read_time = 10, read_pages = 1, last_open = os.time(), week_sec = 10, week_days = 1 })
+    if tiny.used or tiny.speed or tiny.remain then
+        print("[FAIL] 只读 10 秒时不该有任何一栏有值")
+        os.exit(1)
+    end
+    if instance:readingStatRow(ctx_m, 600, 1, tiny) ~= nil then
+        print("[FAIL] 三栏全空时应返回 nil（整行不画）")
+        os.exit(1)
+    end
+    if instance:readingStatRow(ctx_m, 600, 1, f0) ~= nil then
+        print("[FAIL] 统计库缺失时三栏应整行不画（返回 nil）")
+        os.exit(1)
+    end
+    if not instance:readingStatRow(ctx_m, 600, 1, f2) then
+        print("[FAIL] 读了 3 分钟时应至少画出「累计」一栏")
+        os.exit(1)
+    end
+    if not instance:readingStatRow(ctx_m, 600, 1, f1) then
+        print("[FAIL] 样本足够时三栏应正常画出")
+        os.exit(1)
+    end
+end
+
 -- 在读卡排版：书名动辄二三十字，必须单行省略、不许把盒子顶破
 local long_title = "一个特别特别长的书名用来测试省略号是不是真的生效以及不会把版面顶破"
 instance.ui.doc_settings = fake_ds(long_title, "某作者", 500, 0.33)

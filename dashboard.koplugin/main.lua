@@ -166,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.60"
+local DASHBOARD_VERSION = "2.61"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -2358,6 +2358,21 @@ local function read_doc_info(ds, out)
     if pct then out.percent = math.max(0, math.min(1, pct)) end
     local dp = tonumber(setting("doc_pages"))
     if dp and not out.pages then out.pages = dp end
+    -- v2.61：统计库（statistics.sqlite3）靠 md5 认书，换过文件名也对得上，
+    -- 所以侧车里必须把它带出来；没有 md5 才退到按书名匹配。
+    local md5 = setting("partial_md5_checksum")
+    if type(md5) == "string" and md5 ~= "" then out.md5 = md5 end
+    -- summary.modified 是「最后一次翻页」的日期（"2026-11-12"），
+    -- 统计插件被关掉时它是唯一能回答「上次什么时候读的」的来源。
+    local sum = setting("summary")
+    if type(sum) == "table" then
+        local mod = sum.modified
+        if mod == nil and type(sum.readSetting) == "function" then
+            local ok_mod, v = pcall(function() return sum:readSetting("modified") end)
+            if ok_mod then mod = v end
+        end
+        if type(mod) == "string" and mod ~= "" then out.modified = mod end
+    end
     return out
 end
 
@@ -2412,6 +2427,188 @@ function Dashboard:readingInfo()
     end
 
     return nil
+end
+
+-- ------------------------------------------------------------------ 阅读统计
+--- 时长串：宁可粗一档，也不要长到把栏宽撑破。
+--- 三栏各只有 200 出头像素，18 设计单位的字一行只放得下 6 个汉字，
+--- 所以过 100 小时就换成「天 + 小时」，绝不再往细里写分钟。
+local function fmtSpan(sec)
+    sec = math.max(0, math.floor(tonumber(sec) or 0))
+    if sec < 60 then return nil end
+    local m = math.floor(sec / 60 + 0.5)
+    if m < 60 then return TL(string.format("%d 分", m), string.format("%dm", m)) end
+    local hh, mm = math.floor(m / 60), m % 60
+    if hh < 100 then
+        if mm < 1 then return TL(string.format("%d 小时", hh), string.format("%dh", hh)) end
+        return TL(string.format("%d 小时 %d 分", hh, mm), string.format("%dh %dm", hh, mm))
+    end
+    local dd, rh = math.floor(hh / 24), hh % 24
+    return TL(string.format("%d 天 %d 小时", dd, rh), string.format("%dd %dh", dd, rh))
+end
+
+--- 阅读统计：时长 / 已读屏数 / 最后一次打开 / 近 7 天节奏，都存在
+--- statistics.sqlite3 里，侧车文件只有「读到第几页」，没有「读了多久」。
+---
+--- 三条硬约束（每一条都是踩过才写的）：
+---  1) 全 pcall。库不存在（用户关掉了统计插件）、被独占、字段缺失，
+---     任何一种失败都只返回 nil，卡片退回纯元数据版，绝不带走整块看板。
+---  2) 用完即关。屏保态刷新时统计插件可能正在写同一个库，长连接会互相卡住。
+---  3) 缓存 120 秒。看板每分钟重建一次版面，而 total_read_time 只在真正翻页时才变，
+---     每分钟开一次库纯属浪费（实测单次 24ms，但没必要）。
+local STATS_TTL = 120
+
+function Dashboard:readingStats(info)
+    if type(info) ~= "table" then return nil end
+    local key = info.md5 or info.title
+    if not key then return nil end
+
+    local now = os.time()
+    local memo = self._read_stats_memo
+    if memo and memo.key == key and (now - memo.at) < STATS_TTL then
+        return memo.data
+    end
+
+    local data
+    local ok = pcall(function()
+        local path = DataStorage:getSettingsDir() .. "/statistics.sqlite3"
+        -- 先探文件是否存在：lua-ljsqlite3 的 open 默认带 create 标志，
+        -- 直接开会「顺手」建出一个空库。用户关掉统计插件时不该留下这种东西。
+        local fh = io.open(path, "rb")
+        if not fh then return end
+        fh:close()
+        local SQ = require("lua-ljsqlite3/init")
+        local db = SQ.open(path)
+        if not db then return end
+        local function query(sql)
+            local st = db:prepare(sql)
+            if not st then return end
+            local row = st:step()
+            pcall(function() st:close() end)
+            return row
+        end
+        -- md5 优先；侧车里没有 partial_md5_checksum 时才按书名精确匹配
+        local row
+        if info.md5 then
+            row = query(string.format(
+                "select id, total_read_time, total_read_pages, last_open from book where md5 = '%s' limit 1",
+                info.md5))
+        end
+        if not row and info.title then
+            row = query(string.format(
+                "select id, total_read_time, total_read_pages, last_open from book where title = '%s' limit 1",
+                tostring(info.title):gsub("'", "''")))
+        end
+        if row then
+            data = {
+                read_time = tonumber(row[2]) or 0,
+                read_pages = tonumber(row[3]) or 0,
+                last_open = tonumber(row[4]),
+            }
+            local id = tonumber(row[1])
+            if id then
+                -- 「近 7 天」同时取总时长和天数：只读了一天就不该按 7 天摊，
+                -- 否则 2 小时会被摊成 17 分钟/天，预计读完直接推后四倍。
+                local w = query(string.format(
+                    "select sum(duration), count(distinct date(start_time, 'unixepoch', 'localtime'))"
+                    .. " from page_stat where id_book = %d and start_time >= %d",
+                    id, now - 7 * 86400))
+                if w then
+                    data.week_sec = tonumber(w[1]) or 0
+                    data.week_days = tonumber(w[2]) or 0
+                end
+            end
+        end
+        pcall(function() db:close() end)
+    end)
+
+    if not ok then data = nil end
+    self._read_stats_memo = { key = key, at = now, data = data }
+    return data
+end
+
+--- 这本书的「读过时间跨度」。返回一句可以直接画的话，或 nil。
+--- 只精确到「天」：三天前和五天前用户没有分辨需求，但「今天」和「上周」差很多。
+function Dashboard:readingLastText(info, stats)
+    local ts = stats and stats.last_open
+    if not ts or ts <= 0 then
+        -- 统计插件没记过这本书时 last_open 是 0，退到侧车里的日期串
+        local m = info and info.modified
+        if type(m) == "string" then
+            local y, mo, d = m:match("^(%d%d%d%d)-(%d%d)-(%d%d)")
+            if y then
+                ts = os.time{ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 }
+            end
+        end
+    end
+    if not ts then return nil end
+    local function midnight(t)
+        local d = os.date("*t", t)
+        d.hour, d.min, d.sec = 0, 0, 0
+        return os.time(d)
+    end
+    local n = math.floor((midnight(os.time()) - midnight(ts)) / 86400 + 0.5)
+    if n <= 0 then return T("今天读过") end
+    if n == 1 then return T("昨天读过") end
+    if n <= 30 then
+        return TL(string.format("%d 天前读过", n), string.format("Read %d days ago", n))
+    end
+    return TL("上次读是 " .. os.date("%m-%d", ts), "Last read " .. os.date("%m-%d", ts))
+end
+
+--- 把「读到哪」和「读了多久」揉成一组已算好、可直接画的串。
+--- 版式层只管摆，不再做除法——除法的口径集中在这里，改口径只改一处。
+---
+--- 剩余时长用「已读时长 × 剩余比例 / 已读比例」推，而不是「剩余页数 × 单页耗时」：
+--- 后者要先知道一页书占几屏，而 statistics 的 total_read_pages 记的是**屏幕页**
+--- （字号、行距一变页数就变）。两个比例约掉之后同一件事只剩一个乘法，
+--- 误差只来自「前后读速是否一致」，这比拿屏幕页去乘书页可靠得多。
+---
+--- 门槛：统计页数不到 10 屏、或进度不到 2%，一律不给速度与预估。
+--- 一本刚翻两页的书按比例外推会算出「还要 8 小时」这种假精度，宁可不显示。
+function Dashboard:readingFacts(info, stats)
+    local f = { pct = math.max(0, math.min(1, tonumber(info.percent) or 0)) }
+    local pages = tonumber(info.pages)
+    f.pages = pages
+    local pct = f.pct
+
+    if pages and pages > 0 then
+        f.read_pages = math.max(0, math.min(pages, math.floor(pages * pct + 0.5)))
+        f.page_text = TL(
+            string.format("已读 %d / %d 页", f.read_pages, pages),
+            string.format("%d of %d pages", f.read_pages, pages))
+    end
+    f.pct_text = string.format("%d%%", math.floor(pct * 100 + 0.5))
+
+    if not stats then return f end
+    f.used = fmtSpan(stats.read_time)
+
+    local enough = stats.read_pages >= 10 and pct >= 0.02 and stats.read_time >= 60
+    if not enough then return f end
+
+    if f.read_pages and f.read_pages > 0 then
+        f.per_page = stats.read_time / f.read_pages
+        f.speed = TL(
+            string.format("1 页 %.0f 秒", f.per_page),
+            string.format("%.0fs / page", f.per_page))
+    end
+    local remain_sec = stats.read_time * (1 - pct) / pct
+    f.remain = fmtSpan(remain_sec)
+
+    -- 预计读完：只有近 7 天真的读过才给日期。7 天没碰的话，
+    -- 日均会掉到接近 0，日期会跳到明年，那还不如不说。
+    if stats.week_days and stats.week_days > 0 and (stats.week_sec or 0) >= 120 then
+        local per_day = stats.week_sec / stats.week_days
+        local days = math.ceil(remain_sec / per_day)
+        if days >= 1 and days <= 400 then
+            local d = os.date("*t", os.time() + days * 86400)
+            f.eta_days = days
+            f.eta = TL(
+                string.format("按最近 7 天的读法，预计 %d 月 %d 日读完", d.month, d.day),
+                string.format("At this pace: done around %s %d", os.date("%b", os.time() + days * 86400), d.day))
+        end
+    end
+    return f
 end
 
 --- 电量与网络状态。网络部分全走 pcall：KOReader 的 NetworkMgr 在不同版本上
@@ -4560,8 +4757,15 @@ function Dashboard:coverFile(book_path, target_h)
     return nil
 end
 
---- 在读卡：封面 + 书名 / 作者 / 进度条 / 百分比。
---- 书名只画一行并带省略号——真机书名动辄二三十字，折行会把盒子顶破。
+--- 在读卡：封面 + 书名 / 作者 / 进度 + 三栏统计（累计 / 速度 / 还要读）。
+---
+--- 三档版式按「盒子能放下什么」分，**不按横竖屏分**：
+---   宽 ≥ 450du 且高 ≥ 200du   左封面 + 右文字（竖屏 B 区 972×471）
+---   高 ≥ 200du（窄）          上封面 + 下三栏（横屏 C 区 673×474）
+---   其余                      扁版，进度与三栏压在一起（竖屏 C 区 972×208）
+--- 为什么不用 orient 判断：同一个区可以被配到任意版式里，按 orient 写死的话，
+--- 用户把横屏切成竖版式就会渲染出错版；按实际盒子尺寸分档则天然跟着走。
+--- 阈值用设计单位（除以 ctx.S），换分辨率时档位不会整体错位。
 function Dashboard:compReading(ctx, w, h, k)
     local S = ctx.S
     local info = self:readingInfo()
@@ -4572,71 +4776,310 @@ function Dashboard:compReading(ctx, w, h, k)
         }
     end
 
-    -- 封面色块：高取盒高 9 成、按 2:3 定宽；最宽只到盒宽 42%——
-    -- 再宽书名就只剩几个字，宁可封面小一点。盒子太矮（C 区那种）干脆不放。
-    local gap = math.floor(18 * S * k)
-    local cover_h = math.floor(h * 0.9)
+    -- 统计库取不到时 stats 为 nil，facts 会自己退化成「只有进度」那四项，
+    -- 三栏照旧画（缺的显示破折号）——高度不跳，卡片不会因为一次查库失败就换形状。
+    local stats = self:readingStats(info)
+    local f = self:readingFacts(info, stats)
+    f.last = self:readingLastText(info, stats)
+
+    local du_w, du_h = w / S, h / S
+    if du_h >= 200 and du_w >= 450 then
+        return self:readingWide(ctx, w, h, k, info, f)
+    elseif du_h >= 200 then
+        return self:readingStack(ctx, w, h, k, info, f)
+    end
+    return self:readingFlat(ctx, w, h, k, info, f)
+end
+
+--- 封面块：有图就给图，没图给占位书脊。
+--- 「留位」和「取到图」必须分开——取不到图时也占同样尺寸，
+--- 否则同一个盒子会在「有封面 / 无封面」两种宽度之间跳，书名忽长忽短。
+function Dashboard:readingCover(ctx, info, cw, ch, k)
+    local file = self:coverFile(info.path, ch)
+    if file then
+        return ImageWidget:new{
+            file = file, width = cw, height = ch, scale_factor = 0,
+        }
+    end
+    return self:coverPlaceholder(ctx, info.title, cw, ch, k)
+end
+
+--- 进度条 + 「已读 412 / 1678 页（左） 24%（右）」。
+--- 左右两端对齐靠手算留白：HorizontalGroup 没有 space-between，
+--- 而用两个 1/1 容器分栏会把中间留白算成固定值，长书名时看着偏。
+function Dashboard:readingProgress(ctx, tw, k, f, bar_h)
+    local S = ctx.S
+    local left = self:makeText(ctx, f.page_text or "", 17, { gray = true })
+    local right = self:makeText(ctx, f.pct_text, 19, {})
+    local lw, rw = left:getSize().w, right:getSize().w
+    local pad = mkPad(math.max(0, math.floor(tw - lw - rw)), 1)
+    return VerticalGroup:new{
+        align = "left",
+        ProgressBar:new{
+            dimen = Geom:new{ w = math.floor(tw), h = math.max(8, bar_h) },
+            ratio = f.pct,
+            border = math.max(1, math.floor(2 * S)),
+        },
+        mkPad(1, math.floor(8 * S * k)),
+        HorizontalGroup:new{ align = "center", left, pad, right },
+    }
+end
+
+--- 三栏统计条。栏宽**固定等分**，这是硬要求：
+--- 第一版用自适应宽度，第三栏被「9 小时 50 分」撑开，另外两栏跟着变形，
+--- 横屏那版直接溢出到卡片外。固定栏宽 + 超长省略号才是稳的。
+function Dashboard:readingStatRow(ctx, tw, k, f)
+    local S = ctx.S
+    -- 只画真有数的栏，不再画「—」占位。
+    -- 最初三栏写死、缺值补破折号，结果统计样本不足时整排全是「—」——
+    -- 比不显示更糟：读者看到三个破折号，只会觉得这卡坏了。
+    local cells = {}
+    if f.used then cells[#cells + 1] = { T("累计"), f.used } end
+    if f.speed then cells[#cells + 1] = { T("平均速度"), f.speed } end
+    if f.remain then cells[#cells + 1] = { T("还要读"), f.remain } end
+
+    if #cells == 0 then
+        -- 统计样本不足（读得少 / 统计插件才开）：整行不画。
+        -- 试过塌缩成一行「还要读 · 还剩 N 页」，真机上它孤零零贴在左下角、
+        -- 右边空出一大片，比三个破折号好但也不好看；而「已读 1460 / 1858 页」
+        -- 本身已经隐含剩余页数，读者自己会减。少一行，卡片反而松快。
+        -- 返回 nil 而不是空控件：横屏那档上面有一条分隔线，空控件会让线悬在半空。
+        return nil
+    end
+
+    local gapx = math.floor(8 * S * k)
+    local colw = math.floor((tw - gapx * (#cells - 1)) / #cells)
+    local row = { align = "center" }
+    for i, c in ipairs(cells) do
+        if i > 1 then row[#row + 1] = mkPad(gapx, 1) end
+        local col = VerticalGroup:new{
+            align = "left",
+            self:makeText(ctx, c[1], 14, { gray = true, max_width = colw, ellipsis = true }),
+            mkPad(1, math.floor(7 * S * k)),
+            self:makeText(ctx, c[2], 18, { max_width = colw, ellipsis = true }),
+        }
+        row[#row + 1] = Stack:new{
+            dimen = Geom:new{ w = colw, h = col:getSize().h },
+            align = "left",
+            col,
+        }
+    end
+    return HorizontalGroup:new(row)
+end
+
+--- 宽盒（竖屏 B）：左封面撑满盒高，右文字列。封面最宽只到盒宽 42%——
+--- 再宽书名就只剩几个字，宁可封面小一点。
+function Dashboard:readingWide(ctx, w, h, k, info, f)
+    local S = ctx.S
+    local function px(n) return math.floor(n * S * k) end
+    local cover_h = math.floor(h)
     local cover_w = math.floor(cover_h * 2 / 3)
     local max_w = math.floor(w * 0.42)
     if cover_w > max_w then
         cover_w = max_w
         cover_h = math.floor(cover_w * 3 / 2)
     end
-    -- 盒子够高才留封面位。注意「留位」和「取到图」必须分开判断：
-    -- 取不到封面（TXT/PDF 没首页图、缓存目录不可写）时也占同样的位置，
-    -- 否则同一个盒子会在「有封面 / 无封面」两种宽度之间跳，书名忽长忽短。
-    local cover_shown = cover_h >= math.floor(110 * S * k)
-    local cover_file
-    if cover_shown then
-        cover_file = self:coverFile(info.path, cover_h)
-    end
-    local text_w = cover_shown and math.max(math.floor(120 * S), w - cover_w - gap) or w
+    local gap = px(13)
+    local tw = math.max(px(120), w - cover_w - gap)
 
-    local rows = {
-        align = "left",
-        self:makeText(ctx, T("在读"), math.floor(17 * k), { gray = true }),
-        mkPad(1, math.floor(4 * S * k)),
-        self:makeText(ctx, info.title, math.floor(30 * k), { max_width = text_w, ellipsis = true }),
-    }
-    if info.authors then
-        rows[#rows + 1] = self:makeText(ctx,
-            T("作者") .. " " .. info.authors, math.floor(17 * k), { gray = true, max_width = text_w })
-    end
-    local pct = info.percent or 0
-    rows[#rows + 1] = mkPad(1, math.floor(10 * S * k))
-    -- 进度条铺满整宽：它是这一块的「最宽元素」，宽度决定整块被盒子居中后
-    -- 的左边界。取 0.72w 时整块只有 662 宽，居中后文字比下面的一周预报内缩了 130 px。
-    rows[#rows + 1] = ProgressBar:new{
-        dimen = Geom:new{ w = math.floor(text_w), h = math.max(8, math.floor(10 * S * k)) },
-        ratio = pct,
-        border = math.max(1, math.floor(2 * S)),
-    }
-    local pct_text = string.format("%d%%", math.floor(pct * 100 + 0.5))
-    if info.pages then
-        pct_text = pct_text .. string.format(" · %d %s", info.pages, T("页"))
-    end
-    rows[#rows + 1] = mkPad(1, math.floor(4 * S * k))
-    rows[#rows + 1] = self:makeText(ctx, pct_text, math.floor(20 * k), { gray = true })
-    local text_col = VerticalGroup:new(rows)
-
-    if not cover_shown then return text_col end
-    -- 整块仍然铺满盒宽（封面 + 间距 + 文字），这样它在盒子里居中后
-    -- 左边缘和别的区对齐，不会因为加封面而整体往里缩。
-    local visual
-    if cover_file then
-        visual = ImageWidget:new{
-            file = cover_file, width = cover_w, height = cover_h,
-            scale_factor = 0,
-        }
+    local col = VerticalGroup:new{ align = "left" }
+    if f.last then
+        col[#col + 1] = self:makeText(ctx, T("在读") .. " · " .. f.last, 16,
+            { gray = true, max_width = tw, ellipsis = true })
+        col[#col + 1] = mkPad(1, px(3))
     else
-        visual = self:coverPlaceholder(ctx, info.title, cover_w, cover_h, k)
+        col[#col + 1] = self:makeText(ctx, T("在读"), 16, { gray = true })
+        col[#col + 1] = mkPad(1, px(3))
     end
+    -- 书名只画一行并带省略号——真机书名动辄二三十字，折行会把盒子顶破
+    col[#col + 1] = self:makeText(ctx, info.title or "", 29, { max_width = tw, ellipsis = true })
+    if info.authors then
+        col[#col + 1] = mkPad(1, px(3))
+        col[#col + 1] = self:makeText(ctx, T("作者") .. " " .. info.authors, 16,
+            { gray = true, max_width = tw, ellipsis = true })
+    end
+    col[#col + 1] = mkPad(1, px(10))
+    col[#col + 1] = self:readingProgress(ctx, tw, k, f, px(9))
+    local stat = self:readingStatRow(ctx, tw, k, f)
+    if stat then
+        col[#col + 1] = mkPad(1, px(10))
+        col[#col + 1] = Solid:new{
+            dimen = Geom:new{ w = math.floor(tw), h = math.max(1, math.floor(S)) },
+            color = RULE_SOFT,
+        }
+        col[#col + 1] = mkPad(1, px(9))
+        col[#col + 1] = stat
+    end
+    if f.eta then
+        col[#col + 1] = mkPad(1, px(11))
+        col[#col + 1] = self:makeText(ctx, f.eta, 15, { gray = true, max_width = tw, ellipsis = true })
+    end
+
     return HorizontalGroup:new{
         align = "center",
-        visual,
+        self:readingCover(ctx, info, cover_w, cover_h, k),
         mkPad(gap, 1),
-        text_col,
+        col,
     }
+end
+
+--- 窄高盒（横屏 C）：上下两段。封面占 8 成高、三栏横跨整宽压在下面。
+--- 一开始把三栏塞进封面右边，结果每栏只剩 190px，「9 小时 50 分」直接顶破；
+--- 分两段之后每栏 220+ px，字也就不用缩。
+function Dashboard:readingStack(ctx, w, h, k, info, f)
+    local S = ctx.S
+    local function px(n) return math.floor(n * S * k) end
+
+    -- 先把下半部建出来量高度，再倒推封面能给多高。
+    -- 反过来做（先按比例定封面）会在盒子偏矮时把三栏顶出卡片：
+    -- h=478 那档实测差 1 px，桩件当场拦下来了。
+    local stat = self:readingStatRow(ctx, w, k, f)
+    local sep_h = math.max(1, math.floor(S))
+    -- 没有统计行时，下半部就是 0：封面可以一直长到盒子底，
+    -- 留出 px(10)+1+px(9) 的空档只会让卡片中间塌一块
+    local lower_h = stat and (stat:getSize().h + px(10) + sep_h + px(9)) or 0
+    local eta = nil
+    if f.eta then
+        eta = self:makeText(ctx, f.eta, 14, { gray = true, max_width = w, ellipsis = true })
+        lower_h = lower_h + px(7) + eta:getSize().h
+    end
+
+    local avail = math.max(px(110), h - lower_h - 2)
+    local cover_h = avail
+    local cover_w = math.floor(cover_h * 2 / 3)
+    local max_w = math.floor(w * 0.45)
+    if cover_w > max_w then
+        cover_w = max_w
+        cover_h = math.min(avail, math.floor(cover_w * 3 / 2))
+    end
+    local gap = px(10)
+    local tw = math.max(px(120), w - cover_w - gap)
+
+    local meta = VerticalGroup:new{ align = "left" }
+    if f.last then
+        meta[#meta + 1] = self:makeText(ctx, T("在读") .. " · " .. f.last, 14,
+            { gray = true, max_width = tw, ellipsis = true })
+    else
+        meta[#meta + 1] = self:makeText(ctx, T("在读"), 14, { gray = true })
+    end
+    meta[#meta + 1] = mkPad(1, px(6))
+    meta[#meta + 1] = self:makeText(ctx, info.title or "", 22, { max_width = tw, ellipsis = true })
+    if info.authors then
+        meta[#meta + 1] = mkPad(1, px(5))
+        meta[#meta + 1] = self:makeText(ctx, T("作者") .. " " .. info.authors, 15,
+            { gray = true, max_width = tw, ellipsis = true })
+    end
+    meta[#meta + 1] = mkPad(1, px(14))
+    meta[#meta + 1] = self:readingProgress(ctx, tw, k, f, px(8))
+
+    local top = HorizontalGroup:new{
+        align = "center",
+        self:readingCover(ctx, info, cover_w, cover_h, k),
+        mkPad(gap, 1),
+        -- 文字在封面高度里垂直居中：顶对齐会让书名紧贴封面下沿，
+        -- 中间空出一条，看着像漏画了东西
+        CenterContainer:new{
+            dimen = Geom:new{ w = tw, h = cover_h },
+            meta,
+        },
+    }
+
+    -- 三栏与 eta 都在上面量过高度了，这里直接复用同一批控件：
+    -- 重建一遍不仅白跑，还会因为取整差异让「量到的高度」和「实际画的高度」对不上。
+    local body = VerticalGroup:new{
+        align = "left",
+        top,
+    }
+    if stat then
+        body[#body + 1] = mkPad(1, px(10))
+        body[#body + 1] = Solid:new{
+            dimen = Geom:new{ w = math.floor(w), h = sep_h },
+            color = RULE_SOFT,
+        }
+        body[#body + 1] = mkPad(1, px(9))
+        body[#body + 1] = stat
+    end
+    if eta then
+        body[#body + 1] = mkPad(1, px(7))
+        body[#body + 1] = eta
+    end
+    return body
+end
+
+--- 扁盒（竖屏 C，高 ~116du）：卡片只有 208px 高，一行都省不得。
+--- 封面降到盒高（143×214 那个尺寸在 PW3 上已经是极限，再小就看不出是本书了），
+--- 进度条与页数挤在同一行，三栏压在最下面。
+function Dashboard:readingFlat(ctx, w, h, k, info, f)
+    local S = ctx.S
+    local function px(n) return math.floor(n * S * k) end
+    local gap = px(10)
+    local cover_h = math.floor(h)
+    local cover_w = math.floor(cover_h * 2 / 3)
+    local cover_shown = cover_h >= px(110) and cover_w >= px(70)
+    if not cover_shown then
+        cover_h, cover_w = 0, 0
+    end
+    local tw = math.max(px(120), w - (cover_shown and (cover_w + gap) or 0))
+
+    local col = VerticalGroup:new{ align = "left" }
+    if f.last then
+        col[#col + 1] = self:makeText(ctx, T("在读") .. " · " .. f.last, 13,
+            { gray = true, max_width = tw, ellipsis = true })
+    else
+        col[#col + 1] = self:makeText(ctx, T("在读"), 13, { gray = true })
+    end
+    col[#col + 1] = mkPad(1, px(3))
+    col[#col + 1] = self:makeText(ctx, info.title or "", 21, { max_width = tw, ellipsis = true })
+    col[#col + 1] = mkPad(1, px(8))
+
+    -- 进度条与「已读 / 页数 / 百分比」同行：竖屏 C 区一共 208px，
+    -- 分两行就要从三栏里挪走 40px，三栏会贴到卡片下沿
+    local bar_w = math.floor(tw * 0.34)
+    local pg = VerticalGroup:new{
+        align = "left",
+        HorizontalGroup:new{
+            align = "center",
+            ProgressBar:new{
+                dimen = Geom:new{ w = bar_w, h = math.max(7, px(8)) },
+                ratio = f.pct,
+                border = math.max(1, math.floor(2 * S)),
+            },
+            mkPad(px(8), 1),
+            self:makeText(ctx, f.page_text or "", 14, { gray = true }),
+            mkPad(px(8), 1),
+            self:makeText(ctx, f.pct_text, 15, {}),
+        },
+    }
+    col[#col + 1] = pg
+    local stat = self:readingStatRow(ctx, tw, k, f)
+    if stat then
+        col[#col + 1] = mkPad(1, px(8))
+        col[#col + 1] = stat
+    end
+
+    local inner
+    if cover_shown then
+        inner = HorizontalGroup:new{
+            align = "center",
+            self:readingCover(ctx, info, cover_w, cover_h, k),
+            mkPad(gap, 1),
+            col,
+        }
+    else
+        inner = col
+    end
+
+    -- 内容比盒子矮时垂直居中。竖屏 C 区在统计不足时会少掉三栏，
+    -- 内容矮了 60 多 px，贴顶就让卡片下半截空着，看着像没渲染完。
+    local ih = inner:getSize().h
+    if ih < h - 4 then
+        return VerticalGroup:new{
+            align = "left",
+            mkPad(1, math.floor((h - ih) / 2)),
+            inner,
+        }
+    end
+    return inner
 end
 
 --- 取不到封面时的占位书脊：同尺寸的空心框 + 书名首字。
