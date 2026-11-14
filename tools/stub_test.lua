@@ -1837,10 +1837,18 @@ local scale_now = instance.scale or 1
 local edge_expect = math.max(EDGE_MIN, math.floor(15 * scale_now))
 local tight = {}
 for _, r in ipairs(RECORD) do
-    local w, h = r.w or 0, r.h or 0
+    -- 圆记录的是圆心与半径，没有 x/y/w/h：先换算成包围盒再判边界。
+    -- （这条断言一直只认矩形类，v2.54 起组件开始画圆，才暴露出它会把每个圆
+    --   都判成 (0,0) 0x0 越界。）
+    local x, y, w, h
+    if r.kind == "circle" then
+        local rr = r.r or 0
+        x, y, w, h = (r.cx or 0) - rr, (r.cy or 0) - rr, rr * 2, rr * 2
+    else
+        x, y, w, h = r.x or 0, r.y or 0, r.w or 0, r.h or 0
+    end
     local is_bg = (r.kind == "rect" and r.color ~= 255 and w >= VW and h >= VH)
     if not is_bg and r.kind ~= "exec" then
-        local x, y = r.x or 0, r.y or 0
         if x < edge_expect - 1 or y < edge_expect - 1
             or x + w > VW - edge_expect + 1 or y + h > VH - edge_expect + 1 then
             tight[#tight + 1] = string.format("%s@(%d,%d) %dx%d", r.kind, math.floor(x), math.floor(y),

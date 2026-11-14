@@ -115,6 +115,10 @@ Portrait and landscape are both three boxes (top / middle / bottom), each taking
 
 Fifteen in total (grouped above) — fill the boxes however you like. Five portrait presets and five landscape ones, or build your own.
 
+Anything that *can* be a shape **is** a shape: humidity is a droplet, wind is a wind line, air quality is a dial,
+WiFi is three arcs plus a slash, to-do progress is a row of blocks, and each pollutant carries a bar showing how
+far it is from the national limit. One glance is enough — no need to read every word.
+
 34 cities (municipalities, provincial capitals, Hong Kong / Macao / Taiwan) and 10 time zones. Chinese and English, switchable in the menu.
 
 ---

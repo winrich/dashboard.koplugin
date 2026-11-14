@@ -128,6 +128,7 @@ local EN = {
     ["立即刷新天气"] = "Refresh weather now",
     ["重新布局"] = "Relayout",
     ["休眠时显示看板（屏保）"] = "Show dashboard while asleep (screensaver)",
+    ["显示设置"] = "Display",
     -- 省电设置
     ["省电设置"] = "Power saving",
     ["时钟刷新"] = "Clock refresh",
