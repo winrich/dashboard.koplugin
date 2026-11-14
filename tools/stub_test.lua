@@ -437,8 +437,13 @@ function UIManager:close(widget)
     if widget.onCloseWidget then widget:onCloseWidget() end
 end
 
-function UIManager:setDirty(widget, mode)
+function UIManager:setDirty(widget, mode, region)
     STUB_DIRTY_CALLS[#STUB_DIRTY_CALLS + 1] = tostring(mode)
+    -- 记下最近一次「full」的区域：v2.67 要钉住「补刷只擦顶部一条，不是整屏」。
+    -- 只记 full，否则后面一条无区域的 ui 刷新会把记录冲成 nil，断言就失效了。
+    if tostring(mode) == "full" then
+        STUB_LAST_FULL_REGION = region and { x = region.x, y = region.y, w = region.w, h = region.h } or nil
+    end
     log("setDirty mode=%s", tostring(mode))
     if widget and widget.paintTo then widget:paintTo(fake_bb, 0, 0) end
 end
@@ -1519,8 +1524,53 @@ if instance.shown then
     os.exit(1)
 end
 EVENTS[#EVENTS + 1] = "== 上划退出成功（看板已关闭）=="
+-- 清掉前面那次 open 留下的 0.9 秒补刷定时器：桩件不会自己跑 timer，
+-- 不清理的话下面执行到的是「上一轮 open 排的那一刀」，删掉本次调用也能通过。
+for i = #timers, 1, -1 do
+    if timers[i].delay and math.abs(timers[i].delay - 0.9) < 0.05 then
+        table.remove(timers, i)
+    end
+end
 instance:open()
 EVENTS[#EVENTS + 1] = "== 重新 open() 继续后续检查 =="
+
+-- v2.67：open 之后要补一刀「只刷顶部一条」，用来擦 Kindle 原生状态栏的残留。
+-- 钉两件事：① 确实补了；② region 是「宽 = 屏宽、高 < 屏高」——退化成整屏就白折腾了。
+do
+    local before = #STUB_DIRTY_CALLS
+    local fired = 0
+    for i = #timers, 1, -1 do
+        local t = timers[i]
+        if t.delay and math.abs(t.delay - 0.9) < 0.05 then
+            table.remove(timers, i)
+            t.fn()
+            fired = fired + 1
+        end
+    end
+    if fired == 0 then
+        print("[FAIL] open 之后没有补刷顶部状态栏")
+        os.exit(1)
+    end
+    local got_full = false
+    for i = before + 1, #STUB_DIRTY_CALLS do
+        if STUB_DIRTY_CALLS[i] == "full" then got_full = true end
+    end
+    if not got_full then
+        print("[FAIL] open 之后的补刷没有发出整刷（擦不掉状态栏残留）")
+        os.exit(1)
+    end
+    local r = STUB_LAST_FULL_REGION
+    if not r or not r.w or not r.h then
+        print("[FAIL] 补刷没带区域，等于整屏 full（要擦一条却闪整屏）")
+        os.exit(1)
+    end
+    if r.x ~= 0 or r.y ~= 0 or r.w ~= screen.getWidth() or r.h >= screen.getHeight() then
+        print(string.format("[FAIL] 补刷区域不是顶部一条：x=%s y=%s %sx%s（屏 %dx%d）",
+            tostring(r.x), tostring(r.y), tostring(r.w), tostring(r.h),
+            screen.getWidth(), screen.getHeight()))
+        os.exit(1)
+    end
+end
 
 -- 顶部下滑 -> 打开看板自己的菜单；左右滑动 -> 重新布局
 local root2 = instance.root

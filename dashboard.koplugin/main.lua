@@ -162,11 +162,16 @@ local LOW_BATTERY_GUARD = 10         -- 电量低于此值：降频 + 停掉自�
 local LOW_BATTERY_TICK_STEP = 30     -- 低电时至少降到这么久一跳
 local FETCH_BACKOFF_MAX = 60 * 60    -- 无数据时重试退避的上限（秒）
 local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每拍都去 lipc 取
+-- v2.67：首绘/唤醒后补刷顶部一条，专治 Kindle 原生状态栏的残留。
+-- 高度按物理像素给（120 覆盖竖屏 1072 宽下约 1/9 屏高，横屏同样够）；
+-- 延时 0.9 秒是因为 framework 画状态栏落在 KOReader 首绘之后，早了擦不到。
+local TOP_STRIP_HEIGHT = 120
+local TOP_STRIP_DELAY = 0.9
 
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.66"
+local DASHBOARD_VERSION = "2.67"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -1735,6 +1740,40 @@ function Dashboard:localNow()
 end
 
 -- ------------------------------------------------------------------ 打开 / 关闭
+
+--- 首绘之后补一刀「只刷顶部一条」，专门擦 Kindle 原生状态栏的残留。
+---
+--- 为什么需要：那个状态栏（时间 / 电量 / WiFi）是 Kindle framework 直接往 fb0 上画的，
+--- 不归 KOReader 管。实测它经常落在看板首绘**之后**——首绘那次整屏 full 刷得再干净，
+--- 它后脚又写上来，屏幕上就压着一条「上午 12:53 82%」，盖掉 A 区最上面一行。
+---
+--- 为什么只刷一条而不是整屏：`setDirty(nil, "full", region)` 会按全刷波形把指定区域
+--- 推一遍，内容取自 bb（此刻已经是看板自己画的），所以能擦掉屏幕上的旧像素；
+--- 而整屏补刷等于让整个画面再闪一下——为了擦一条 120px 的状态栏付这个代价没必要。
+--- 传 region 还有个附带好处：v2.65 的转屏静音只吞「覆盖整屏」的刷新，这条不会被吞。
+function Dashboard:brushTopStrip(delay)
+    if not UIManager or not Screen then return end
+    UIManager:scheduleIn(delay or TOP_STRIP_DELAY, function()
+        if not self.shown or not self.root then return end
+        -- 只在看板是「最上面那层」时动手：paintTo 会覆盖整块 bb，栈上若有弹窗
+        -- （天气失败提示、首次配置提示），它会被我们盖掉，而屏幕又只刷顶部一条，
+        -- 结果就是花屏。有弹窗就跳过，下次开板/唤醒再补。
+        local stack = UIManager._window_stack
+        local top = stack and stack[#stack] and stack[#stack].widget
+        if top and top ~= self.root and top.text then return end
+        local w, h = Screen:getWidth(), Screen:getHeight()
+        -- 关键：只「刷新」不「重绘」擦不掉。Kindle 的 bb 与 fb0 共用同一块内存，
+        -- framework 的状态栏是直接写进 bb 的——那条区域此刻已经脏了，再拿它刷只是
+        -- 把脏内容重新推一遍（实测连刷三次，「上午 1:07」纹丝不动）。
+        -- 所以先重绘 root（纯内存 blit，几十毫秒），让 bb 顶部恢复成看板自己的内容，
+        -- 再只刷这一条：屏幕只闪这一条，其余区域一动不动。
+        pcall(function() self.root:paintTo(Screen.bb, 0, 0) end)
+        UIManager:setDirty(nil, "full", Geom:new{
+            x = 0, y = 0, w = w, h = math.min(TOP_STRIP_HEIGHT, h),
+        })
+    end)
+end
+
 function Dashboard:open()
     if self.shown then return end
     -- 休眠屏保时画的那棵树可能还在屏幕上（比如唤醒事件没走 close 分支、或者
@@ -1790,6 +1829,8 @@ function Dashboard:open()
     end
     self:fetchWeather()
     self:scheduleTick()
+    -- 首绘完成后补擦顶部一条（Kindle 原生状态栏常在这一刻之后才写上来）
+    self:brushTopStrip()
     self:maybeShowSetupHint()
 end
 
@@ -1990,6 +2031,9 @@ function Dashboard:onLeaveScreenSaver()
     -- 直接重建一次版面最省事，也把电池/日期一次校正。
     self._resume_ts = os.time()
     self:refreshLayout()
+    -- 唤醒是状态栏残留最常见的时机：framework 醒来第一件事就是重画时间与电量，
+    -- 那时看板还没重排，重排完那条就压在顶上了——补一刀只擦顶部。
+    self:brushTopStrip()
     self:scheduleTick()
 end
 
