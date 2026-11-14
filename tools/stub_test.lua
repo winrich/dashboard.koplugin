@@ -1758,6 +1758,19 @@ if os.getenv("STUB_DUMP_CIRCLES") then
     end
 end
 
+-- STUB_DUMP_IMAGES=1：列出所有走位图路径的图标。
+-- 用来回答「图标到底有没有换成预渲染 PNG」——空清单说明全退回矢量绘制了
+-- （多半是 icons/ui 里缺那个边长，或文件名后缀对不上）。
+if os.getenv("STUB_DUMP_IMAGES") then
+    print("---------- 位图图标 ----------")
+    for _, r in ipairs(RECORD) do
+        if r.kind == "image" and tostring(r.text):find("/ui/", 1, true) then
+            print(string.format("[图] %-22d %s  (%dx%d)",
+                r.x, r.text:match("[^/]+$") or r.text, r.w, r.h))
+        end
+    end
+end
+
 -- 电量与操作提示必须真的出现在画面上（不是只写进代码）
 -- 期望值跟桩件的 powerd 走，不写死 "78%"：预览要改电量（STUB_POWER）时才不会
 -- 出现「界面 58 / 断言 78」的自相矛盾。不另起局部变量——主 chunk 已到 200 上限。

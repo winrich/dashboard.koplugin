@@ -163,7 +163,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.57"
+local DASHBOARD_VERSION = "2.58"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -476,7 +476,8 @@ local ICON = {
     drop = {
         { "l", 12, 2.2, 5.2, 13.4 },
         { "l", 12, 2.2, 18.8, 13.4 },
-        { "a", 12, 13.4, 6.8, 0, -206 },
+        -- 下弧 180°：写 -206 会多转 26°，左侧收尾翘出一小块凸起（真机可见）
+        { "a", 12, 13.4, 6.8, 0, -180 },
     },
     -- 风（风力）：三条横线 + 中间那条右端上扬。
     -- 不在小尺寸上做「末端卷钩」：34px 里钩的半径只有 3px，会糊成一个黑点。
@@ -822,6 +823,11 @@ local COMPONENTS = {
 
 -- 收紧档位：只降字号，不换布局、不裁内容
 local K_LADDER = { 1, 0.94, 0.88, 0.82, 0.76 }
+-- 刻度盘指针的位图档数：预渲染 0°..180° 每 15° 一档，运行时按值取最近的一档。
+-- 指针角度连续、位图只能是离散的，档数就是精度上限：13 档时一格 = 满量程的 1/12，
+-- 300 满量程下相邻档差 25；再细下去图标数量翻倍，而 43px 的盘面上指针
+-- 差 7.5° 根本看不出来（段长 7.6u，7.5° 只挪 1u ≈ 2.4px）。
+local AQI_STEPS = 13
 -- 月历的横向铺排参数：
 --   列距 = 格宽 × CAL_GAP_RATIO（看起来是列与列之间透气，而不是把格子拉扁）
 --   格宽上限 = 行高 × CAL_ASPECT_MAX（再宽日号就在格子里浮起来了）
@@ -3700,9 +3706,31 @@ end
 --- 牵动别的区；装不下也绝不裁切，只记日志交给 createRoot 的全局缩放兜底。
 --- 取一枚图标。size 是像素边长（已乘 S），opts 里可带 color / slash / value / max / lit。
 --- 名字写错时返回一块等大的留白而不是崩：图标是装饰层，不该阻断整屏绘制。
+---
+--- v2.58：优先用 icons/ui/ 下预渲染的位图，没有对应尺寸再退回现场矢量绘制。
+--- 为什么改：Icon 画弧和圆心要走 bb:paintCircle，真机 KOReader 与本地桩件
+--- 对它的第 5 个参数解释不一致（真机当布尔 filled、桩件当线宽），于是
+--- 「预览干净、真机在图标周围多出孤立墨点」。位图一个像素一个值，
+--- 画成什么样就是什么样，也不会越出自己的方框。
 function Dashboard:icon(name, size, opts)
     opts = opts or {}
     local px = math.max(8, math.floor(size))
+    local file = self:iconBitmap(name, px, opts)
+    if file then
+        -- width/height 与文件边长严格相等：ImageWidget 一旦缩放，抗锯齿的边
+        -- 会被再采样一次，比现场画的还糊。scale_for_dpi 必须关掉，
+        -- 否则 KOReader 会按屏幕 DPI 把 89px 的图再放大 1.79 倍。
+        local ok, w = pcall(function()
+            return ImageWidget:new{
+                file = file,
+                width = px,
+                height = px,
+                alpha = true,
+                scale_for_dpi = false,
+            }
+        end)
+        if ok and w then return w end
+    end
     local shapes = ICON[name]
     if not shapes then return mkPad(px, px) end
     return Icon:new{
@@ -3715,6 +3743,59 @@ function Dashboard:icon(name, size, opts)
         max = opts.max,
         lit = opts.lit,
     }
+end
+
+--- 把一个图标调用换算成 icons/ui/<键名>-<边长>.png；没有这张图返回 nil。
+--- 键名是「状态」而不是「调用参数」：wifi 的 lit/slash 组合收敛成三种文件，
+--- 刻度盘把连续角度收敛成 13 档，位图数量才不会随数据膨胀。
+--- 缓存只为省掉重复的 stat：一次重排里同一个小图标会被问好几遍。
+function Dashboard:iconBitmap(name, px, opts)
+    opts = opts or {}
+    local key
+    if name == "wifi" then
+        if opts.slash and (opts.lit or 3) <= 1 then
+            key = "wifi_off"
+        elseif opts.slash then
+            key = "wifi_slash"
+        else
+            key = "wifi_on"
+        end
+    elseif name == "drop" then
+        key = "humidity"
+    elseif name == "wind" then
+        key = "wind"
+    elseif name == "gauge" then
+        if opts.value == nil then
+            key = "aqi_fixed"
+        else
+            local v = math.max(0, math.min(1, (opts.value or 0) / (opts.max or 300)))
+            key = string.format("aqi_p%02d", math.floor(v * (AQI_STEPS - 1) + 0.5))
+        end
+    else
+        return nil
+    end
+    local rel = "ui/" .. key .. "-" .. px
+    -- 位图是死色，不能像矢量那样运行时改 color：电量网络卡里"已连接"用纯黑、
+    -- 其余用 0x66，所以黑墨那一份单独存（后缀 -b）。
+    if opts.color == COLOR_BLACK then rel = rel .. "-b" end
+    local cache = self._icon_bitmap_cache
+    if not cache then
+        cache = {}
+        self._icon_bitmap_cache = cache
+    end
+    local hit = cache[rel]
+    if hit ~= nil then
+        return hit or nil
+    end
+    local file = self:iconPath(rel)
+    local fh = io.open(file, "rb")
+    if fh then
+        fh:close()
+        cache[rel] = file
+        return file
+    end
+    cache[rel] = false
+    return nil
 end
 
 function Dashboard:buildZone(ctx, orient, key, box_w, content_w, box_h)
