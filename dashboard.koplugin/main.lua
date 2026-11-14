@@ -166,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.62"
+local DASHBOARD_VERSION = "2.63"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -2452,6 +2452,25 @@ local function fmtSpan(sec)
     return TL(string.format("%d 天 %d 小时", dd, rh), string.format("%dd %dh", dd, rh))
 end
 
+--- 每页耗时：60 秒以内给秒，以上给分，再往上给小时。
+--- 为什么不在秒里一路写下去（v2.63 改的）：
+---   撞边界时难看得像 bug —— 三体2 正好 61 分钟读 61 页，显示成「1 页 60 秒」；
+---   读得慢的书更夸张，3 分钟一页会写成「1 页 180 秒」。
+--- 秒级精度是有意丢掉的：一页 90 秒和 100 秒对读者没区别，栏宽却一样紧
+--- （三栏各 216px，18 号字一行只放得下 6 个汉字）。
+local function fmtPerPage(sec)
+    sec = math.max(0, tonumber(sec) or 0)
+    if sec < 60 then
+        return TL(string.format("1 页 %.0f 秒", sec), string.format("%.0fs / page", sec))
+    end
+    local m = math.floor(sec / 60 + 0.5)
+    if m < 60 then
+        return TL(string.format("1 页 %d 分", m), string.format("%dm / page", m))
+    end
+    return TL(string.format("1 页 %d 小时", math.floor(m / 60 + 0.5)),
+        string.format("%dh / page", math.floor(m / 60 + 0.5)))
+end
+
 --- 阅读统计：时长 / 已读屏数 / 最后一次打开 / 近 7 天节奏，都存在
 --- statistics.sqlite3 里，侧车文件只有「读到第几页」，没有「读了多久」。
 ---
@@ -2593,9 +2612,7 @@ function Dashboard:readingFacts(info, stats)
 
     if f.read_pages and f.read_pages > 0 then
         f.per_page = stats.read_time / f.read_pages
-        f.speed = TL(
-            string.format("1 页 %.0f 秒", f.per_page),
-            string.format("%.0fs / page", f.per_page))
+        f.speed = fmtPerPage(f.per_page)
     end
     local remain_sec = stats.read_time * (1 - pct) / pct
     f.remain = fmtSpan(remain_sec)

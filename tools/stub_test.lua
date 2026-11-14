@@ -2460,6 +2460,34 @@ if not f1.speed or not f1.eta then
     os.exit(1)
 end
 
+-- v2.63 每页耗时的单位分档：60 秒以内给秒，以上给分，再往上给小时。
+-- 起因是真机上「1 页 60 秒」——三体2 正好 61 分钟读 61 页，撞在四舍五入的边界上，
+-- 看着像 bug；读得慢的书更夸张（3 分钟一页会写成「1 页 180 秒」）。
+-- 三个边界值都钉死：59 秒、60 秒（必须进位成「1 分」）、180 秒、3600 秒。
+-- 用 do 收窄作用域：桩件主 chunk 的局部变量已接近 Lua 的 200 上限。
+do
+    local function speed_of(read_time)
+        -- percent × pages 恒定 50 页，per_page 就等于 read_time / 50
+        local s = instance:readingFacts({ percent = 0.5, pages = 100 },
+            { read_time = read_time, read_pages = 50, last_open = os.time(),
+              week_sec = read_time, week_days = 1 })
+        return s.speed
+    end
+    local cases = {
+        { 2950, "1 页 59 秒" },   -- 59 秒：还在秒档
+        { 3000, "1 页 1 分" },    -- 正好 60 秒：不许写成「1 页 60 秒」
+        { 9000, "1 页 3 分" },    -- 180 秒
+        { 180000, "1 页 1 小时" },-- 3600 秒
+    }
+    for _, c in ipairs(cases) do
+        if speed_of(c[1]) ~= c[2] then
+            print(string.format("[FAIL] 每页耗时 %d 秒应显示「%s」，实际「%s」",
+                c[1] / 50, c[2], tostring(speed_of(c[1]))))
+            os.exit(1)
+        end
+    end
+end
+
 -- 样本太少不许外推：一本刚翻两页的书按比例算会得出「还要 8 小时」这种假精度
 local f2 = instance:readingFacts({ percent = 0.004, pages = 640 },
     { read_time = 186, read_pages = 2, last_open = os.time(), week_sec = 186, week_days = 1 })
