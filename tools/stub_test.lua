@@ -182,9 +182,15 @@ function TextWidget:paintTo(bb, x, y)
     -- 断言不读这个字段，真机上它是 Color8 cdata，这里只认 number。
     local c = self.fgcolor
     if type(c) ~= "number" then c = 0 end
+    -- 字体族也要记：预览里衬线数字（时钟 / 温度 / AQI）必须和黑体区分开，
+    -- 否则「换没换衬线」在预览图上完全看不出来。
+    local serif = false
+    if type(self.face) == "table" and type(self.face.name) == "string" then
+        serif = self.face.name:find("Serif", 1, true) ~= nil
+    end
     RECORD[#RECORD + 1] = { kind = "text", text = tostring(self.text or ""), x = x, y = y,
                             w = math.floor(self:getSize().w), h = math.floor(self:getSize().h),
-                            color = c }
+                            color = c, serif = serif }
 end
 function TextWidget:setText(text)
     if text == self.text then return end
@@ -279,7 +285,9 @@ function FRAME.emit()
     for _, r in ipairs(RECORD) do
         local tag, x, y, w, h, tail
         if r.kind == "text" then
-            tag, x, y, w, h, tail = "T", r.x, r.y, r.w, r.h, tostring(r.text or "")
+            -- 衬线串加 "#S#" 前缀：帧协议是「5 个数值槽 + 一个尾串」，字体没有槽位可放
+            tag, x, y, w, h = "T", r.x, r.y, r.w, r.h
+            tail = (r.serif and "#S#" or "") .. tostring(r.text or "")
         elseif r.kind == "image" then
             tag, x, y, w, h, tail = "I", r.x, r.y, r.w, r.h, tostring(r.text or "")
         elseif r.kind == "rect" then
@@ -766,9 +774,27 @@ package.preload["ffi/blitbuffer"] = function()
     -- 桩件的值域是反的：0 = 纸白、255 = 纯黑。真机 Color8 正好相反
     -- （COLOR_BLACK = Color8(0)、COLOR_WHITE = Color8(0xFF)），
     -- 所以出图端一律用 255 - color 换回屏幕灰度。
-    -- 0x77 反向后 = 136，等于真机 COLOR_DARK_GRAY = Color8(0x88)，
-    -- 两边必须是同一个灰，否则预览图和真机对不上。
-    return { COLOR_WHITE = 0, COLOR_BLACK = 255, COLOR_DARK_GRAY = 0x77 }
+    -- 这里把真机 ffi/blitbuffer.lua:2710 起那套命名灰**逐个补齐**（值取反），
+    -- 否则 main.lua 里引用 COLOR_GRAY_E / COLOR_LIGHT_GRAY 会拿到 nil，
+    -- 落进 `or COLOR_WHITE` 兜底 → 纸底和卡片全变纯白，预览看着像没改。
+    -- 例：真机 COLOR_DARK_GRAY = Color8(0x88)，桩件 0x77 → 255-0x77 = 136 = 0x88 ✓
+    local function ink(g) return 255 - g end
+    return {
+        COLOR_WHITE      = ink(0xFF),
+        COLOR_GRAY_E     = ink(0xEE),
+        COLOR_GRAY_D     = ink(0xDD),
+        COLOR_LIGHT_GRAY = ink(0xCC),
+        COLOR_GRAY_B     = ink(0xBB),
+        COLOR_GRAY       = ink(0xAA),
+        COLOR_GRAY_9     = ink(0x99),
+        COLOR_DARK_GRAY  = ink(0x88),
+        COLOR_GRAY_7     = ink(0x77),
+        COLOR_GRAY_6     = ink(0x66),
+        COLOR_GRAY_5     = ink(0x55),
+        COLOR_GRAY_4     = ink(0x44),
+        COLOR_GRAY_3     = ink(0x33),
+        COLOR_BLACK      = ink(0x00),
+    }
 end
 package.preload["ui/widget/widget"] = function() return Widget end
 package.preload["ui/widget/container/widgetcontainer"] = function() return WidgetContainer end
@@ -2207,17 +2233,23 @@ ctx_m.lunar = Lunar2.solar_to_lunar(ctx_m.now.year, ctx_m.now.month, ctx_m.now.d
 ctx_m.cur_term, ctx_m.next_term = Lunar2.current_term(ctx_m.now.year, ctx_m.now.month,
     ctx_m.now.day, ctx_m.tz.offset)
 
+-- v2.53：盒子里套一层卡片，组件能用的高/宽都要先扣掉卡片内边距（card_pad）。
+-- 这里跟 buildZone 用同一份 spec 与同一个算法，改了一边另一边不会偷偷跑偏。
 local function matrixBox(orient, key)
+    local spec_o = spec_m[orient]
+    local cpad = math.floor(spec_o.card_pad * S_m)
     if orient == "portrait" then
-        local pad = math.floor(spec_m.portrait.pad * S_m)
-        return avail_m, math.floor(spec_m.portrait[key] * S_m), avail_m - pad * 2
+        local box_h = math.floor(spec_o[key] * S_m)
+        return avail_m, box_h - cpad * 2, avail_m - cpad * 2
     end
     if key == "A" then
-        return avail_m, math.floor(spec_m.landscape.A * S_m), avail_m
+        local box_h = math.floor(spec_o.A * S_m)
+        return avail_m, box_h - cpad * 2, avail_m - cpad * 2
     end
     local bw, cw = instance:lowerWidths(avail_m, S_m)
     local w = (key == "B") and bw or cw
-    return w, math.floor(spec_m.landscape.lower * S_m), w
+    local box_h = math.floor(spec_o.lower * S_m)
+    return w, box_h - cpad * 2, w - cpad * 2
 end
 
 local ladder = instance:kLadder()
@@ -2584,11 +2616,13 @@ EVENTS[#EVENTS + 1] = "== 未配置提示：缺凭据弹一次，配好后不再
 
 -- ================= 分区组件与多语言（v2.44）
 
--- 1) 没有设置时，三区必须回落到默认组件（升级后视觉不变）
+-- 1) 没有设置时，三区必须回落到默认组件
+-- v2.53 起 B 区默认是 today_actions（今日行动），不再是 lunar_term / calendar：
+-- 面积最大的一块留给「今天要做什么」，农历仍可在菜单里选回来。
 local lay = instance:getZoneLayout()
-if lay.portrait.A ~= "clock_weather" or lay.portrait.B ~= "lunar_term"
+if lay.portrait.A ~= "clock_weather" or lay.portrait.B ~= "today_actions"
     or lay.portrait.C ~= "stats_cells" or lay.landscape.A ~= "clock_weather"
-    or lay.landscape.B ~= "calendar" or lay.landscape.C ~= "side_panel" then
+    or lay.landscape.B ~= "today_actions" or lay.landscape.C ~= "side_panel" then
     print("[FAIL] 无设置时没有回落到默认分区")
     os.exit(1)
 end
@@ -2599,7 +2633,7 @@ G_reader_settings:saveSetting("dashboard_components", {
     landscape = { A = "lunar_term", B = "side_panel", C = "calendar" },
 })
 local lay2 = instance:getZoneLayout()
-if lay2.portrait.A ~= "clock_weather" or lay2.portrait.B ~= "lunar_term"
+if lay2.portrait.A ~= "clock_weather" or lay2.portrait.B ~= "today_actions"
     or lay2.portrait.C ~= "stats_cells" then
     print(string.format("[FAIL] 竖屏非法组件未回落：%s/%s/%s",
         lay2.portrait.A, lay2.portrait.B, lay2.portrait.C))

@@ -73,19 +73,37 @@ lua.execute(sys.stdin.read())
 _font_cache = {}
 
 
-def font(px):
-    """按像素高度取字体。px 是已乘过 SCALE 的画布像素。"""
+SERIF_CANDIDATES = [
+    r"C://Windows//Fonts//georgia.ttf",
+    r"C://Windows//Fonts//times.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/System/Library/Fonts/Times.ttc",
+]
+
+
+def _load(cands, px):
     key = max(6, int(round(px)))
-    if key in _font_cache:
-        return _font_cache[key]
-    for path in FONT_CANDIDATES:
+    cache_key = (tuple(cands), key)
+    if cache_key in _font_cache:
+        return _font_cache[cache_key]
+    for path in cands:
         if os.path.exists(path):
             f = ImageFont.truetype(path, key)
-            _font_cache[key] = f
+            _font_cache[cache_key] = f
             return f
     f = ImageFont.load_default()
-    _font_cache[key] = f
+    _font_cache[cache_key] = f
     return f
+
+
+def font(px):
+    """按像素高度取字体。px 是已乘过 SCALE 的画布像素。"""
+    return _load(FONT_CANDIDATES, px)
+
+
+def font_serif(px):
+    """衬线：预览里用来区分 makeNum（真机走 NotoSerif-Regular.ttf）。"""
+    return _load(SERIF_CANDIDATES, px)
 
 
 def text_w(draw, s, f):
@@ -335,12 +353,16 @@ def draw_items(items, dw, dh):
             else:
                 img.paste(src.convert("L").resize(size, Image.LANCZOS), (x * S, y * S))
         elif tag == "T":
-            draw_text(d, img, x, y, iw, ih, text, color, S)
+            # 衬线串由桩件加 "#S#" 前缀（帧协议没有多余槽位放字体）
+            if text.startswith("#S#"):
+                draw_text(d, img, x, y, iw, ih, text[3:], color, S, serif=True)
+            else:
+                draw_text(d, img, x, y, iw, ih, text, color, S)
 
     return img.resize((dw, dh), Image.LANCZOS)
 
 
-def draw_text(d, img, x, y, w, h, text, color, S):
+def draw_text(d, img, x, y, w, h, text, color, S, serif=False):
     if not text or h <= 0:
         return
     # 与 paintRect / paintBorder 同一套换算：任意墨阶都能出图。
@@ -349,6 +371,8 @@ def draw_text(d, img, x, y, w, h, text, color, S):
     fill = 255 - (color or 0)
     limit = max(4, w) * S
 
+    F = font_serif if serif else font
+
     def fit(px, s):
         """把字号收到「雅黑量出来的宽度 == 控件实测宽度」。
 
@@ -356,16 +380,16 @@ def draw_text(d, img, x, y, w, h, text, color, S):
         看着像顶出框、像叠字——其实真机上没有。按实测宽度反推字号才是对的：
         控件报 56 px 宽，就画到 56 px 宽。
         """
-        f = font(px * S)
+        f = F(px * S)
         actual = text_w(d, s, f)
         if actual > limit and actual > 0:
             px = px * limit / actual
-            f = font(px * S)
+            f = F(px * S)
         # 字号是整数，按比例算出来的那一下常会差 1~2 px，逐档收到真放得下为止
         guard = 0
         while text_w(d, s, f) > limit and px > 6 and guard < 24:
             px -= 0.5
-            f = font(px * S)
+            f = F(px * S)
             guard += 1
         return px, f
 
@@ -373,7 +397,7 @@ def draw_text(d, img, x, y, w, h, text, color, S):
     # 先看「按一行高估出来的字号」放不放得下：放得下就是单行（绝大多数标签都走这里，
     # 走下面的折行判断反而会把 "58%" 拆成两行）。
     px0 = h / 1.363
-    if text_w(d, text, font(px0 * S)) <= limit * 1.03:
+    if text_w(d, text, F(px0 * S)) <= limit * 1.03:
         px, f = fit(px0, text)
         chosen = (px, f, [text])
     else:
@@ -382,14 +406,14 @@ def draw_text(d, img, x, y, w, h, text, color, S):
             px = h / lines / 1.363
             if px < 6:
                 break
-            f0 = font(px * S)
+            f0 = F(px * S)
             wr = wrap(d, text, f0, limit)
             if len(wr) != lines:
                 continue
             widest = max(text_w(d, r, f0) for r in wr)
             if widest > limit:
                 px = px * limit / widest
-                f0 = font(px * S)
+                f0 = F(px * S)
                 wr = wrap(d, text, f0, limit)
             chosen = (px, f0, wr)
             break
@@ -453,6 +477,13 @@ PRESETS = [
     dict(id="portrait-5", orient="portrait", title="倒数日与待办 · 时钟天气 / 倒数日 / 待办",
          zones=["clock_weather", "countdown", "todo",
                 "clock_weather", "countdown", "todo"]),
+    # ---------------- v2.53：今日行动（新默认 B 区） ----------------
+    dict(id="portrait-6", orient="portrait", title="今日行动 · 时钟天气 / 今日行动 / 日月",
+         zones=["clock_weather", "today_actions", "sun_moon",
+                "clock_weather", "today_actions", "sun_moon"]),
+    dict(id="landscape-6", orient="landscape", title="今日行动 · 时钟天气 / 今日行动 / 侧栏",
+         zones=["clock_weather", "today_actions", "side_panel",
+                "clock_weather", "today_actions", "side_panel"]),
     dict(id="landscape-5", orient="landscape", title="大钟与待办 · 大字时钟 / 倒数日 / 待办",
          zones=["clock_big", "countdown", "todo",
                 "clock_big", "countdown", "todo"]),
@@ -461,9 +492,9 @@ PRESETS = [
 # README 首图用的排法，不属于上面五套预设：竖屏「时钟天气 / 农历节气 / 三格」。
 # 横屏首图就是 landscape-1（zones 一模一样），出完图拷一份改名 landscape.png。
 MAIN_PORTRAIT = dict(id="portrait", orient="portrait",
-                     title="主推 · 时钟天气 / 农历节气 / 三格",
-                     zones=["clock_weather", "lunar_term", "stats_cells",
-                            "clock_weather", "lunar_term", "stats_cells"])
+                     title="主推 · 时钟天气 / 今日行动 / 三格",
+                     zones=["clock_weather", "today_actions", "stats_cells",
+                            "clock_weather", "today_actions", "stats_cells"])
 
 # 倒数日 / 待办样例。第二个字段是「距今天几天」，出图时现算日期。
 AGENDA = {
