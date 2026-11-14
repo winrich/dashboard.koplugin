@@ -163,7 +163,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.55"
+local DASHBOARD_VERSION = "2.56"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -481,10 +481,14 @@ local ICON = {
     -- 风（风力）：三条横线 + 中间那条右端上扬。
     -- 不在小尺寸上做「末端卷钩」：34px 里钩的半径只有 3px，会糊成一个黑点。
     wind = {
-        { "l", 2.4, 6.0, 15.0, 6.0 },
-        { "a", 15.0, 9.6, 3.6, 90, -150 },
-        { "l", 2.4, 12.0, 21.6, 12.0 },
-        { "l", 2.4, 18.0, 11.0, 18.0 },
+        -- 三条线摊到 3.6 / 13 / 20.4（原来 6~18 只占方框一半），
+        -- 与水滴的 2.2~20.2 体量相当，并排时不会一个满格、一个缩在中间。
+        { "l", 2.2, 3.6, 13.6, 3.6 },
+        -- 钩子：圆心抬高到 7.2 且只转 120°，末端停在 y≈8.8，
+        -- 离中线（13）还有 2 个线宽的空白 —— 不然三条会连成"E"。
+        { "a", 13.6, 7.2, 3.6, 90, -120 },
+        { "l", 2.2, 14.5, 21.4, 14.5 },
+        { "l", 2.2, 21.5, 10.8, 21.5 },
     },
     -- 刻度盘（AQI）：上半圆 + 三根基准刻度 + 按值转动的指针
     gauge = function(self)
@@ -493,9 +497,11 @@ local ICON = {
         -- 只画半圆 + 指针 + 圆心：43px 的标签图标里再塞三根刻度，会和指针糊成一团。
         -- 半圆本身已经说明"这是一个 0~满的刻度"，指针位置才是要被读出来的信息。
         return {
-            { "a", 12, 16.2, 10.2, 180, -180 },
-            { "l", 12, 16.2, 12 + math.cos(a) * 7.0, 16.2 - math.sin(a) * 7.0 },
-            { "o", 12, 16.2, 2.0 },
+            -- 半径 11：半圆的横向跨度 22u，正好在 24 栅格里留 1u 边；
+            -- 半圆天生只有半个方框高，靠「指针 + 圆心」把下半补齐。
+            { "a", 12, 16.8, 11.0, 180, -180 },
+            { "l", 12, 16.8, 12 + math.cos(a) * 7.6, 16.8 - math.sin(a) * 7.6 },
+            { "o", 12, 16.8, 2.0 },
         }
     end,
     -- WiFi：三段弧 + 底点。lit = 亮几段（未开启只亮最内一段），
@@ -3562,52 +3568,81 @@ function Dashboard:buildStatCells(ctx, total_w, items, box_h)
     -- 改成「三行字量出固定高，剩余按 4:6 分给两个间距」：标签贴数值、数值离注远一点，
     -- 眼睛先读数值。这也顺便让 2 格（电量 / 网络）和 3 格长得一样高。
     local function lineH(px) return math.floor(px * S * 1.363) end
-    -- 24du（43px）：17du 的标签字配 19du 的图标太小，水滴只剩 20px、
-    -- 刻度盘糊成一团。图标要能单独认出来，才谈得上"图形化代替文字"
     -- 图标与数值同高（32du ≈ 57px）。放在 17du 的标签行里只有 43px，
     -- 水滴、刻度盘那些轮廓在 300ppi 上会发虚、认不出是什么 ——
     -- 图标小到认不出，就等于没画。
     local icon_px = math.floor(32 * S)
+    local icon_gap = math.floor(9 * S)
     local tag_h = lineH(17)
-    local fixed_h = tag_h + lineH(38) + lineH(17)
+    local val_h = lineH(38)
+    local fixed_h = tag_h + val_h + tag_h
     -- 减 2：TextWidget 的实际行高比 1.363 估出来的偶尔多 1~2px，贴着算会顶出去
     local cell_h = math.max(math.floor(86 * S), math.floor((box_h or 0) - 2))
     local slack = math.max(0, cell_h - fixed_h)
     local gap_a = math.floor(slack * 0.4)
     local gap_b = math.max(0, slack - gap_a)
-    local cells = {}
+
+    -- v2.56：三格原先各自居中，谁的内容宽一点就先从中间散开——
+    -- 结果三枚图标各在不同 x 上，三行文字也各在各的轴线上，看着"没对齐"。
+    -- 做法改成「先量出最宽那一格，给三格同一个内容块宽」：块宽一旦相同，
+    -- 块内的标签左沿、图标左沿、数值左沿在三格里就是同一组坐标，
+    -- 块再以 cell_w 居中，整条还保持居中。对齐和居中不是二选一。
+    local rows, block_w = {}, 0
     for i, it in ipairs(items) do
-        if i > 1 then
+        local tag = self:makeText(ctx, it[1], 17, { color = INK2 })
+        local val, lead
+        if type(it[2]) == "table" and type(it[2].paintTo) == "function" then
+            -- 值本身是图形（电池壳体、WiFi 状态），不再另配图标
+            val, lead = it[2], 0
+        elseif it[4] then
+            -- 「▽ 44%」：图标占一个固定宽的位，数值右移同样的距离
+            val, lead = self:makeText(ctx, it[2], 38), icon_px + icon_gap
+        else
+            val, lead = self:makeText(ctx, it[2], 38), 0
+        end
+        local note = it[3] and self:makeText(ctx, it[3], 17, { color = INK2 }) or nil
+        local bw = math.max(tag:getSize().w, lead + val:getSize().w)
+        if note then bw = math.max(bw, lead + note:getSize().w) end
+        rows[i] = { tag = tag, val = val, note = note, lead = lead,
+                    icon = it[4], icon_opts = it[5] }
+        block_w = math.max(block_w, bw)
+    end
+    block_w = math.min(block_w, cell_w)
+
+    -- 三格铺满整条内容列（块左沿贴版心左沿），两格仍旧各自居中在自己的半格。
+    -- 为什么要分开：三格里第一块的左沿就是整页的"左轨"，上面几张卡的块头都在这条线上，
+    -- 它一缩进 50px 就断了；两格时居中在 1/4 与 3/4 才是稳的（贴两边会显得被拉开）。
+    local split = (n >= 3)
+    local gap_x = split and math.max(0, math.floor((total_w - block_w * n) / (n - 1))) or 0
+
+    local cells = {}
+    for i, r in ipairs(rows) do
+        if i > 1 and not split then
             cells[#cells + 1] = mkBox(1, cell_h, nil)
         end
-        -- 标签行：「图标 + 词」。图标和词并排读起来是一个符号跟着一个字，
-        -- 比两个都大的图形要好 —— 图形是定语，词才是主语。
-        local tag = self:makeText(ctx, it[1], 17, { color = INK2 })
-        -- 值可以是字符串，也可以是控件：图形自己就能编码的量（WiFi 状态、
-        -- 电量比例）就别再写字，这是"一目了然"的前提。
-        local val
-        if type(it[2]) == "table" and type(it[2].paintTo) == "function" then
-            val = mkBox(cell_w, lineH(38), it[2], { align = "center" })
-        elseif it[4] then
-            -- 图标 + 数值同排：「▽ 44%」这样读。标签留在上面一行做兜底说明 ——
-            -- 图标负责"这是什么"，数字负责"多少"。
-            val = HorizontalGroup:new{
-                align = "center",
-                self:icon(it[4], icon_px, it[5]),
-                mkPad(math.floor(9 * S), 1),
-                self:makeText(ctx, it[2], 38),
-            }
-        else
-            val = self:makeText(ctx, it[2], 38)
-        end
-        cells[#cells + 1] = mkBox(cell_w, cell_h, VerticalGroup:new{
+        local val_row = r.icon and HorizontalGroup:new{
             align = "center",
-            tag,
+            self:icon(r.icon, icon_px, r.icon_opts),
+            mkPad(icon_gap, 1),
+            r.val,
+        } or r.val
+        -- 每一行都装进等高定宽的盒子里：盒子高度固定，行与行在三格之间才齐；
+        -- 盒子宽度固定，块的左右沿才一样。
+        local block = VerticalGroup:new{
+            align = "left",
+            mkBox(block_w, tag_h, r.tag, { align = "left" }),
             mkPad(1, gap_a),
-            val,
-            it[3] and self:makeText(ctx, it[3], 17, { color = INK2 }) or mkPad(1, 1),
+            mkBox(block_w, val_h, val_row, { align = "left" }),
+            mkBox(block_w, tag_h, r.note, { align = "left" }),
             mkPad(1, gap_b),
-        }, { align = "center", auto_h = true })
+        }
+        if split then
+            cells[#cells + 1] = block
+            if i < n then cells[#cells + 1] = mkPad(gap_x, 1) end
+        else
+            cells[#cells + 1] = mkBox(cell_w, cell_h, block,
+                { align = "center", auto_h = true })
+        end
     end
     return HorizontalGroup:new{ align = "center", unpack(cells) }
 end
@@ -3857,13 +3892,15 @@ function Dashboard:compLunar(ctx, w, h, k)
         if big:getSize().w > w then
             big = self:makeText(ctx, big_txt, big_px, { max_width = w })
         end
+        -- 左对齐，不居中：这条卡里块头「农历」是贴左的，中文版也是贴左的；
+        -- 只有英文版把这两行居中，结果干支那行被推右一百多像素，看着像缩进了一级。
         push(VerticalGroup:new{
-            align = "center",
+            align = "left",
             big,
         })
         push(mkPad(w, math.floor(2 * S * k)))
-        push(CenterContainer:new{
-            dimen = Geom:new{ w = w, h = math.floor(26 * S * k) },
+        push(HorizontalGroup:new{
+            align = "left",
             self:makeText(ctx, string.format("%s · %s",
                 I18n.lunarGanzhi(ctx.lunar), I18n.zodiacYear(Lunar.zodiac(ctx.lunar))),
                 math.floor(20 * k), { gray = true, max_width = w }),
@@ -3976,7 +4013,13 @@ function Dashboard:compCalendar(ctx, w, h, k)
         col_gap = self:calendarGap(w, cell_w)
         cal = self:buildCalendar(ctx, cell_w, k, col_gap)
     end
-    return cal
+    -- 月历的宽度由格宽与列距决定，常常到不了盒宽（竖屏 B 区尤其明显：
+    -- 行高把格宽压在两三百像素，右边就空出一大条）。卡是横的、内容是窄的，
+    -- 又不居中就会变成"贴在左边的一张图"。这里把整块（含月份标题、图例）
+    -- 用同一个盒子居中——标题本来就按块左沿对齐，跟着块一起走，不会散开。
+    -- 盒子高度必须回**真实内容高**（不能夹到 h）：buildZone 靠它判断装不装得下，
+    -- 夹成 h 就永远"刚好放下"，该降档时降不下去，图例会溢出到卡外。
+    return mkBox(w, math.max(1, cal:getSize().h), cal, { align = "center" })
 end
 
 --- 侧栏三合一：农历 / 节气 / 天文与空气
@@ -4040,8 +4083,12 @@ function Dashboard:compClockBig(ctx, w, h, k)
     self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
     self.clock_widget = self:makeNum(ctx, self.clock_text,
         math.floor((land and 88 or 124) * k))
+    -- v2.56：原来 align = "center"，日期在时钟的**盒子**里居中——
+    -- 时钟盒子比字形宽，日期就被推到右下方一百多像素，看着像缩进了一级。
+    -- 同一件事（时钟 + 日期）在「时钟与天气」里是左对齐的，这里必须一样：
+    -- 同一信息不许有两种对齐方式。
     return VerticalGroup:new{
-        align = "center",
+        align = "left",
         self.clock_widget,
         -- fixed：时钟与日期之间这段必须贴住。不标的话 Card 的"铺开"会把它拉成
         -- 上百像素，日期被推到卡片下沿，时钟孤零零悬在中间。
@@ -4136,30 +4183,47 @@ function Dashboard:compToday3d(ctx, w, h, k)
         return mkBox(cell_w, num_slot, self:makeText(ctx, str, math.floor(px * k)))
     end
 
+    -- 第 4、5 行（现象 / 高低温）也做成定高槽，四列共用：
+    -- 原来只有今天列有这两行，明天起的列停在高低温上，于是「11 度」落在了
+    -- 第二列「晴」那一行的同一水平线上 —— 一条横线穿过两个不相干的数据，
+    -- 读者会以为它们是一回事。现在每列都是 标签/图标/高/现象/区间 五行。
+    local cond_px = 20
+    local range_px = 17
+    local cond_h = textLineH(cond_px, S, k)
+    local range_h = textLineH(range_px, S, k)
+
+    local function condSlot(str)
+        return mkBox(cell_w, cond_h, self:makeText(ctx, str, math.floor(cond_px * k),
+            { gray = true, max_width = cell_w }))
+    end
+    local function rangeSlot(str)
+        return mkBox(cell_w, range_h, self:makeText(ctx, str, math.floor(range_px * k),
+            { gray = true, max_width = cell_w }))
+    end
+
     local today = VerticalGroup:new{
         align = "center",
         labelSlot(I18n.dayLabel(1, days[1] and days[1].wd)),
         iconSlot(self:iconPath(d.icon), icon_w),
         numSlot(d.temp, (land and 40 or 58)),
-        self:makeText(ctx, d.cond, math.floor(20 * k),
-            { gray = true, max_width = cell_w }),
-        self:makeText(ctx, d.range or "--", math.floor(17 * k),
-            { gray = true, max_width = cell_w }),
+        condSlot(d.cond),
+        rangeSlot(d.range or "--"),
     }
 
     local blocks = { today }
     for i = 2, n do
         local day = days[i]
+        local meta = QWeather.condition(day.code)
         blocks[#blocks + 1] = VerticalGroup:new{
             align = "center",
             labelSlot(I18n.dayLabel(i, day.wd)),
             iconSlot(self:iconPath(self:dayIcon(day)), small_w),
             numSlot(degText(day.tmax), (land and 20 or 24)),
-            -- 低温这行用「贴合字高」的槽，不跟着大字号槽走：它下面再没有要对齐的东西，
-            -- 用一个 141 高的空槽顶着，卡底就白出一大块，还会把 k 档压低一整级。
-            mkBox(cell_w, textLineH((land and 17 or 20), S, k),
-                self:makeText(ctx, degText(day.tmin), math.floor((land and 17 or 20) * k),
-                    { gray = true })),
+            condSlot(T(meta[1])),
+            rangeSlot((day.tmin and day.tmax)
+                and string.format("%d° ~ %d°", math.floor(day.tmin + 0.5),
+                    math.floor(day.tmax + 0.5))
+                or "--"),
         }
     end
     -- 顶对齐：标签贴同一条上沿，今天列多出来的「现象 / 高低温」往下长，
