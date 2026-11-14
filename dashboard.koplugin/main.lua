@@ -112,6 +112,29 @@ local COLOR_WHITE = Blitbuffer.COLOR_WHITE
 -- COLOR_DARK_GRAY 在个别老版本上可能不存在，退化成黑色而不是崩掉
 local COLOR_GRAY = Blitbuffer.COLOR_DARK_GRAY or Blitbuffer.COLOR_BLACK
 
+-- 墨阶（v2.53）。全部取 17 的倍数：Carta 面板把任何灰度 floor 到 17 的倍数，
+-- 写 0xE6 出来就是 0xDD、写 0xF2 出来是 0xEE。实测见 device-tools/calib/RESULTS.md。
+--   PAPER  0xEE  纸底。比纯白低一档，大面积铺开像微微泛灰的纸，不刺眼
+--   CARD   0xFF  卡面。正文/数值都落在白卡上，对比度才够
+--   RULE   0xCC  卡片边框、进度槽。落在 0xEE 纸底上仍是 2 档差，1px 看得见
+--   RULE_SOFT 0xDD 白卡内的细分隔线（白底 1px 可见下限）
+--   INK2   0x66  三级文字：标签、注释、单位
+--   INK3   0x88  最浅文字，只在 ≥30px（17 设计单位）时用，再小就发虚
+local PAPER     = Blitbuffer.COLOR_GRAY_E or Blitbuffer.COLOR_WHITE
+local RULE      = Blitbuffer.COLOR_LIGHT_GRAY or Blitbuffer.COLOR_GRAY
+local RULE_SOFT = Blitbuffer.COLOR_GRAY_D or Blitbuffer.COLOR_GRAY
+-- 卡片边：比 RULE 深一档。0xCC 落在 0xEE 纸底上只有 2 档差，300ppi 的 1px 线太飘；
+-- 0xBB 是 3 档，边"立"得住，又远没到黑线那种切断版面的程度。
+local CARD_EDGE = Blitbuffer.COLOR_GRAY_B or RULE
+local INK2      = Blitbuffer.COLOR_GRAY_6 or Blitbuffer.COLOR_BLACK
+local INK3      = COLOR_GRAY
+
+-- 衬线字体：设备上 NotoSerif-Regular.ttf 只有拉丁字形，中文会回退到黑体。
+-- 所以**只给纯数字串**用，且同一行不能有汉字（否则一行里两种字形打架）。
+-- Font:getFace 对不在 fontmap 里的名字当文件名处理（frontend/ui/font.lua:279），
+-- 不需要改 fontmap。
+local FACE_SERIF = "NotoSerif-Regular.ttf"
+
 -- 插件自身目录（icons 相对此目录）
 local PLUGIN_DIR = (function()
     local src = (debug.getinfo(1, "S").source or ""):gsub("^@", "")
@@ -139,7 +162,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.51"
+local DASHBOARD_VERSION = "2.53"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -268,13 +291,15 @@ end
 function ProgressBar:paintTo(bb, x, y)
     local w, h = self.dimen.w, self.dimen.h
     if w < 4 or h < 4 then return end
-    local bw = math.max(1, self.border or 2)
-    bb:paintBorder(x, y, w, h, bw, COLOR_BLACK, nil, false)
+    local bw = math.max(1, self.border or 1)
+    -- 槽 0xDD、填充 0x66（实测最柔和的一对）。原来是 2px 纯黑外框 + 纯黑填充，
+    -- 在 16 档灰的屏上等于一块实心黑条，压得整块版面往下沉。
+    bb:paintBorder(x, y, w, h, bw, self.track or RULE_SOFT, nil, false)
     local inner = w - bw * 2
     local ratio = math.max(0, math.min(1, self.ratio or 0))
     local filled = math.floor(inner * ratio + 0.5)
     if filled > 0 then
-        bb:paintRect(x + bw, y + bw, filled, h - bw * 2, COLOR_BLACK)
+        bb:paintRect(x + bw, y + bw, filled, h - bw * 2, self.fill or INK2)
     end
 end
 
@@ -289,7 +314,8 @@ function BatteryGauge:paintTo(bb, x, y)
     local bw = math.max(1, self.border or 2)
     local nub_w = math.max(2, math.floor(w * 0.14))
     local body_w = w - nub_w - 2
-    local fg = self.charging and COLOR_WHITE or COLOR_BLACK
+    -- 壳体颜色可调：顶栏那枚用 0x66，和旁边的百分比同一档，不再比字还黑
+    local fg = self.charging and COLOR_WHITE or (self.color or COLOR_BLACK)
 
     if self.charging then
         bb:paintRect(x, y, w, h, COLOR_BLACK)
@@ -309,7 +335,116 @@ function BatteryGauge:paintTo(bb, x, y)
 end
 
 -- ------------------------------------------------------------------ 布局小工具
-local function mkPad(w, h)
+
+--- 画一条任意角度的短线（只有矩形原语，只能逐点拼）。
+--- t 是线宽（像素）。用于待办的勾选两笔——设备上没有 drawLine。
+local function paintLine(bb, x0, y0, x1, y1, t, color)
+    local dx, dy = x1 - x0, y1 - y0
+    local n = math.max(math.abs(dx), math.abs(dy))
+    if n < 1 then
+        bb:paintRect(math.floor(x0), math.floor(y0), t, t, color)
+        return
+    end
+    for i = 0, n do
+        local px = math.floor(x0 + dx * i / n)
+        local py = math.floor(y0 + dy * i / n)
+        bb:paintRect(px, py, t, t, color)
+    end
+end
+
+--- 卡片：一块白面 + 1px 浅边 + 圆角，浮在 0xEE 纸底上。
+--- 整个 v2.53 版式的骨架——三区各一张卡，区与区之间露出纸底，
+--- 不再用 7px 纯黑通栏线分区（线太重，且把版面切成三条横带）。
+--- 高度按盒高固定，内容顶部对齐：块头永远贴着卡的上沿，下面留白由内容撑。
+local Card = Widget:extend{}
+function Card:getSize()
+    if self[1] and self.auto_h then
+        local cs = self[1]:getSize()
+        local need = cs.h + (self.pad_t or 0) + (self.pad_b or 0)
+        self.dimen.h = math.max(self.dimen.h or 0, need)
+    end
+    return self.dimen
+end
+--- 把卡片内部的留白拉开，让内容在卡里"铺开"而不是全挤在顶部。
+--- 三区高度是固定的（版式要稳），但内容多少天天在变：待办三条 vs 六条、
+--- 日月两行 vs 四行。内容少时若一律顶部对齐，卡下半就空一大片，看着像卡坏了。
+--- 这里按 gap_h 的比例放大卡内留白行，把内容均匀铺到卡底。
+--- 幂等：每次从 gap_h 重算（不是在上次结果上再乘），getSize 调用多少次都一样。
+function Card:fitChild()
+    local child = self[1]
+    if not child or self.spread == false then return end
+    local avail = (self.dimen.h or 0) - (self.pad_t or 0) - (self.pad_b or 0)
+    local used = child:getSize().h
+    local slack = avail - used
+    if slack <= 0 then return end
+    local total = 0
+    for i = 1, #child do
+        local r = child[i]
+        if r and r.gap_h and not r.fixed then total = total + r.gap_h end
+    end
+    if total <= 0 then return end
+    local k = math.min(self.spread_max or 2.0, 1 + slack / total)
+    for i = 1, #child do
+        local r = child[i]
+        if r and r.gap_h and r.dimen and not r.fixed then
+            r.dimen.h = math.max(1, math.floor(r.gap_h * k))
+        end
+    end
+end
+
+function Card:paintTo(bb, x, y)
+    local w, h = self.dimen.w, self.dimen.h
+    if w < 4 or h < 4 then return end
+    self:fitChild()
+    local r = self.radius or 0
+    if r > 0 then
+        bb:paintRoundedRect(x, y, w, h, self.bg or COLOR_WHITE, r)
+    else
+        bb:paintRect(x, y, w, h, self.bg or COLOR_WHITE)
+    end
+    if self.border then
+        bb:paintBorder(x, y, w, h, self.border, self.border_color or RULE,
+            r > 0 and r or nil, false)
+    end
+    local child = self[1]
+    if child then
+        local oy = self.pad_t or 0
+        if self.valign == "center" then
+            local slack = h - (self.pad_t or 0) - (self.pad_b or 0) - child:getSize().h
+            if slack > 0 then oy = oy + math.floor(slack / 2) end
+        end
+        child:paintTo(bb, x + (self.pad_l or 0), y + oy)
+    end
+end
+
+--- 待办勾选框：16du 见方，未勾是空心方框，勾了是实心 + 两笔反白对勾。
+--- 原来的 `[ ]` / `[x]` 是 ASCII 方括号拼的，笔画细碎、基线也不对，
+--- 在一屏只有两三行的 B 区里特别扎眼。
+local CheckBox = Widget:extend{}
+function CheckBox:getSize()
+    return self.dimen
+end
+function CheckBox:paintTo(bb, x, y)
+    local s = math.min(self.dimen.w, self.dimen.h)
+    if s < 4 then return end
+    local bw = math.max(1, self.line_w or 1)
+    local c = self.color or COLOR_BLACK
+    if self.done then
+        bb:paintRect(x, y, s, s, c)
+        -- 反白对勾：线宽取 1/8 边，太细在灰阶上会被噪声吃掉
+        local t = math.max(2, math.floor(s / 6))
+        local wc = self.tick_color or COLOR_WHITE
+        local pad = math.floor(s * 0.22)
+        paintLine(bb, x + pad, y + s * 0.52, x + s * 0.44, y + s - pad, t, wc)
+        paintLine(bb, x + s * 0.44, y + s - pad, x + s - pad, y + pad, t, wc)
+        -- 收尾压齐：paintLine 是逐点矩形，端点会漏半个线宽
+        bb:paintRect(math.floor(x + s - pad), math.floor(y + pad), t, t, wc)
+    else
+        bb:paintBorder(x, y, s, s, bw, c, nil, false)
+    end
+end
+
+local function mkPad(w, h, fixed)
     local hh = math.max(1, math.floor(h))
     return Widget:new{
         dimen = Geom:new{ w = math.max(0, math.floor(w)), h = hh },
@@ -318,6 +453,9 @@ local function mkPad(w, h)
         is_gap = true,
         -- 设计高度：桩件用它断言 stretchGaps「只放大、不缩小、不碰非留白行」
         gap_h = hh,
+        -- fixed = 不参与"卡内铺开"。块头与正文之间那种「必须紧」的间距要标上，
+        -- 否则余量会先被它吃掉，标题和第一行之间空出 30px，看着像两段不相干的内容。
+        fixed = fixed or nil,
     }
 end
 
@@ -341,18 +479,25 @@ end
 --   竖屏 版心 1020×1389、内容列 920 → A 414 / B 518 / C 239 px
 --   横屏 版心 1396×1018、内容列 1276 → A 295 / 下半 565（B 630 + 分隔 53 + C 593）
 local ZONE_SPEC = {
-    portrait  = { A = 224, B = 279, C = 128, gap = 9, sep = 4, sep2 = 3, pad = 28 },
-    landscape = { A = 162, lower = 304,          gap = 4, sep = 4, sep2 = 3, pad = 34 },
+    portrait  = { A = 224, B = 292, C = 148, gap = 16, head_gap = 12, card_pad = 14, foot_gap = 12 },
+    landscape = { A = 181, lower = 296,        gap = 14, head_gap = 12, card_pad = 14, foot_gap = 12 },
 }
+
+-- 卡片的圆角半径（设计单位）。8du 在 PW3 上是 14px，约 3.4mm 的弧——
+-- 再大就有"泡泡感"，再小等于没圆。设备端 paintBorder 会把超大半径自动夹住。
+local CARD_RADIUS = 8
 
 -- 组装骨架时必须按这个顺序取区，与配置表的键一致
 local ZONE_KEYS = { "A", "B", "C" }
 
 --- 每区的默认组件。老用户升级后没有 dashboard_components 设置，
 --- 全部回落到这里 → 视觉与升级前一致。
+--- v2.53 改了竖屏 B 区：从"农历节气"换成"今日行动"。一屏最该回答的三件事是
+--- 现在几点 / 今天什么天 / 今天要做什么，农历只回答第二个的一半，
+--- 而它占的是面积最大的一块（37%）。
 local ZONE_DEFAULT = {
-    portrait  = { A = "clock_weather", B = "lunar_term", C = "stats_cells" },
-    landscape = { A = "clock_weather", B = "calendar",   C = "side_panel" },
+    portrait  = { A = "clock_weather", B = "today_actions", C = "stats_cells" },
+    landscape = { A = "clock_weather", B = "today_actions", C = "side_panel" },
 }
 
 --- 组件注册表。zones 按方向分别声明白名单（同一个组件在竖屏能进的区
@@ -367,7 +512,9 @@ local COMPONENTS = {
         build = "compClockWeather",
     },
     lunar_term = {
-        label = "农历与节气", zones = { portrait = { "B" }, landscape = { "B", "C" } },
+        -- v2.53：横屏 B 区在窄屏下只有 ~370px 内容宽，农历那行「丙午年 · 马年」加上
+        -- 大字位最少要 411px，只能留在更宽的 C 区（596px）。竖屏 B 区不受影响。
+        label = "农历与节气", zones = { portrait = { "B" }, landscape = { "C" } },
         build = "compLunar",
     },
     stats_cells = {
@@ -424,7 +571,9 @@ local COMPONENTS = {
     -- 横屏 A 区只有 294 高、1276 宽，是最扁的一条：倒数日的大数字位塞进去会挤掉
     -- 列表，所以这两个只放 B/C（543 高），竖屏三区都够。
     countdown = {
-        label = "倒数日", zones = { portrait = { "A", "B", "C" }, landscape = { "B", "C" } },
+        -- v2.53：竖屏 C 区不再收倒数日。三区改成卡片之后 C 区要扣掉卡片内边距，
+        -- 卡内只剩 214px，而倒数日「块头 + 大字位 + 名称 + 日期」最小也要 250px。
+        label = "倒数日", zones = { portrait = { "A", "B" }, landscape = { "B", "C" } },
         expandable = "countdown",
         build = "compCountdown",
     },
@@ -432,6 +581,15 @@ local COMPONENTS = {
         label = "待办", zones = { portrait = { "A", "B", "C" }, landscape = { "B", "C" } },
         expandable = "todo",
         build = "compTodo",
+    },
+    -- ---- v2.53 新增 ----
+    -- 「今日行动」= 今日待办打卡（主体）+ 最近一条倒数日（脚注）。
+    -- 与 todo 的区别：todo 是纯清单，这个是「今天要做的 + 还有几天到期」的合成块，
+    -- 专门给 B 区（面积最大、视觉重心）用。点按同样展开待办列表。
+    today_actions = {
+        label = "今日行动", zones = { portrait = { "A", "B" }, landscape = { "B", "C" } },
+        expandable = "todo",
+        build = "compTodayActions",
     },
 }
 
@@ -468,25 +626,17 @@ function Dashboard:contentBox(W, H)
     return S, edge, W - edge * 2, H - edge * 2
 end
 
---- 横屏下半区宽度：左 B（7 个日历格宽）/ 右 C（吃掉剩余）/ 中间竖线
+--- 横屏下半区宽度：左 B（7 个日历格宽）/ 右 C（吃掉剩余）。
+--- v2.53 起两张卡之间不画竖线，只留一段纸底空隙，所以不再扣 vline_w。
 function Dashboard:lowerWidths(avail, S)
-    local gap = self:lowerVGap(S)
-    local vline_w = math.max(2, math.floor(3 * S))
+    local gap = math.floor(ZONE_SPEC.landscape.gap * S)
     local right_min = math.floor(330 * S)
     local cell_w = math.min(math.floor(52 * S),
-        math.floor((avail - right_min - gap * 2 - vline_w) / 7))
+        math.floor((avail - right_min - gap) / 7))
     cell_w = math.max(math.floor(34 * S), cell_w)
     local bw = cell_w * 7
-    local cw = math.max(math.floor(260 * S), avail - bw - gap * 2 - vline_w)
-    return bw, cw, vline_w
-end
-
---- 竖线两侧的留白。
---- 水平分隔线用 4 个设计单位就够了（那是条线，不挨字），但竖线两边紧挨着正文：
---- 在读卡的书名、空气明细的 AQI 都会几乎压到线上（实测只剩 7 px，等于贴着）。
---- 单独给到 10 个设计单位，B/C 两栏都跟着退回一点，宽度由 lowerWidths 同步扣掉。
-function Dashboard:lowerVGap(S)
-    return math.floor(ZONE_SPEC.landscape.gap * 2.6 * S)
+    local cw = math.max(math.floor(260 * S), avail - bw - gap)
+    return bw, cw
 end
 
 -- ------------------------------------------------------------------ 生命周期
@@ -604,6 +754,28 @@ function Dashboard:genMenuItemTable()
                 G_reader_settings:saveSetting("dashboard_screensaver", not enabled)
                 if G_reader_settings.flush then G_reader_settings:flush() end
             end,
+        },
+        {
+            text = T("显示设置"),
+            sub_item_table = {
+                {
+                    text = T("页脚手势提示"),
+                    help_text = TL(
+                        "关闭时页脚只显示「数据时刻 · 来源」，六个手势改成只在第一次打开时提示。\n"
+                        .. "打开后在页脚常驻一行，会把版面下沿挤占掉。",
+                        "When off, the footer only shows the data time and source.\n"
+                        .. "When on, the gesture hints take up a full line at the bottom."),
+                    checked_func = function()
+                        return G_reader_settings:readSetting("dashboard_show_hints") == true
+                    end,
+                    callback = function()
+                        local on = G_reader_settings:readSetting("dashboard_show_hints") == true
+                        G_reader_settings:saveSetting("dashboard_show_hints", not on)
+                        if G_reader_settings.flush then G_reader_settings:flush() end
+                        if self.shown then self:refreshLayout() end
+                    end,
+                },
+            },
         },
         {
             text = T("省电设置"),
@@ -2770,17 +2942,37 @@ end
 --- 文字被放大到 1.79 倍两遍，真机实测内容 1500x1902 撑破 1020x1396 的版心。
 function Dashboard:makeText(ctx, str, px, opts)
     opts = opts or {}
+    local size = math.max(11, math.floor(px))
+    local face = opts.face
+    if not face and opts.serif then face = FACE_SERIF end
+    local color = opts.color or COLOR_BLACK
+    if opts.gray and not opts.color then
+        -- 灰阶跟字号绑定：0x88 在 30px 以下会发虚（实测），30px = 17 设计单位。
+        -- 所以小字一律降到 0x66，"最浅那档"只留给真正的大字。这条比墨阶表更实用：
+        -- 全站所有 gray=true 的调用点不必逐个改，按字号自动落档。
+        color = (size >= 17) and INK3 or INK2
+    end
     return TextWidget:new{
         text = str or "",
-        face = Font:getFace(opts.face or "cfont", math.max(11, math.floor(px))),
+        face = Font:getFace(face or "cfont", size),
         bold = opts.bold or false,
-        fgcolor = opts.gray and COLOR_GRAY or COLOR_BLACK,
+        fgcolor = color,
         padding = 0,
         max_width = opts.max_width,
         -- 顶栏这类「高度固定的一行」不能折行：折了就把 header 顶高，
         -- 下面的三区预算全部跟着缩水。传 ellipsis 时改成像真机那样截断加省略号。
         truncate_with_ellipsis = opts.ellipsis or nil,
     }
+end
+
+--- 纯数字串（时钟、温度、AQI、倒计时）用衬线。
+--- 单独一个方法而不是给 makeText 加分支：调用点一眼能看出「这里换族了」，
+--- 也方便日后统一改回来。中文串**不要**走这里——衬线字体没有汉字，会回退成黑体，
+--- 一行里两种字形混排看着像 bug。
+function Dashboard:makeNum(ctx, str, px, opts)
+    opts = opts or {}
+    opts.serif = true
+    return self:makeText(ctx, str, px, opts)
 end
 
 --- 把纵向余量吸进「分块之间的空白」。
@@ -2908,9 +3100,11 @@ function Dashboard:createRoot()
         dimen = Geom:new{ w = W, h = H },
     }
 
-    -- 全屏白底：WidgetContainer 不会自动填背景，必须自己刷
+    -- 全屏纸底：WidgetContainer 不会自动填背景，必须自己刷。
+    -- v2.53 起铺 0xEE 而不是纯白 —— 三张白卡浮在微灰的纸上，卡与纸之间就有了
+    -- 层次（纯白底上再画白卡，等于什么都没画）。
     root.paintTo = function(self, bb, x, y)
-        bb:paintRect(x, y, W, H, COLOR_WHITE)
+        bb:paintRect(x, y, W, H, PAPER)
         local child = self[1]
         if child then
             local cs = child:getSize()
@@ -3020,41 +3214,47 @@ function Dashboard:createRoot()
     return root
 end
 
---- 顶部条：城市 · 时区（左） + 更新时间与电量（右），两端撑满
+--- 顶部条：城市 + 时区（左） / 电量（右），两端撑满。
+--- v2.53 减信息：去掉了「更新于 16:18」——那是 A 区大钟已经回答过的问题，
+--- 而它把顶栏挤成三段等宽的碎块。数据时刻挪到页脚，只在低头找的时候才需要。
 function Dashboard:buildHeader(ctx, pad_lr)
     local W, S = ctx.body_w or ctx.W, ctx.S
     local avail = W - pad_lr * 2
 
-    -- 右侧：更新时间 + 电量图标 + 百分比
-    local right_items = {
-        align = "center",
-        self:makeText(ctx, self:updateLabel(ctx), 19, { gray = true }),
-    }
+    -- 右侧：电量百分比 + 图标
+    local right_items = { align = "center" }
     local cap, charging = self:batteryInfo()
     if cap then
-        right_items[#right_items + 1] = mkPad(math.floor(14 * S), 1)
+        right_items[#right_items + 1] = self:makeText(ctx, string.format("%d%%", cap), 17,
+            { gray = true })
+        right_items[#right_items + 1] = mkPad(math.floor(9 * S), 1)
         right_items[#right_items + 1] = BatteryGauge:new{
             dimen = Geom:new{
                 w = math.floor(34 * S),
                 h = math.max(10, math.floor(17 * S)),
             },
-            border = math.max(1, math.floor(2 * S)),
+            border = math.max(1, math.floor(1.4 * S)),
             ratio = cap / 100,
             charging = charging,
+            color = INK2,
         }
-        right_items[#right_items + 1] = mkPad(math.floor(6 * S), 1)
-        right_items[#right_items + 1] = self:makeText(ctx, string.format("%d%%", cap), 19,
-            { gray = true })
     end
     local right = HorizontalGroup:new(right_items)
 
-    -- 左侧城市条按右侧实际占用反推可用宽度，避免两端挤在一起
+    -- 左侧：城市名一档、时区一档，靠字号与颜色分层，不再用「·」串成一句
     local min_fill = math.floor(16 * S)
+    local tz = self:makeText(ctx, I18n.headerTz(ctx.tz), 17, { gray = true })
     local left_w = math.floor(avail - right:getSize().w - min_fill)
     left_w = math.max(math.floor(avail * 0.35), left_w)
-    local left = self:makeText(ctx, string.format("%s · %s",
-        I18n.city(self:getCity()), I18n.headerTz(ctx.tz)), 26,
-        { max_width = left_w, ellipsis = true })
+    local city = self:makeText(ctx, I18n.city(self:getCity()), 24,
+        { max_width = math.max(math.floor(80 * S), left_w - tz:getSize().w - math.floor(10 * S)),
+          ellipsis = true })
+    local left = HorizontalGroup:new{
+        align = "center",
+        city,
+        mkPad(math.floor(10 * S), 1),
+        tz,
+    }
     local fill = math.max(min_fill, avail - left:getSize().w - right:getSize().w)
     return HorizontalGroup:new{
         align = "center",
@@ -3083,9 +3283,10 @@ function Dashboard:buildWeatherBlock(ctx, icon_px, temp_px, max_w)
     local side_max = max_w and math.max(math.floor(60 * S), max_w - icon_w - gap) or nil
     local side = VerticalGroup:new{
         align = "left",
-        self:makeText(ctx, d.temp, temp_px, { max_width = side_max }),
-        self:makeText(ctx, d.cond, 28, { max_width = side_max }),
-        d.feels and self:makeText(ctx, d.feels, 20, { gray = true, max_width = side_max })
+        -- 温度是纯拉丁数字串，换衬线；下面两行是中文，一律留在黑体。
+        self:makeNum(ctx, d.temp, temp_px, { max_width = side_max }),
+        self:makeText(ctx, d.cond, 26, { max_width = side_max }),
+        d.feels and self:makeText(ctx, d.feels, 17, { color = INK2, max_width = side_max })
             or mkPad(1, 1),
     }
     return HorizontalGroup:new{
@@ -3100,20 +3301,33 @@ end
 --- 等分状态格：湿度 / 风力 / AQI，或电量 / 网络。
 --- 总宽传进来、格宽在这里算：分隔线本身也占 1 px，先从总宽扣掉再等分，
 --- 否则 3 格会溢出 2 px（600x800 横屏 C 区实测 323>321，宽检查抓出来的）。
-function Dashboard:buildStatCells(ctx, total_w, items)
+function Dashboard:buildStatCells(ctx, total_w, items, box_h)
     local n = #items
+    local S = ctx.S
     local cell_w = math.floor((total_w - (n - 1)) / n)
+    -- v2.53：格子高度跟着卡片可用高走。原来是死板的 86 设计单位，
+    -- 卡一变高就在格子下面空出一截——三格里"湿度 / 44% / 南风"挤在上半，下半全空。
+    -- 改成「三行字量出固定高，剩余按 4:6 分给两个间距」：标签贴数值、数值离注远一点，
+    -- 眼睛先读数值。这也顺便让 2 格（电量 / 网络）和 3 格长得一样高。
+    local function lineH(px) return math.floor(px * S * 1.363) end
+    local fixed_h = lineH(17) + lineH(38) + lineH(17)
+    -- 减 2：TextWidget 的实际行高比 1.363 估出来的偶尔多 1~2px，贴着算会顶出去
+    local cell_h = math.max(math.floor(86 * S), math.floor((box_h or 0) - 2))
+    local slack = math.max(0, cell_h - fixed_h)
+    local gap_a = math.floor(slack * 0.4)
+    local gap_b = math.max(0, slack - gap_a)
     local cells = {}
     for i, it in ipairs(items) do
         if i > 1 then
-            cells[#cells + 1] = mkBox(1, math.floor(86 * ctx.S), nil)
+            cells[#cells + 1] = mkBox(1, cell_h, nil)
         end
-        cells[#cells + 1] = mkBox(cell_w, math.floor(86 * ctx.S), VerticalGroup:new{
+        cells[#cells + 1] = mkBox(cell_w, cell_h, VerticalGroup:new{
             align = "center",
-            self:makeText(ctx, it[1], 20, { gray = true }),
-            mkPad(1, math.floor(6 * ctx.S)),
-            self:makeText(ctx, it[2], 34),
-            it[3] and self:makeText(ctx, it[3], 18, { gray = true }) or mkPad(1, math.floor(24 * ctx.S)),
+            self:makeText(ctx, it[1], 17, { color = INK2 }),
+            mkPad(1, gap_a),
+            self:makeText(ctx, it[2], 38),
+            it[3] and self:makeText(ctx, it[3], 17, { color = INK2 }) or mkPad(1, 1),
+            mkPad(1, gap_b),
         }, { align = "center", auto_h = true })
     end
     return HorizontalGroup:new{ align = "center", unpack(cells) }
@@ -3127,17 +3341,35 @@ function Dashboard:buildZone(ctx, orient, key, box_w, content_w, box_h)
     local id = self:getZoneLayout()[orient][key]
     local comp = COMPONENTS[id] or COMPONENTS[ZONE_DEFAULT[orient][key]]
     local method = comp.build
+    -- v2.53：盒子变成一张卡片。box_w 是卡宽，content_w 是卡内可用宽
+    -- （调用方按 box_w - 2*card_pad 算好传进来），box_h 含上下内边距。
+    local S = ctx.S
+    local cpad = math.floor(ZONE_SPEC[orient].card_pad * S)
+    local inner_h = math.max(1, box_h - cpad * 2)
     local child
     for i = 1, #K_LADDER do
-        child = self[method](self, ctx, content_w, box_h, K_LADDER[i])
-        if child:getSize().h <= box_h then break end
+        child = self[method](self, ctx, content_w, inner_h, K_LADDER[i])
+        if child:getSize().h <= inner_h then break end
         if i == #K_LADDER then
             logger.warn(string.format(
-                "dashboard: 组件 %s 在 %s 区（高 %d）收到最小档仍占 %d，交给全局缩放",
-                id, key, box_h, child:getSize().h))
+                "dashboard: 组件 %s 在 %s 区（内容高 %d）收到最小档仍占 %d，交给全局缩放",
+                id, key, inner_h, child:getSize().h))
         end
     end
-    local box = mkBox(box_w, box_h, child)
+    local box = Card:new{
+        dimen = Geom:new{ w = math.floor(box_w), h = math.floor(box_h) },
+        pad_l = cpad,
+        pad_t = cpad,
+        pad_b = cpad,
+        radius = math.floor(CARD_RADIUS * S),
+        bg = COLOR_WHITE,
+        border = math.max(1, math.floor(1.4 * S)),
+        border_color = CARD_EDGE,
+        -- A 卡是「时钟 + 天气」这种矮块，卡里通常还有几十像素余量：
+        -- 顶部对齐会把整块内容顶在卡的上沿、下面空一条，居中看着才像"一张卡"。
+        valign = (key == "A") and "center" or nil,
+        child,
+    }
 
     -- 可展开组件（倒数日 / 待办）要记录盒子在**屏幕上的绝对坐标**，点按时按坐标
     -- 判断点到的是哪个区。坐标只有绘制时才确定（版心居中 → 四边留白 → 拉伸间距
@@ -3156,27 +3388,28 @@ function Dashboard:buildZone(ctx, orient, key, box_w, content_w, box_h)
 end
 
 --- 一条横向分隔线（宽度取版心宽，与四边留白对齐）
-local function sepLine(w, px)
+--- v2.53：三区改成卡片之后，页面上不再有通栏黑线；仅保留给卡内细分隔用。
+local function softRule(w, px, color)
     return Solid:new{
-        dimen = Geom:new{ w = w, h = math.max(2, math.floor(px)) },
-        color = COLOR_BLACK,
+        dimen = Geom:new{ w = w, h = math.max(1, math.floor(px)) },
+        color = color or RULE_SOFT,
     }
 end
 
--- ---------------------------------------------------------------- 竖屏：三区
+-- ---------------------------------------------------------------- 竖屏：三张卡
 function Dashboard:buildPortrait(ctx)
     local W, S = ctx.body_w or ctx.W, ctx.S
     local spec = ZONE_SPEC.portrait
-    local pad = math.floor(spec.pad * S)
-    local content_w = W - pad * 2
+    -- 顶栏与卡片**内容列**对齐（不是与卡片外沿对齐）：卡有内边距，顶栏跟着内缩，
+    -- 于是页面上只有一条左基准线。原来顶栏缩进 26px、正文缩进 76px，三个边距并存。
+    local cpad = math.floor(spec.card_pad * S)
+    local content_w = W - cpad * 2
     local gap = math.floor(spec.gap * S)
     local rows = {}
     local function push(x) rows[#rows + 1] = x end
 
-    push(self:buildHeader(ctx, pad))
-    push(mkPad(W, gap))
-    push(sepLine(W, spec.sep * S))
-    push(mkPad(W, gap))
+    push(self:buildHeader(ctx, cpad))
+    push(mkPad(W, math.floor(spec.head_gap * S)))
 
     -- 时钟控件只由 clock_weather 组件产生；清空必须放在循环**外**，
     -- 否则建完 A 再建 B/C 时会把刚设好的引用清掉（桩件有断言专门抓这个）
@@ -3185,59 +3418,49 @@ function Dashboard:buildPortrait(ctx)
         push(self:buildZone(ctx, "portrait", key, W, content_w, math.floor(spec[key] * S)))
         if i < #ZONE_KEYS then
             push(mkPad(W, gap))
-            push(sepLine(W, spec.sep2 * S))
-            push(mkPad(W, gap))
         end
     end
 
-    push(mkPad(W, gap))
-    push(self:buildHintRow(ctx, content_w, pad, 17))
+    push(mkPad(W, math.floor(spec.foot_gap * S)))
+    push(self:buildHintRow(ctx, content_w, cpad, 17))
     return VerticalGroup:new{ align = "left", unpack(rows) }
 end
 
--- ---------------------------------------------------------------- 横屏：A + 下半
+-- ---------------------------------------------------------------- 横屏：一横条 + 两张卡
 function Dashboard:buildLandscape(ctx)
     local W, S = ctx.body_w or ctx.W, ctx.S
     local spec = ZONE_SPEC.landscape
-    local pad = math.floor(spec.pad * S)
-    local avail = W - pad * 2
+    local cpad = math.floor(spec.card_pad * S)
+    local avail = W - cpad * 2
     local gap = math.floor(spec.gap * S)
     local rows = {}
     local function push(x) rows[#rows + 1] = x end
 
-    push(self:buildHeader(ctx, pad))
-    push(mkPad(W, gap))
-    push(sepLine(W, spec.sep * S))
-    push(mkPad(W, gap))
+    push(self:buildHeader(ctx, cpad))
+    push(mkPad(W, math.floor(spec.head_gap * S)))
 
     self.clock_widget = nil
     push(self:buildZone(ctx, "landscape", "A", W, avail, math.floor(spec.A * S)))
 
     push(mkPad(W, gap))
-    push(sepLine(W, spec.sep2 * S))
-    push(mkPad(W, gap))
 
-    -- 下半区：左 B / 竖线 / 右 C。宽度由可用空间反推——固定列宽在 300ppi 的
-    -- 1448px 屏上会让右栏被挤出屏幕，所以 B 的列宽先算，C 吃掉剩下的。
-    local bw, cw, vline_w = self:lowerWidths(avail, S)
-    local vgap = self:lowerVGap(S)
+    -- 下半区：左 B / 右 C 两张卡，中间只留纸底的空隙（原来是一条竖黑线，
+    -- 在两张白卡之间等于多画了一道边）。
+    local bw, cw = self:lowerWidths(avail, S)
     local lower_h = math.floor(spec.lower * S)
 
-    local left = self:buildZone(ctx, "landscape", "B", bw, bw, lower_h)
-    local right = self:buildZone(ctx, "landscape", "C", cw, cw, lower_h)
+    local left = self:buildZone(ctx, "landscape", "B", bw, bw - cpad * 2, lower_h)
+    local right = self:buildZone(ctx, "landscape", "C", cw, cw - cpad * 2, lower_h)
     push(HorizontalGroup:new{
         align = "top",
-        mkPad(pad, 1),
         left,
-        mkPad(vgap, 1),
-        Solid:new{ dimen = Geom:new{ w = vline_w, h = lower_h }, color = COLOR_BLACK },
-        mkPad(vgap, 1),
+        mkPad(gap, 1),
         right,
-        mkPad(pad, 1),
+        mkPad(math.max(0, avail - bw - cw - gap), 1),
     })
 
-    push(mkPad(W, gap))
-    push(self:buildHintRow(ctx, avail, pad, 20))
+    push(mkPad(W, math.floor(spec.foot_gap * S)))
+    push(self:buildHintRow(ctx, avail, 0, 17))
     return VerticalGroup:new{ align = "left", unpack(rows) }
 end
 
@@ -3278,19 +3501,21 @@ function Dashboard:compClockWeather(ctx, w, h, k)
     local S = ctx.S
     local land = ctx.landscape
     self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text,
+    -- 大钟换衬线：四款字体的数字全是等宽（实测 57/56/56/50），所以逐分钟改字
+    -- 不会抖动，可以放心用衬线。中文日期留在黑体（衬线没有汉字）。
+    self.clock_widget = self:makeNum(ctx, self.clock_text,
         math.floor((land and 82 or 112) * k))
     local clock_block = VerticalGroup:new{
         align = "left",
         self.clock_widget,
-        mkPad(1, math.floor(6 * S * k)),
+        mkPad(1, math.floor(8 * S * k)),
         self:makeText(ctx, I18n.dateLine(ctx.now, not land),
-            math.floor((land and 28 or 32) * k)),
+            math.floor((land and 24 or 26) * k), { color = INK2 }),
     }
-    local min_gap = math.floor(14 * S)
+    local min_gap = math.floor(16 * S)
     local weather = self:buildWeatherBlock(ctx,
         math.floor((land and 78 or 76) * k),
-        math.floor((land and 60 or 50) * k),
+        math.floor((land and 62 or 54) * k),
         math.max(math.floor(w * 0.42), w - clock_block:getSize().w - min_gap))
     local fill = math.max(min_gap, w - clock_block:getSize().w - weather:getSize().w)
     return HorizontalGroup:new{
@@ -3307,11 +3532,13 @@ function Dashboard:compLunar(ctx, w, h, k)
     local rows = {}
     local function push(x) rows[#rows + 1] = x end
 
-    push(CenterContainer:new{
-        dimen = Geom:new{ w = w, h = math.floor(28 * S * k) },
-        self:makeText(ctx, T("农历"), math.floor(20 * k), { gray = true }),
+    -- 块头左对齐、17du / 0x66，与「今日行动」「待办」那些卡的块头对齐成一条线。
+    -- 原来是居中，在一列全是左对齐的卡里显得没站住。
+    push(HorizontalGroup:new{
+        align = "left",
+        self:makeText(ctx, T("农历"), math.floor(17 * k), { color = INK2 }),
     })
-    push(mkPad(w, math.floor(2 * S * k)))
+    push(mkPad(w, math.floor(6 * S * k)))
 
     local big_txt = I18n.lunarMonthDay(ctx.lunar)
     if I18n.lang() == "en" then
@@ -3374,9 +3601,9 @@ function Dashboard:compLunar(ctx, w, h, k)
     push(HorizontalGroup:new{
         align = "center",
         ProgressBar:new{
-            dimen = Geom:new{ w = w, h = math.max(8, math.floor(10 * S * k)) },
+            dimen = Geom:new{ w = w, h = math.max(10, math.floor(12 * S * k)) },
             ratio = ratio,
-            border = math.max(1, math.floor(2 * S)),
+            border = math.max(1, math.floor(1.4 * S)),
         },
     })
     push(mkPad(w, math.floor(8 * S * k)))
@@ -3402,7 +3629,7 @@ function Dashboard:compStats(ctx, w, h, k)
         { T("湿度"), d.hum or "--" },
         { T("风力"), d.wind or "--", d.wind_dir },
         { "AQI", air.text, air.level },
-    })
+    }, h)
 end
 
 --- 月历的格宽与列距。抽成独立方法是为了让桩件能直接断言排布，
@@ -3507,14 +3734,16 @@ end
 function Dashboard:compClockBig(ctx, w, h, k)
     local S, land = ctx.S, ctx.landscape
     self.clock_text = string.format("%02d:%02d", ctx.now.hour, ctx.now.min)
-    self.clock_widget = self:makeText(ctx, self.clock_text,
+    self.clock_widget = self:makeNum(ctx, self.clock_text,
         math.floor((land and 88 or 124) * k))
     return VerticalGroup:new{
         align = "center",
         self.clock_widget,
-        mkPad(1, math.floor((land and 6 or 10) * S * k)),
+        -- fixed：时钟与日期之间这段必须贴住。不标的话 Card 的"铺开"会把它拉成
+        -- 上百像素，日期被推到卡片下沿，时钟孤零零悬在中间。
+        mkPad(1, math.floor((land and 8 or 12) * S * k), true),
         self:makeText(ctx, I18n.dateLine(ctx.now, not land),
-            math.floor((land and 26 or 30) * k), { gray = true }),
+            math.floor((land and 24 or 26) * k), { color = INK2 }),
     }
 end
 
@@ -3529,15 +3758,15 @@ function Dashboard:compWeatherBig(ctx, w, h, k)
         align = "left",
         -- 竖屏温度 92→86：真机字号要再乘 1.79（Font:getFace 里走 scaleBySize），
         -- 92 时整列 410 px，比 A 区的 400 px 高出一截，只能靠 K_LADDER 缩字收场
-        self:makeText(ctx, d.temp, math.floor((land and 70 or 86) * k),
+        self:makeNum(ctx, d.temp, math.floor((land and 70 or 86) * k),
             { max_width = side_max }),
-        self:makeText(ctx, d.cond, math.floor((land and 26 or 32) * k),
+        self:makeText(ctx, d.cond, math.floor((land and 26 or 28) * k),
             { max_width = side_max }),
-        self:makeText(ctx, d.range or "--", math.floor((land and 20 or 24) * k),
-            { gray = true, max_width = side_max }),
+        self:makeText(ctx, d.range or "--", math.floor((land and 19 or 21) * k),
+            { color = INK2, max_width = side_max }),
         -- 竖屏 A 区又高又宽，只放三行会显得空；补一行体感（横屏放不下就不放）
-        land and mkPad(1, 1) or self:makeText(ctx, d.feels or "", math.floor(19 * k),
-            { gray = true, max_width = side_max }),
+        land and mkPad(1, 1) or self:makeText(ctx, d.feels or "", math.floor(17 * k),
+            { color = INK2, max_width = side_max }),
     }
     return HorizontalGroup:new{
         align = "center",
@@ -3822,7 +4051,9 @@ function Dashboard:compSunMoon(ctx, w, h, k)
     local moon = self:moonInfo(ctx)
     local day = self:dailyAt(1)
     local daylen = minutesBetween(d.sunrise, d.sunset)
-    local tall = h >= math.floor(250 * S)
+    -- v2.53：阈值从 250 降到 190 —— C 卡扣掉卡片内边距只剩 ~214px，
+    -- 按老阈值「白昼 / 月升月落」两行永远不显示，卡里空一大片。
+    local tall = h >= math.floor(110 * S)
     -- 三列各占 (w - 2×列距)/3：窄盒里大字再按 36 设计单位会被挤破，按盒宽退到 26
     local big_px = (w < math.floor(300 * S)) and 26 or (tall and 36 or 32)
     local col_gap = math.floor(18 * S * k)
@@ -3830,18 +4061,25 @@ function Dashboard:compSunMoon(ctx, w, h, k)
 
     -- 列宽是硬边界：正文长度随语言变（英文 "Waxing crescent" 是中文「盈凸月」的三倍多），
     -- 先用正常字号、装不进列宽就逐档退，退到底还宽才折行。
-    local function column(label, big)
+    local function column(label, big, serif)
         local str = big or "--"
         local px = big_px
         for _, cand in ipairs({ big_px, big_px - 6, big_px - 12 }) do
             px = cand
             if self:makeText(ctx, str, math.floor(cand * k)):getSize().w <= col_w then break end
         end
+        -- 时间是纯数字，换衬线；月相是中文，留在黑体（衬线字体没有汉字）
+        local val
+        if serif then
+            val = self:makeNum(ctx, str, math.floor(px * k), { max_width = col_w })
+        else
+            val = self:makeText(ctx, str, math.floor(px * k), { max_width = col_w })
+        end
         return VerticalGroup:new{
             align = "center",
-            self:makeText(ctx, label, math.floor(18 * k), { gray = true }),
-            mkPad(1, math.floor(4 * S * k)),
-            self:makeText(ctx, str, math.floor(px * k), { max_width = col_w }),
+            self:makeText(ctx, label, math.floor(17 * k), { color = INK2 }),
+            mkPad(1, math.floor(6 * S * k)),
+            val,
         }
     end
 
@@ -3862,9 +4100,9 @@ function Dashboard:compSunMoon(ctx, w, h, k)
     end
 
     local cols = spreadRows({
-        column(T("日出"), d.sunrise),
-        column(T("日落"), d.sunset),
-        column(T("月相"), moon.label),
+        column(T("日出"), d.sunrise, true),
+        column(T("日落"), d.sunset, true),
+        column(T("月相"), moon.label, false),
     }, w)
     if not tall then return cols end
     -- 高度够时补两行注释：白昼时长 / 月升月落。都给 max_width，长文案折行不收边。
@@ -3873,12 +4111,12 @@ function Dashboard:compSunMoon(ctx, w, h, k)
         cols,
         mkPad(1, math.floor(12 * S * k)),
         self:makeText(ctx, daylen_text or moon_note, math.floor(17 * k),
-            { gray = true, max_width = w }),
+            { color = INK2, max_width = w }),
     }
     if daylen_text then
         rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
         rows[#rows + 1] = self:makeText(ctx, moon_note, math.floor(17 * k),
-            { gray = true, max_width = w })
+            { color = INK2, max_width = w })
     end
     return VerticalGroup:new(rows)
 end
@@ -3901,67 +4139,89 @@ function Dashboard:compAirDetail(ctx, w, h, k)
     -- 给个「AQI」标签：光一个 65 摆在版面上没人知道是啥（三格状态那边也是标签在上）。
     -- 但窄盒里要能去掉——横屏 B 区只有 553 高，带标签就得整块缩字号（实测 588>543），
     -- 所以两种头都备着，装不下就退到没标签那版。
+    -- 单位上提到块头（只写一次）：六项各自跟一个 µg/m³，等于把每格撑宽 60px，
+    -- 而六个单位说的是同一件事。CO 是 mg/m³（量纲差 1000 倍），它的单位仍然跟着数值走。
     local head_full = VerticalGroup:new{
         align = "left",
-        self:makeText(ctx, "AQI", math.floor(17 * k), { gray = true }),
+        HorizontalGroup:new{
+            align = "center",
+            self:makeText(ctx, "AQI", math.floor(17 * k), { color = INK2 }),
+            mkPad(math.floor(8 * S), 1),
+            self:makeText(ctx, "µg/m³", math.floor(15 * k), { color = INK2 }),
+        },
+        mkPad(1, math.floor(4 * S * k)),
+        self:makeNum(ctx, air.text or "--", math.floor(58 * k)),
         mkPad(1, math.floor(2 * S * k)),
-        self:makeText(ctx, air.text or "--", math.floor(56 * k)),
-        self:makeText(ctx, sub, math.floor(21 * k), { gray = true, max_width = w }),
+        self:makeText(ctx, sub, math.floor(19 * k), { color = INK2, max_width = w }),
         mkPad(1, math.floor(12 * S * k)),
     }
     local head_bare = VerticalGroup:new{
         align = "left",
-        self:makeText(ctx, air.text or "--", math.floor(56 * k)),
-        self:makeText(ctx, sub, math.floor(21 * k), { gray = true, max_width = w }),
+        self:makeNum(ctx, air.text or "--", math.floor(58 * k)),
+        mkPad(1, math.floor(2 * S * k)),
+        self:makeText(ctx, sub, math.floor(19 * k), { color = INK2, max_width = w }),
         mkPad(1, math.floor(12 * S * k)),
     }
     local rows = { align = "left" }
 
     -- 六项按 POLLUTANT_ORDER 轮询：缺哪项就补一格 "--"，格子不错位。
-    -- 浓度格式跟着单位走：mg/m³（CO）保留一位小数，μg/m³ 取整——
-    -- CO 的 0.8 与 2.6 取整后会变成 1 和 3，差别就很明显了。
-    local cells, order = {}, I18n.POLLUTANT_ORDER
+    -- 每格拆成「标签（0x66 / 17du）+ 数值（26du）」两段：标签定宽、数值在格内右对齐，
+    -- 六项的数字才会纵向成一条竖线。原来是一整串「PM2.5 42 µg/m³」，
+    -- 位数一变（4 → 112）后面的文字就跟着漂。
+    local order = I18n.POLLUTANT_ORDER
+    local cols_data = {}
+    local label_w, val_w = 0, 0
     for _, code in ipairs(order) do
         local p = by_code[code]
-        local value = "--"
+        local num = "--"
         if p and p.value then
-            local num = (p.unit == "mg/m³")
-                and string.format("%.1f", p.value)
-                or tostring(math.floor(p.value + 0.5))
-            value = num .. " " .. p.unit
+            -- CO 的量纲是 mg/m³，比其余五项大 1000 倍。这里统一换算成 µg/m³，
+            -- 六个数字才能共用一个单位（单位写在块头），也不必为了 "0.8 mg/m³"
+            -- 这一格把整列拉宽 —— 那一格的宽度会传染给另外五格。
+            local v = (p.unit == "mg/m³") and (p.value * 1000) or p.value
+            num = tostring(math.floor(v + 0.5))
         end
-        cells[#cells + 1] = self:makeText(ctx,
-            I18n.pollutant(code) .. " " .. value, math.floor(18 * k), { max_width = w })
+        local lab = self:makeText(ctx, I18n.pollutant(code), math.floor(17 * k), { color = INK2 })
+        local val = self:makeText(ctx, num, math.floor(26 * k))
+        label_w = math.max(label_w, lab:getSize().w)
+        val_w = math.max(val_w, val:getSize().w)
+        cols_data[#cols_data + 1] = { lab = lab, val = val }
     end
 
-    -- 列数按实测宽度选，不能写死三列：竖屏 920 宽三列刚好，横屏 C 区只有 650 宽，
-    -- 三列会把最后两格顶到屏幕外（实测溢出 95 px）。
-    -- 判据是「最宽那格 × 列数 ≤ 盒宽」——等宽栅格里每格只有 w/列数，
-    -- 按「每行之和」判会放过一格比格宽还宽的情况，相邻两格就叠在一起了。
-    local max_cell = 0
-    for _, c in ipairs(cells) do
-        max_cell = math.max(max_cell, c:getSize().w)
-    end
+    -- 列数按「一格实际需要多宽」选，不能写死：竖屏 920 三列正好，
+    -- 横屏 C 区 650 宽三列会把最后两格顶出屏幕（实测溢出 95px）。
+    local gap_in = math.floor(8 * S * k)
+    local cell_need = label_w + gap_in + val_w
+    local col_gap_min = math.floor(18 * S * k)
     local per_row = 1
     for _, cand in ipairs({ 3, 2 }) do
-        if max_cell * cand <= w then per_row = cand; break end
+        if cell_need * cand + col_gap_min * (cand - 1) <= w then per_row = cand; break end
     end
-    local cell_w = math.floor(w / per_row)
+    -- 列距吃满剩余宽度：格子本身只要「标签 + 数值」那么宽，
+    -- 多出来的空间全部均分成列距。绝不吃进格内——格内留白一大，
+    -- 标签和它的数字会被拉开成两段不相干的东西（预览图上一眼能看到）。
+    local col_gap = 0
+    if per_row > 1 then
+        col_gap = math.floor(math.max(col_gap_min, (w - cell_need * per_row) / (per_row - 1)))
+    end
 
-    -- 等宽栅格、格内左对齐。不用 spreadRows：两列时它会把格子推到版面两端
-    -- （横屏 C 区 733 宽，左边「PM2.5 109」右边「PM10 112」，中间空一大条），
-    -- 栅格排下来才像一张表，六项也好对位。
-    for i = 1, #cells, per_row do
+    for i = 1, #cols_data, per_row do
         local line = { align = "left" }
         for j = 0, per_row - 1 do
-            local c = cells[i + j]
-            if c then
-                line[#line + 1] = mkBox(cell_w, 1, c, { align = "left", auto_h = true })
+            local d = cols_data[i + j]
+            if d then
+                if j > 0 then line[#line + 1] = mkPad(col_gap, 1) end
+                line[#line + 1] = HorizontalGroup:new{
+                    align = "center",
+                    mkBox(label_w, 1, d.lab, { align = "left", auto_h = true }),
+                    mkPad(gap_in, 1),
+                    mkBox(val_w, 1, d.val, { align = "right", auto_h = true }),
+                }
             end
         end
         rows[#rows + 1] = HorizontalGroup:new(line)
-        if i + per_row <= #cells then
-            rows[#rows + 1] = mkPad(1, math.floor(8 * S * k))
+        if i + per_row <= #cols_data then
+            rows[#rows + 1] = mkPad(1, math.floor(11 * S * k))
         end
     end
     local grid = VerticalGroup:new(rows)
@@ -3993,7 +4253,7 @@ function Dashboard:compBatteryNet(ctx, w, h, k)
         },
         { T("网络"), wifi_text, nil },
     }
-    return self:buildStatCells(ctx, w, items)
+    return self:buildStatCells(ctx, w, items, h)
 end
 
 -- ---------------------------------------------------------------- 倒数日 / 待办
@@ -4008,11 +4268,13 @@ local function textLineH(px, S, k)
 end
 
 --- 标题行：左标题，右侧可选小标签（置顶 / 2/5）。整行铺满盒宽。
+--- 标题 17du（30px，中文可读下限）用 0x66 而不是 0x88：它是块头，要压得住内容，
+--- 0x88 在 30px 上只是"勉强能看"。
 function Dashboard:compHeadRow(ctx, w, k, left_text, right_text)
-    local left = self:makeText(ctx, left_text, math.floor(20 * k), { gray = true })
+    local left = self:makeText(ctx, left_text, math.floor(17 * k), { color = INK2 })
     local row = { align = "center", left }
     if right_text then
-        local right = self:makeText(ctx, right_text, math.floor(17 * k), { gray = true })
+        local right = self:makeText(ctx, right_text, math.floor(15 * k), { color = INK2 })
         row[#row + 1] = mkPad(math.max(0, w - left:getSize().w - right:getSize().w), 1)
         row[#row + 1] = right
     end
@@ -4068,7 +4330,7 @@ function Dashboard:compCountdown(ctx, w, h, k)
             line[#line + 1] = self:makeText(ctx, pre, math.floor(20 * k), { gray = true })
             line[#line + 1] = mkPad(math.floor(10 * S * k), 1)
         end
-        line[#line + 1] = self:makeText(ctx, tostring(math.abs(f.days)), math.floor(big_px * k))
+        line[#line + 1] = self:makeNum(ctx, tostring(math.abs(f.days)), math.floor(big_px * k))
         line[#line + 1] = mkPad(math.floor(6 * S * k), 1)
         line[#line + 1] = self:makeText(ctx, I18n.daysUnit(f.days), math.floor(18 * k),
             { gray = true })
@@ -4119,28 +4381,25 @@ function Dashboard:compTodo(ctx, w, h, k)
             dimen = Geom:new{ w = w, h = math.floor(h) },
             VerticalGroup:new{
                 align = "center",
-                self:makeText(ctx, T("今日无待办"), math.floor(22 * k), { gray = true }),
+                self:makeText(ctx, T("今日无待办"), math.floor(22 * k), { color = INK2 }),
                 mkPad(1, math.floor(8 * S * k)),
-                self:makeText(ctx, sub, math.floor(16 * k), { gray = true, max_width = w }),
+                self:makeText(ctx, sub, math.floor(16 * k), { color = INK2, max_width = w }),
             },
         }
     end
 
     local gap1 = math.floor(8 * S * k)
-    local row_px = 20
-    local row_h = textLineH(row_px, S, k) + math.floor(4 * S * k)
+    local row_px = 22
+    local box_px = math.floor(18 * S * k)
+    local line_h = math.max(textLineH(row_px, S, k), box_px)
+    local row_gap = math.floor(6 * S * k)
+    local row_h = line_h + row_gap
     local cap = math.max(0, math.floor((h - head:getSize().h - gap1) / row_h))
     local n = math.min(#v.today, cap)
     local rows = { align = "left", head, mkPad(1, gap1) }
     for i = 1, n do
-        local it = v.today[i]
-        -- 勾选框用 [ ] / [x]：e-ink 的中文字体不一定有 ☐ ✓ 这些符号，
-        -- 缺字会画成豆腐块；ASCII 方括号在任何字体里都在。
-        local text = string.format("%s %s", it.done and "[x]" or "[ ]", it.text)
-        if i > 1 then rows[#rows + 1] = mkPad(1, math.floor(4 * S * k)) end
-        rows[#rows + 1] = self:makeText(ctx, text, math.floor(row_px * k), {
-            gray = it.done, ellipsis = true, max_width = w,
-        })
+        if i > 1 then rows[#rows + 1] = mkPad(1, row_gap) end
+        rows[#rows + 1] = self:todoRow(ctx, w, k, v.today[i], row_px, box_px)
     end
 
     -- 还有空位就补一行「未来 N 项」，不占行数预算时才有
@@ -4151,8 +4410,102 @@ function Dashboard:compTodo(ctx, w, h, k)
             rows[#rows + 1] = mkPad(1, math.floor(6 * S * k))
             rows[#rows + 1] = self:makeText(ctx,
                 string.format("%s %d %s", T("未来"), v.pending_future, I18n.items(v.pending_future)),
-                math.floor(16 * k), { gray = true })
+                math.floor(16 * k), { color = INK2 })
         end
+    end
+    return VerticalGroup:new(rows)
+end
+
+--- 一行待办：自绘勾选框 + 文本。
+--- 勾选框不用 `[ ]` / `[x]`：方括号笔画细碎、基线也不对，在一屏只有三四行的
+--- B 区里特别扎眼。自绘方框能控制线宽、间距和勾的两笔，还能和文字块垂直居中。
+function Dashboard:todoRow(ctx, w, k, it, row_px, box_px)
+    local S = ctx.S
+    local gap = math.floor(13 * S)
+    local box = CheckBox:new{
+        dimen = Geom:new{ w = box_px, h = box_px },
+        done = it.done,
+        line_w = math.max(1, math.floor(1.4 * S)),
+        color = it.done and INK2 or COLOR_BLACK,
+    }
+    local text_w = math.max(math.floor(40 * S), w - box_px - gap)
+    local txt = self:makeText(ctx, it.text, math.floor(row_px * k), {
+        color = it.done and INK2 or COLOR_BLACK,
+        ellipsis = true,
+        max_width = text_w,
+    })
+    return HorizontalGroup:new{
+        align = "center",
+        box,
+        mkPad(gap, 1),
+        txt,
+    }
+end
+
+--- 今日行动（v2.53 默认 B 区）：今日打卡清单为主体，末尾带一条倒数日。
+--- 与「待办」组件的区别：字号更大（26 vs 22）、行距更松（它是版面主体，
+--- 不是清单附录），并且把最近一条倒数日当脚注挂在末尾——
+--- 「今天做什么」和「还剩几天」本来就是同一个问题。
+function Dashboard:compTodayActions(ctx, w, h, k)
+    local S = ctx.S
+    local v = Agenda.todosView(ctx.now)
+    local counter = v.total_today > 0
+        and string.format("%d/%d", v.done_today, v.total_today) or nil
+    local head = self:compHeadRow(ctx, w, k, T("今日行动"), counter)
+
+    if v.total_today == 0 then
+        local sub = v.pending_future > 0
+            and string.format("%s · %s %d %s", T("今日无待办"), T("未来"),
+                v.pending_future, I18n.items(v.pending_future))
+            or TL("菜单 → 待办事项 → 添加", "Menu → To-dos → Add")
+        return CenterContainer:new{
+            dimen = Geom:new{ w = w, h = math.floor(h) },
+            VerticalGroup:new{
+                align = "center",
+                self:makeText(ctx, T("今日无待办"), math.floor(24 * k), { color = INK2 }),
+                mkPad(1, math.floor(9 * S * k)),
+                self:makeText(ctx, sub, math.floor(16 * k), { color = INK2, max_width = w }),
+            },
+        }
+    end
+
+    local gap1 = math.floor(11 * S * k)
+    local row_px = 26
+    local box_px = math.floor(19 * S * k)
+    local line_h = math.max(textLineH(row_px, S, k), box_px)
+    local row_gap = math.floor(9 * S * k)
+    local row_h = line_h + row_gap
+
+    -- 脚注优先占一行：它是「今天之外还有几天」的唯一线索，被列表挤掉就白放了
+    local ev = Agenda.eventsView(ctx.now)
+    local foot_text
+    if ev.focus then
+        foot_text = string.format("%s · %s", ev.focus.name, I18n.relDays(ev.focus.days))
+    end
+    local foot_block = foot_text and (textLineH(15, S, k) + math.floor(13 * S * k)) or 0
+
+    local avail = h - head:getSize().h - gap1 - foot_block
+    local cap = math.max(0, math.floor(avail / row_h))
+    local n = math.min(#v.today, cap)
+
+    local rows = { align = "left", head, mkPad(1, gap1, true) }
+    for i = 1, n do
+        if i > 1 then rows[#rows + 1] = mkPad(1, row_gap) end
+        rows[#rows + 1] = self:todoRow(ctx, w, k, v.today[i], row_px, box_px)
+    end
+
+    -- 尾部一行：还有没排上的条目就说条数，否则说倒数日（两者都有时优先条数）
+    local rest = #v.today - n
+    local tail
+    if rest > 0 then
+        tail = string.format("%s %d %s", T("另有"), rest, I18n.items(rest))
+    else
+        tail = foot_text
+    end
+    if tail then
+        rows[#rows + 1] = mkPad(1, math.floor(13 * S * k))
+        rows[#rows + 1] = self:makeText(ctx, tail, math.floor(15 * k),
+            { color = INK2, max_width = w })
     end
     return VerticalGroup:new(rows)
 end
@@ -4279,36 +4632,36 @@ function Dashboard:buildSidePanel(ctx, width, kf, max_h)
 
     local items = {
         align = "left",
-        mt(T("农历"), 18, { gray = true }),
-        mkPad(1, math.floor(2 * S)),
+        mt(T("农历"), 17, { color = INK2 }),
+        mkPad(1, math.floor(3 * S)),
         mt(I18n.lunarMonthDay(ctx.lunar), 32),
-        mkPad(1, math.floor(4 * S)),
+        mkPad(1, math.floor(5 * S)),
         mt(string.format("%s · %s", I18n.lunarGanzhi(ctx.lunar),
-            I18n.zodiacYear(Lunar.zodiac(ctx.lunar))), 20, { gray = true }),
-        mkPad(1, math.floor(8 * S)),
-        Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
-        mkPad(1, math.floor(8 * S)),
-        mt(T("节气"), 18, { gray = true }),
-        mkPad(1, math.floor(2 * S)),
+            I18n.zodiacYear(Lunar.zodiac(ctx.lunar))), 19, { color = INK2 }),
+        mkPad(1, math.floor(12 * S)),
+        softRule(width, 1, RULE_SOFT),
+        mkPad(1, math.floor(12 * S)),
+        mt(T("节气"), 17, { color = INK2 }),
+        mkPad(1, math.floor(3 * S)),
         mt(I18n.termProgress(I18n.term(ctx.cur_term.name), elapsed or 1), 26),
-        mkPad(1, math.floor(6 * S)),
+        mkPad(1, math.floor(8 * S)),
         ProgressBar:new{
-            dimen = Geom:new{ w = math.floor(width * 0.82), h = math.max(8, math.floor(10 * S)) },
+            dimen = Geom:new{ w = width, h = math.max(10, math.floor(12 * S)) },
             ratio = ratio,
-            border = math.max(1, math.floor(2 * S)),
+            border = math.max(1, math.floor(1.4 * S)),
         },
-        mkPad(1, math.floor(4 * S)),
+        mkPad(1, math.floor(6 * S)),
         mt(ctx.next_term
             and I18n.termCountdown(I18n.term(ctx.next_term.name), remain)
-            or "", 18, { gray = true }),
-        mkPad(1, math.floor(8 * S)),
-        Solid:new{ dimen = Geom:new{ w = width, h = 1 }, color = COLOR_GRAY },
-        mkPad(1, math.floor(8 * S)),
-        mt(T("天文与空气"), 18, { gray = true }),
-        mkPad(1, math.floor(3 * S)),
+            or "", 17, { color = INK2 }),
+        mkPad(1, math.floor(12 * S)),
+        softRule(width, 1, RULE_SOFT),
+        mkPad(1, math.floor(12 * S)),
+        mt(T("天文与空气"), 17, { color = INK2 }),
+        mkPad(1, math.floor(5 * S)),
         mt(string.format("%s %s   %s %s",
             T("日出"), d.sunrise or "--:--", T("日落"), d.sunset or "--:--"), 19),
-        mkPad(1, math.floor(4 * S)),
+        mkPad(1, math.floor(5 * S)),
         mt(string.format("%s   %s AQI %s",
             d.feels or "--", T("空气"), air.text), 19),
     }
@@ -4316,14 +4669,14 @@ function Dashboard:buildSidePanel(ctx, width, kf, max_h)
     return VerticalGroup:new(items)
 end
 
---- 底部操作提示：固定一行。文案变长或真机字体更宽时自动降字号，绝不换行
---- （换行会把版心撑高，横屏本来余量就小，一换行就触发整体缩放）
---- 底部单行操作提示。
+--- 底部单行。默认只印「数据时刻 · 来源」，手势提示收进配置（show_hints）。
+--- 理由：六段手势提示常驻一行，占了页脚全部空间，而它只在头三天有用；
+--- 版面上最该抢眼的永远是 A/B 区的内容，不是操作说明。
 --- 关键：量宽度必须用「不带 max_width」的探针。带了 max_width 的 TextWidget
 --- 会折行，getSize().w 永远等于上限值，降字号的循环第一次就误判为“放得下”，
 --- 结果真机上折成两行（实测 920x84 而不是 920x42）。
 function Dashboard:buildHintRow(ctx, max_w, pad_lr, base_px)
-    local text = self:hintLine()
+    local text = self:hintLine(ctx)
     local px, natural = base_px, 0
     -- 每次降 1 个单位（原先是 0.92 的乘法，17 -> 15 会直接跳过 16，
     -- 一个字的差别就让字号掉两级）
@@ -4332,7 +4685,7 @@ function Dashboard:buildHintRow(ctx, max_w, pad_lr, base_px)
         if natural <= max_w or px <= 11 then break end
         px = math.max(11, px - 1)
     end
-    local widget = self:makeText(ctx, text, px, { gray = true, max_width = max_w })
+    local widget = self:makeText(ctx, text, px, { color = INK2, max_width = max_w })
     self.hint_used = { px = px, w = natural, max_w = max_w }
     local w = widget:getSize().w
     return HorizontalGroup:new{
@@ -4352,14 +4705,33 @@ function Dashboard:sourceShort()
     return nil
 end
 
---- 单行操作提示文案（竖屏横屏共用，只有一个版本）
-function Dashboard:hintLine()
-    local line = T("点按刷新 · 点卡片展开 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
-    if self:getConfig().show_attribution then
-        local src = self:sourceShort()
-        if src then line = line .. " · " .. src end
+--- 页脚文案：「16:18 · 和风天气」，或（开关打开时）那串手势提示。
+--- ctx 可省：桩件的断言直接调 instance:hintLine() 对文案，这时自己去取时区。
+function Dashboard:hintLine(ctx)
+    local cfg = self:getConfig()
+    -- 手势提示默认关（v2.53）：它是「头三天有用、此后天天占一行」的东西。
+    -- 开关放 G_reader_settings 而不是 dashboard_config.lua，
+    -- 这样在设备上点一下就能切，不必插 USB 改文件。
+    if G_reader_settings:readSetting("dashboard_show_hints") == true then
+        local line = T("点按刷新 · 点卡片展开 · 上划退出 · 顶部下滑菜单 · 左右滑动换版式")
+        if cfg.show_attribution then
+            local src = self:sourceShort()
+            if src then line = line .. " · " .. src end
+        end
+        return line
     end
-    return line
+    local parts = {}
+    local w = self.weather
+    if w and w.ts then
+        local tz = (ctx and ctx.tz) or self:getTz()
+        parts[#parts + 1] = os.date("!%H:%M", w.ts + (tz and tz.offset or 0) * 60)
+    end
+    if cfg.show_attribution then
+        local src = self:sourceShort()
+        if src then parts[#parts + 1] = src end
+    end
+    if #parts == 0 then return T("暂无数据") end
+    return table.concat(parts, " · ")
 end
 
 -- ------------------------------------------------------------------ 数据换算

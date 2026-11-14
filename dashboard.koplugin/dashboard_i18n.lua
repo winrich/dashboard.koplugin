@@ -245,6 +245,11 @@ local EN = {
     -- 23 days ago），由下面的 relDays()/preDays() 直接出整句，不靠这两条拼。
     ["倒数日"] = "Countdown",
     ["待办"] = "To-do",
+    -- v2.53：B 区新默认组件。英文不能直译成 "Today action"，
+    -- 那在英语里不成词；用 "Today"（本意就是「今天这一屏要做的事」）。
+    ["今日行动"] = "Today",
+    ["另有"] = "plus",
+    ["页脚手势提示"] = "Footer gesture hints",
     ["待办事项"] = "To-dos",
     ["置顶"] = "Pinned",
     ["还有"] = "in",
