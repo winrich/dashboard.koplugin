@@ -1744,6 +1744,20 @@ for _, r in ipairs(rows) do
         math.floor(r.x), math.floor(r.y), math.floor(r.w), math.floor(r.h), r.text))
 end
 
+-- STUB_DUMP_CIRCLES=1：把每一笔 paintCircle 的坐标打出来。
+-- 「真机上多出几个孤立墨点」这类问题，判断它是布局问题还是图标原语问题，
+-- 靠这一份坐标最快：坐标落在图标方框里、却又不对应任何 shapes 条目，
+-- 那就是 Icon:paintTo 自己把圆传错了位置。
+if os.getenv("STUB_DUMP_CIRCLES") then
+    print("---------- 圆形原语 ----------")
+    for _, r in ipairs(RECORD) do
+        if r.kind == "circle" then
+            print(string.format("[圆] cx=%.2f cy=%.2f r=%.2f lw=%s color=%s",
+                r.cx, r.cy, r.r, tostring(r.lw), tostring(r.color)))
+        end
+    end
+end
+
 -- 电量与操作提示必须真的出现在画面上（不是只写进代码）
 -- 期望值跟桩件的 powerd 走，不写死 "78%"：预览要改电量（STUB_POWER）时才不会
 -- 出现「界面 58 / 断言 78」的自相矛盾。不另起局部变量——主 chunk 已到 200 上限。
