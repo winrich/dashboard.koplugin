@@ -86,12 +86,22 @@ python tools/secret_check.py --history  # 审计全部历史（慢，改完历�
   v2.63 及以前是「先画一遍、`scheduleIn(1.2)` 再补排一遍」，两次都是整屏 full，
   e-ink 上表现为转一次方向黑闪两下。现在 `relayoutAfterRotate()` 先比一次尺寸，
   对得上就直接画；只有个别异步机型才会 60ms 轮询（最多 1.2 秒兜底，仍只画一遍）。
-- **转屏时静音底层刷新**（v2.64）：`ui:onSetRotationMode()` 会连带底下那个界面重排，
-  重排完它自己 `setDirty(nil, "full")` 整屏刷一次 —— 可看板全屏盖着，那一次用户根本
-  看不见，只贡献一下黑闪。`beginRotateMute()` 临时接管 `UIManager._refresh`，
-  在窗口内丢弃「覆盖整屏的 full」（`partial`/`ui` 放行），看板自己的那一次用
-  `_own_full` 标记放行；窗口在画完后 1.2 秒解除，另有 2 秒兜底，`close()` 里也会解。
-  真机日志（`/tmp/dash_stack.log`）验证：切换前后各只剩 1 条整屏 full，来自看板。
+- **转屏时静音底层刷新**（v2.64，v2.65 扩到 partial）：`ui:onSetRotationMode()` 会连带
+  底下那个界面重排，重排完它自己 `setDirty(nil, "full")` 整屏刷一次 —— 可看板全屏盖着，
+  那一次用户根本看不见，只贡献一下黑闪。`beginRotateMute()` 临时接管 `UIManager._refresh`，
+  在窗口内丢弃「覆盖整屏的 full / partial」（小区域 partial 与 ui 放行），看板自己的那一次用
+  `_own_full` 标记放行；窗口在画完后 1.5 秒解除，另有 3 秒兜底，`close()` 里也会解。
+  真机日志（`/tmp/dash_v265.log`）验证：切换前后各只剩 1 条整屏 full，来自看板。
+- **为什么 partial 也要吞**（v2.65）：v2.64 只吞 full，真机上黑闪没了，却变成「只显示一部分
+  界面，还得再全屏刷一次」。`/tmp/dash_v265.log` 拍到原因——转屏后 ReaderView 重排完并不只发
+  full，还会连着发好几条 `setDirty(nil, "partial")`（`readerview.recalculate` /
+  `readerrolling.handleRenderingDelayed`，region 为 nil 或整屏）。**整屏 partial 在 mxcfb 上是
+  局部刷新波形**，驱动只把屏幕的一部分刷干净，剩下的靠残影叠着；看板那次 full 之后紧跟一条
+  整屏 partial，等于把刚刷好的画面又搅花。现在这些一并吞掉。
+- **兜底补刷**（v2.65）：`endRotateMute()` 会检查这一轮到底有没有真的整屏刷过
+  （`_own_painted`）。万一没刷（布局轮询超时、root 没建成），解除静音时自己补一次
+  `refreshLayout()` —— 底层的补救刷新都已被吞，不补就停在半新半旧上。`close()` 里传
+  `no_paint`，免得关板瞬间多刷一次。
 - 月历默认在横屏 B 区：周一起始、跨月补位（灰字）、今天反白、节气日带点。竖屏 B 区也能装，
   格宽按盒宽自适应。
 

@@ -166,7 +166,7 @@ local BATTERY_CACHE_TTL = 600        -- 电量读数缓存（秒），避免每�
 -- 版本号：显示在菜单「使用说明」那一项上。改动行为后一定同步改这里，
 -- 上机时一眼就能确认「装的到底是不是刚改的这份」（避免文件没覆盖到、
 -- 或者覆盖了但 KOReader 没重启，还在跑内存里的旧模块）。
-local DASHBOARD_VERSION = "2.64"
+local DASHBOARD_VERSION = "2.65"
 
 -- 唤醒宽限期：刚醒来的这几秒里先不拉天气。http.TIMEOUT 是 20 秒，三个接口
 -- 外加 LuaSec/socket.http 双通道，最坏能同步卡住一两分钟；而休眠之后天气必然过期，
@@ -1836,7 +1836,8 @@ function Dashboard:close()
     if not self.shown then return end
     -- 万一是在转屏静音窗口里被关掉（用户滑完立刻按返回），必须先把静音解掉，
     -- 否则底层界面以后所有整屏刷新都会被吞，屏幕就再也不全刷了。
-    self:endRotateMute()
+    -- no_paint：马上要把屏幕交给阅读页，这里不用补刷一次。
+    self:endRotateMute{ no_paint = true }
     self.shown = false
     -- 万一是菜单开着的时候被关掉，别让标记卡住导致以后再也不重排；
     -- 菜单控件本身也要撤，否则屏幕上会留一个没人管的孤儿菜单。
@@ -2705,7 +2706,7 @@ function Dashboard:refreshLayout(mode)
     self._own_full = nil
 end
 
---- 转屏期间把**底层界面**的整屏 full 刷新吞掉，只让看板自己刷一次。
+--- 转屏期间把**底层界面**的整屏刷新吞掉，只让看板自己刷一次。
 ---
 --- 为什么需要：`ui:onSetRotationMode()` 不只是转 framebuffer，它还会让底下的那个界面
 --- （ReaderView / FileManager）重排自己，重排完各自 `setDirty(nil, "full")` 整屏刷一次。
@@ -2715,36 +2716,56 @@ end
 ---   看板 refreshLayout()          -> setDirty(nil,"full")              ← 黑闪二
 --- 两次相隔不到一秒，这就是「转一次方向闪两下」。
 ---
---- 做法：临时接管 UIManager._refresh，丢弃「覆盖整屏的 full」，partial / ui 一律放行；
---- 看板自己那一次用 _own_full 标记放行。窗口从转屏开始到看板画完，另挂 2 秒兜底——
---- 静音状态绝不能留到下一次（留着的话整机以后所有整屏刷新都会被吞掉）。
+--- **v2.65：partial 也必须一起吞。** 转屏后 ReaderView 重排完并不只发 full，
+--- 还会连着发好几条 `setDirty(nil, "partial")`（readerview.recalculate /
+--- readerrolling.handleRenderingDelayed，region 为 nil 或整屏）。这类「整屏 partial」
+--- 在 Kindle 的 mxcfb 上是**局部刷新波形**：驱动只会把屏幕的一部分刷干净，
+--- 剩下的靠残影叠着——真机上就是「黑闪没了，但只显示了一部分界面」。
+--- 看板自己那次 full 之后紧跟着来这么一条 partial，等于把刚刷好的整屏又搅花。
+--- 底层这些局部刷本来就看不见（看板盖着），一并吞掉，只留看板那一次整屏 full。
+---
+--- 做法：临时接管 UIManager._refresh，丢弃「覆盖整屏的 full / partial」，
+--- 小区域 partial 与 ui 一律放行（时钟、进度条那种局部更新照常）；
+--- 看板自己那一次用 _own_full 标记放行。窗口从转屏开始到看板画完，
+--- 另挂 3 秒兜底——静音状态绝不能留到下一次（留着的话整机以后所有整屏刷新都会被吞掉）。
 function Dashboard:beginRotateMute()
     if self._mute_full then return end
     local orig = UIManager._refresh
     if not orig then return end       -- 桩件里没有这个内部入口，直接跳过
     self._mute_full = true
     self._orig_refresh = orig
+    -- 这一轮到底有没有真的整屏刷过。endRotateMute 靠它决定要不要补一次：
+    -- 万一某个路径下看板那一次 full 没走到（被别的东西抢先、或者布局轮询超时），
+    -- 屏幕上就会停在半新半旧，而静音已经把底层补救的刷新都吞了 —— 必须自己补。
+    self._own_painted = false
     UIManager._refresh = function(mgr, mode, region, dither)
-        if self._mute_full and not self._own_full and mode == "full" then
-            local covers = (region == nil)
-            if not covers and region then
-                covers = region.w >= Screen:getWidth() and region.h >= Screen:getHeight()
-            end
-            if covers then
-                logger.dbg("dashboard: 转屏期间丢弃底层整屏刷新")
-                return
-            end
+        local covers = (region == nil)
+        if not covers and region then
+            covers = region.w >= Screen:getWidth() and region.h >= Screen:getHeight()
+        end
+        if self._mute_full and not self._own_full and covers
+            and (mode == "full" or mode == "partial") then
+            logger.dbg("dashboard: 转屏期间丢弃底层整屏刷新", mode)
+            return
+        end
+        if self._mute_full and self._own_full and covers and mode == "full" then
+            self._own_painted = true
         end
         return orig(mgr, mode, region, dither)
     end
     self._mute_guard = function() self:endRotateMute() end
-    UIManager:scheduleIn(2, self._mute_guard)
+    UIManager:scheduleIn(3, self._mute_guard)
 end
 
---- 解除静音。调用是幂等的，正常路径在 relayoutAfterRotate 画完后 1.2 秒，
---- 兜底是 beginRotateMute 里那两个秒的定时器。
-function Dashboard:endRotateMute()
+--- 解除静音。调用是幂等的，正常路径在 relayoutAfterRotate 画完后 1.5 秒，
+--- 兜底是 beginRotateMute 里那三秒的定时器。
+---
+--- opts.no_paint：关板时用。那时不需要补刷（屏幕马上要交还给阅读页），
+--- 而且 close() 是在 self.shown = false **之前**调它的，只看 shown 会误判。
+function Dashboard:endRotateMute(opts)
     if not self._mute_full then return end
+    local need_paint = self.shown and not self._own_painted
+        and not (opts and opts.no_paint)
     if self._orig_refresh then UIManager._refresh = self._orig_refresh end
     self._mute_full = false
     self._orig_refresh = nil
@@ -2753,6 +2774,14 @@ function Dashboard:endRotateMute()
         UIManager:unschedule(self._mute_guard)
         self._mute_guard = nil
     end
+    -- 这一轮一次整屏 full 都没发出去（比如布局轮询超时、root 没重建成功）。
+    -- 底层的补救刷新都已经被吞了，不补就停在半新半旧的画面上。
+    -- 补的这一次是全窗口栈重画，转屏后画面必然完整。
+    if need_paint then
+        logger.warn("dashboard: 转屏期间没有整屏刷新过，补一次")
+        self:refreshLayout()
+    end
+    self._own_painted = nil
 end
 
 --- 转屏之后重排一次版面，**只画一遍**。
@@ -2771,7 +2800,7 @@ function Dashboard:relayoutAfterRotate(rotated)
     if not self.shown then return end
     if not rotated then
         self:refreshLayout()
-        UIManager:scheduleIn(1.2, function() self:endRotateMute() end)
+        UIManager:scheduleIn(1.5, function() self:endRotateMute() end)
         return
     end
     -- 奇数旋转模式在 LinuxFB 里就是横屏（ffi/framebuffer.lua:442 getScreenOrientation）
@@ -2783,10 +2812,11 @@ function Dashboard:relayoutAfterRotate(rotated)
         tries = tries + 1
         if self:screenIsLandscape() == expect_landscape or tries > 20 then
             self:refreshLayout()
-            -- 再等 1.2 秒才解除静音：底层界面迟到的整屏刷新（readerrolling 的
+            -- 再等 1.5 秒才解除静音：底层界面迟到的整屏刷新（readerrolling 的
             -- handleRenderingDelayed、readerview 的第二次 recalculate）会在转屏后
             -- 半秒到一秒才到，窗口开小了照样补一次黑闪。真机上 SWITCH-2 就是这么漏的。
-            UIManager:scheduleIn(1.2, function() self:endRotateMute() end)
+            -- v2.65 起这些迟到的 partial 也要吞，所以窗口从 1.2 放宽到 1.5 秒。
+            UIManager:scheduleIn(1.5, function() self:endRotateMute() end)
         else
             UIManager:scheduleIn(0.06, attempt)
         end

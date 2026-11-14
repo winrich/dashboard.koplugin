@@ -1749,7 +1749,9 @@ end
 STUB_CHECK_ONE_FULL = function(before)
     for i = #timers, 1, -1 do
         local t = timers[i]
-        if t.delay > 1.0 and t.delay < 1.5 then
+        -- 1.5 秒那档是 v2.65 的「解除转屏静音」，也要真执行掉再数 full：
+        -- 静音期间被吞掉的刷新如果没解静音，后面所有整屏刷新都会被吞，画面就残缺。
+        if t.delay > 1.0 and t.delay < 2.5 then
             table.remove(timers, i)
             t.fn()
         end
@@ -1764,6 +1766,72 @@ STUB_CHECK_ONE_FULL = function(before)
     end
 end
 STUB_CHECK_ONE_FULL(STUB_DIRTY_BEFORE or 0)
+
+-- v2.65：转屏静音必须把「整屏 partial」也吞掉。
+-- 真机上黑闪没了但只显示一部分画面，就是这些 partial 干的：
+-- ReaderView 重排完会发 setDirty(nil,"partial")（region 为 nil 或整屏），
+-- 在 mxcfb 上那是局部刷新波形，驱动只刷干净一部分，剩下的靠残影叠着。
+do
+    local calls = {}
+    local mock = function(mgr, mode, region)
+        calls[#calls + 1] = tostring(mode)
+        return true
+    end
+    UIManager._refresh = mock
+    instance._mute_full = nil
+    instance:beginRotateMute()
+    -- 整屏 partial / 整屏 full / 无 region，都该被吞
+    UIManager._refresh(UIManager, "partial", nil)
+    UIManager._refresh(UIManager, "partial", Geom:new{ w = screen.getWidth(), h = screen.getHeight(), x = 0, y = 0 })
+    UIManager._refresh(UIManager, "full", nil)
+    UIManager._refresh(UIManager, "full", Geom:new{ w = screen.getWidth(), h = screen.getHeight(), x = 0, y = 0 })
+    if #calls ~= 0 then
+        print(string.format("[FAIL] 静音期间整屏刷新没有被吞掉（漏了 %d 条）", #calls))
+        os.exit(1)
+    end
+    -- 小区域局部刷新（时钟、进度条）必须放行
+    UIManager._refresh(UIManager, "partial", Geom:new{ w = 100, h = 40, x = 10, y = 10 })
+    if #calls ~= 1 then
+        print("[FAIL] 静音期间小区域局部刷新被误吞（时钟就再也不走了）")
+        os.exit(1)
+    end
+    -- 看板自己那一次要放行
+    instance._own_full = true
+    UIManager._refresh(UIManager, "full", nil)
+    instance._own_full = nil
+    if #calls ~= 2 then
+        print("[FAIL] 静音期间看板自己的整屏刷新被吞（画面就永远不更新了）")
+        os.exit(1)
+    end
+    -- 解除之后必须完全恢复
+    instance:endRotateMute()
+    UIManager._refresh(UIManager, "full", nil)
+    UIManager._refresh(UIManager, "partial", nil)
+    if #calls ~= 4 then
+        print("[FAIL] 解除静音后整屏刷新仍被吞（整机会再也不全刷）")
+        os.exit(1)
+    end
+    if instance._mute_full or instance._orig_refresh or instance._mute_guard then
+        print("[FAIL] 解除静音后状态没清干净")
+        os.exit(1)
+    end
+    -- 万一这一轮一次整屏 full 都没发出去（布局轮询超时、root 没建成），
+    -- 解除时必须自己补一次，否则屏幕停在半新半旧，而底层补救刷新已被吞掉。
+    instance:beginRotateMute()
+    local full_before = 0
+    for i = 1, #STUB_DIRTY_CALLS do
+        if STUB_DIRTY_CALLS[i] == "full" then full_before = full_before + 1 end
+    end
+    instance:endRotateMute()
+    local full_after = 0
+    for i = 1, #STUB_DIRTY_CALLS do
+        if STUB_DIRTY_CALLS[i] == "full" then full_after = full_after + 1 end
+    end
+    if full_after ~= full_before + 1 then
+        print(string.format("[FAIL] 转屏期间没整屏刷过时没补刷（%d -> %d）", full_before, full_after))
+        os.exit(1)
+    end
+end
 -- 切换之后立刻校验：新版的画面必须仍然装得进当前屏幕
 local w_after, h_after = screen.getWidth(), screen.getHeight()
 local g_after = instance.root[1][1]:getSize()
