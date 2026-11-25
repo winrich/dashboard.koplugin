@@ -1,0 +1,9 @@
+# .mailmap —— 把历史提交里的匿名身份映射到 GitHub 账号
+#
+# 背景：2026-11-11 起的 72 条提交由本机 git 配置 `dashboard <d@local>` 产生，
+# 而 `d@local` 不是任何账号的有效邮箱，GitHub 无法归属，contributors 图因此为空。
+# 这里只影响「作者显示与归属」（git log --use-mailmap / shortlog），不改写历史本身；
+# 如需彻底重写提交对象，另用 git filter-repo。
+#
+# 格式：正确姓名 <正确邮箱> 历史邮箱
+winrich <30755489+winrich@users.noreply.github.com> <d@local>
