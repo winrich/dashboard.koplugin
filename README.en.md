@@ -7,7 +7,7 @@
 > A sleeping Kindle usually shows one book cover, or a plain "Sleep". Replace it, and that 300 ppi e-ink panel stops sitting idle.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0-blue.svg" alt="Version 3.0">
+  <img src="https://img.shields.io/badge/version-3.4-blue.svg" alt="Version 3.4">
   <img src="https://img.shields.io/badge/KOReader-plugin-blueviolet.svg" alt="KOReader plugin">
   <img src="https://img.shields.io/badge/Kindle-jailbroken-lightgrey.svg" alt="Jailbroken Kindle">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
@@ -152,6 +152,8 @@ carries a bar showing how far it is from the national limit. One glance is enoug
 
 Requires a jailbroken Kindle with KOReader already installed (those two steps are outside this project).
 
+Tested on **Kindle Paperwhite 3 (KPW3, 1072×1448, 300 ppi) with KOReader v2026.07.1**. Other models have not been verified one by one; the layout scales with screen size (`S = min(width, height) / 600`), so size differences are absorbed by that formula as long as KOReader runs. On older KOReader builds `crash.log` may show errors such as `registerTouchZones` — upgrade KOReader first.
+
 1. Connect the Kindle by USB and open its storage.
 2. Copy the whole `dashboard.koplugin` folder into `koreader/plugins/`
    (the folder name must end in `.koplugin`, otherwise it is skipped).
@@ -160,7 +162,7 @@ Requires a jailbroken Kindle with KOReader already installed (those two steps ar
    City and time zone are guessed from the device time zone first; change them under
    "Location & weather → City" if wrong.
 
-`dist/dashboard.koplugin.zip` is the same content; unzipping it into `plugins/` works too.
+No git? Click **Code → Download ZIP** on the repo page and copy the `dashboard.koplugin` folder into `koreader/plugins/`. Once versions are published they will also appear under [Releases](https://github.com/winrich/dashboard.koplugin/releases) as a ready-made `dashboard.koplugin.zip`.
 
 ---
 

@@ -7,7 +7,7 @@
 > Kindle 休眠后本来只显示一张书封，或一句 Sleep。换掉它，那块 300 ppi 的墨水屏就不再闲置。
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0-blue.svg" alt="Version 3.0">
+  <img src="https://img.shields.io/badge/version-3.4-blue.svg" alt="Version 3.4">
   <img src="https://img.shields.io/badge/KOReader-plugin-blueviolet.svg" alt="KOReader plugin">
   <img src="https://img.shields.io/badge/Kindle-jailbroken-lightgrey.svg" alt="Jailbroken Kindle">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
@@ -149,6 +149,8 @@ flowchart LR
 
 前提：设备已经越狱，并装好了 KOReader（这两步不在本项目范围内）。
 
+实测环境：**Kindle Paperwhite 3（KPW3，1072×1448，300 ppi）+ KOReader v2026.07.1**。其他机型没有逐台验证过；版面按屏幕尺寸自适应（`S = min(宽, 高) / 600`），尺寸差异由这条公式吸收。KOReader 版本过旧时 `crash.log` 里会出现 `registerTouchZones` 一类报错，先升级 KOReader 再试。
+
 1. USB 连电脑，打开 Kindle 的存储盘。
 2. 把 `dashboard.koplugin` **整个目录**拷到 `koreader/plugins/` 下
    （目录名必须以 `.koplugin` 结尾，否则会被跳过）。
@@ -156,7 +158,7 @@ flowchart LR
 4. 菜单 → 设置 → 屏幕 → 屏保 → 桌面看板 → 点「打开看板」。
    城市与时区会先按设备的系统时区自动猜一个，不对再进「地点与天气 → 选择城市」改。
 
-`dist/dashboard.koplugin.zip` 是同样内容的压缩包，解压到 `plugins/` 也一样。
+不想装 git 的话：在仓库页面点 **Code → Download ZIP**，解压后同样把 `dashboard.koplugin` 整个目录拷进 `koreader/plugins/`。等版本发布挂到 [Releases](https://github.com/winrich/dashboard.koplugin/releases) 之后，那里会直接给打好包的 `dashboard.koplugin.zip`，解压即用。
 
 ---
 
