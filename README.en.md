@@ -7,7 +7,7 @@
 > A sleeping Kindle usually shows one book cover, or a plain "Sleep". Replace it, and that 300 ppi e-ink panel stops sitting idle.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.4-blue.svg" alt="Version 3.4">
+  <img src="https://img.shields.io/github/v/release/winrich/dashboard.koplugin?label=version&color=blue" alt="Version">
   <img src="https://img.shields.io/badge/KOReader-plugin-blueviolet.svg" alt="KOReader plugin">
   <img src="https://img.shields.io/badge/Kindle-jailbroken-lightgrey.svg" alt="Jailbroken Kindle">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
