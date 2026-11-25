@@ -7,7 +7,7 @@
 > Kindle 休眠后本来只显示一张书封，或一句 Sleep。换掉它，那块 300 ppi 的墨水屏就不再闲置。
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.4-blue.svg" alt="Version 3.4">
+  <img src="https://img.shields.io/github/v/release/winrich/dashboard.koplugin?label=version&color=blue" alt="Version">
   <img src="https://img.shields.io/badge/KOReader-plugin-blueviolet.svg" alt="KOReader plugin">
   <img src="https://img.shields.io/badge/Kindle-jailbroken-lightgrey.svg" alt="Jailbroken Kindle">
   <img src="https://img.shields.io/badge/dependencies-none-brightgreen.svg" alt="No dependencies">
