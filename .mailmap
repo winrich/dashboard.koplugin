@@ -5,5 +5,9 @@
 # 这里只影响「作者显示与归属」（git log --use-mailmap / shortlog），不改写历史本身；
 # 如需彻底重写提交对象，另用 git filter-repo。
 #
-# 格式：正确姓名 <正确邮箱> 历史邮箱
+# 格式一：正确姓名 <正确邮箱> 历史邮箱
 winrich <30755489+winrich@users.noreply.github.com> <d@local>
+# 格式二：正确姓名 <正确邮箱> 历史姓名 <历史邮箱>
+# 网页端提交默认取账号资料里的名字（Henry.Xue），邮箱其实已能归属，
+# 这条只把显示名统一成 winrich，让 shortlog 聚合为一行。
+winrich <30755489+winrich@users.noreply.github.com> Henry.Xue <30755489+winrich@users.noreply.github.com>
